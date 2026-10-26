@@ -49,6 +49,12 @@ const LOCKOUT: Duration = Duration::from_secs(900);
 const PASSWORD_CHECKS: usize = 1;
 static PASSWORD_GATE: Semaphore = Semaphore::const_new(PASSWORD_CHECKS);
 
+/// Serialises every test that passes through [`PASSWORD_GATE`]. The gate is
+/// process-wide, so a test holding its only permit would refuse a parallel
+/// sign-in or confirmation with a 429 the test never asked about.
+#[cfg(test)]
+pub(crate) static PASSWORD_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub fn sha256(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
@@ -70,6 +76,44 @@ fn verify_password(password: &str, stored: &str) -> bool {
     PasswordHash::new(stored)
         .map(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())
         .unwrap_or(false)
+}
+
+/// The password itself, asked for again on a request that can empty the hub: a
+/// restore replaces every node, setting and session, and a password change
+/// signs the owner out of every device.
+///
+/// A session cookie says a browser signed in within the last fourteen days. It
+/// says nothing about who is holding that browser now, which is the whole gap
+/// this closes. Failures count against the sign-in page's throttle rather than
+/// a counter of their own, so a stolen session is not an unlimited oracle for
+/// guessing the password it was supposed to be guarded by.
+///
+/// Forbidden rather than unauthorized on a wrong password: the panel treats a
+/// 401 as "the session died" and sends the reader to the sign-in page, which is
+/// the one thing this must not do.
+///
+/// `None` when the password is right, else the refusal to return as it stands.
+pub fn confirm_password(app: &App, ip: IpAddr, password: &str) -> Option<Response> {
+    if app.throttle.locked(ip) {
+        return Some(answer(StatusCode::TOO_MANY_REQUESTS, "尝试次数过多，稍后再试"));
+    }
+    // Held across the check, as on the sign-in page: argon2 costs 19 MiB and a
+    // tenth of a core-second an attempt, so the number in flight must be bounded.
+    let Ok(_permit) = PASSWORD_GATE.try_acquire() else {
+        return Some(answer(StatusCode::TOO_MANY_REQUESTS, "尝试次数过多，稍后再试"));
+    };
+    let Some(stored) = app.db.get("admin_password_hash") else {
+        return Some(answer(
+            StatusCode::FORBIDDEN,
+            "还没有设置应急密码。这一步要先在「设置」的「应急密码」里设置一个，再用它确认",
+        ));
+    };
+    if !verify_password(password, &stored) {
+        app.throttle.record_failure(ip);
+        return Some(answer(StatusCode::FORBIDDEN, "密码错误"));
+    }
+    app.throttle.clear(ip);
+    None
 }
 
 /// Per-address failure counter. The hub keeps two: one for the sign-in page,
@@ -639,10 +683,6 @@ mod tests {
         assert_eq!(held(), 0);
     }
 
-    /// Taken by every test that passes through `PASSWORD_GATE`, which is
-    /// process-wide: one holding every permit would refuse a parallel login.
-    static GATE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
     fn shared() -> crate::Shared {
         std::sync::Arc::new(crate::App::for_test(crate::db::Db::open(":memory:").unwrap()))
     }
@@ -653,7 +693,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_password_signs_in_only_when_it_matches_and_signing_out_ends_the_session() {
-        let _gate = GATE_TESTS.lock().await;
+        let _gate = PASSWORD_TESTS.lock().await;
         let app = shared();
         app.db.replace_password(&hash_password("the-right-password").unwrap()).unwrap();
         let attempt = |password: &str| {
@@ -707,7 +747,7 @@ mod tests {
     /// arena for the life of the process.
     #[tokio::test]
     async fn the_password_gate_refuses_a_flood_rather_than_queueing_it() {
-        let _gate = GATE_TESTS.lock().await;
+        let _gate = PASSWORD_TESTS.lock().await;
         let held: Vec<_> =
             (0..PASSWORD_CHECKS).map(|_| PASSWORD_GATE.try_acquire().expect("up to the limit")).collect();
         assert!(PASSWORD_GATE.try_acquire().is_err(), "the attempt past the limit must be refused");

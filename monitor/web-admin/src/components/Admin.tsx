@@ -802,11 +802,12 @@ function GroupDialog({ nodes, onClose, onSaved }: { nodes: Node[]; onClose: () =
   )
 }
 
-function ConfirmDialog({ title, description, confirmLabel, busy = false, onClose, onConfirm, children }: {
+function ConfirmDialog({ title, description, confirmLabel, busy = false, disabled = false, onClose, onConfirm, children }: {
   title: string
   description: string
   confirmLabel: string
   busy?: boolean
+  disabled?: boolean
   onClose: () => void
   onConfirm: () => void
   children?: React.ReactNode
@@ -821,7 +822,7 @@ function ConfirmDialog({ title, description, confirmLabel, busy = false, onClose
         {children}
         <DialogFooter className="border-t pt-4">
           <Button variant="ghost" onClick={onClose}>取消</Button>
-          <Button variant="destructive" onClick={onConfirm} disabled={busy}>{confirmLabel}</Button>
+          <Button variant="destructive" onClick={onConfirm} disabled={busy || disabled}>{confirmLabel}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -2241,8 +2242,14 @@ function useSettings() {
         const fresh = await api<Settings>("/settings")
         setS((old) => {
           const next = { ...old }
-          for (const key of [...Object.keys(patch), "your_address"]) next[key] = fresh[key]
+          // A key the hub does not hand back is not a setting: `current_password`
+          // travels in the same patch as the password it confirms, and copying it
+          // from `fresh` would leave an `undefined` behind.
+          for (const key of [...Object.keys(patch), "your_address"]) if (key in fresh) next[key] = fresh[key]
           for (const [key, value] of Object.entries(fresh)) if (key.endsWith("_set")) next[key] = value
+          // A password the operator has just chosen stops being a generated one,
+          // which is what decides whether the next change asks for it.
+          if ("admin_password" in patch) next.password_generated = fresh.password_generated
           return next
         })
       } catch (e) {
@@ -2814,10 +2821,17 @@ function Sessions({ rows, reload }: { rows: Session[]; reload: () => void }) {
 function Security({ site }: { site: string }) {
   const { s, set, save } = useSettings()
   const sessions = useSessions()
+  // The password being set, and the one it replaces: a change asks for both.
   const [password, setPassword] = useState("")
+  const [current, setCurrent] = useState("")
   // Drawn once both have arrived, so the list does not land late above the
   // cards and push them down.
   if (!s || !sessions.rows) return null
+  const hasPassword = !!s.password_set
+  // A generated password was printed once to a terminal and may never have been
+  // read, so it is not asked for: the operator replaces it, and from then on a
+  // change asks for theirs.
+  const needsCurrent = hasPassword && !s.password_generated
   const callback = `${site}/api/auth/github/callback`
 
   return (
@@ -2876,20 +2890,64 @@ function Security({ site }: { site: string }) {
         <div>
           <h3 className="text-sm font-medium">应急密码</h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            GitHub 不可用时的备用入口。修改后其它设备登录立即失效，当前设备不受影响。
+            GitHub 不可用时的备用入口，也用来确认恢复备份这类不可撤销的操作。
+            {!hasPassword
+              ? "设置后 GitHub 之外的登录方式才可用。"
+              : s.password_generated
+                ? "现在这个是首次启动时自动生成的，只打印过一次。设置一个自己的来替换它，之后的修改需要输入当前密码。"
+                : "修改后其它设备登录立即失效，当前设备不受影响。"}
           </p>
         </div>
-        <Field label="新密码" hint="至少 12 位">
-          <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
-        </Field>
+        {needsCurrent ? (
+          <div className="grid gap-4 sm:grid-cols-2">
+            {/* Asked for because a change locks every other device out: the
+                session proves a browser signed in once, not who holds it now. */}
+            <Field label="当前密码">
+              <Input
+                type="password"
+                value={current}
+                onChange={(e) => setCurrent(e.target.value)}
+                autoComplete="current-password"
+              />
+            </Field>
+            <Field label="新密码" hint="至少 12 位">
+              <Input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password"
+              />
+            </Field>
+          </div>
+        ) : (
+          <Field label="新密码" hint="至少 12 位">
+            <Input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="new-password"
+            />
+          </Field>
+        )}
         <div>
           <Button
             size="sm"
-            disabled={password.length < 12}
+            disabled={password.length < 12 || (needsCurrent && !current)}
             // Every other session ends with the change, so the list is read again.
-            onClick={() => save({ admin_password: password }, "密码已修改").then((ok) => { if (ok) { setPassword(""); sessions.load() } })}
+            onClick={() =>
+              save(
+                needsCurrent ? { admin_password: password, current_password: current } : { admin_password: password },
+                needsCurrent ? "密码已修改" : "密码已设置",
+              ).then((ok) => {
+                if (ok) {
+                  setPassword("")
+                  setCurrent("")
+                  sessions.load()
+                }
+              })
+            }
           >
-            修改密码
+            {needsCurrent ? "修改密码" : "设置密码"}
           </Button>
         </div>
       </Card>
@@ -2923,6 +2981,11 @@ function Data() {
   const [confirm, setConfirm] = useState<"vacuum" | null>(null)
   const [pending, setPending] = useState<File | null>(null)
   const [sent, setSent] = useState(0)
+  // A restore re-enters the emergency password. A first-run hub prints one, so
+  // this is normally set; a database restored from elsewhere may carry none, and
+  // then the dialog says what to do instead of asking for a field.
+  const [password, setPassword] = useState("")
+  const [passwordState, setPasswordState] = useState({ set: true, generated: false })
   // Closing the dialog must stop the upload rather than merely hide it: restore
   // is the one irreversible action here, and it takes minutes on a large
   // backup.
@@ -2931,6 +2994,13 @@ function Data() {
 
   const load = () => api<DbInfo>("/db").then(setInfo).catch((e: Error) => toast.error(e.message))
   useEffect(() => { load() }, [])
+  // Optimistic until told otherwise: a failed read leaves the field to the hub,
+  // which refuses the restore with the reason if there is no password.
+  useEffect(() => {
+    api<{ password_set?: boolean; password_generated?: boolean }>("/settings")
+      .then((s) => setPasswordState({ set: s.password_set !== false, generated: !!s.password_generated }))
+      .catch(() => {})
+  }, [])
 
   async function vacuum() {
     setBusy("vacuum")
@@ -2951,7 +3021,7 @@ function Data() {
     setSent(0)
     abort.current = new AbortController()
     try {
-      await upload("/db/restore", file, setSent, abort.current.signal)
+      await upload("/db/restore", file, setSent, abort.current.signal, password)
       toast.success("已恢复，正在重新加载")
       // Every node, setting and session on the page came from the database just
       // replaced.
@@ -2965,6 +3035,7 @@ function Data() {
       setBusy("")
     }
     setPending(null)
+    setPassword("")
   }
 
   if (!info) return null
@@ -3060,9 +3131,33 @@ function Data() {
           description={`将用 ${pending.name}（${bytes(pending.size)}）整体替换当前数据库。当前的节点、设置和历史全部丢失，且无法撤销。`}
           confirmLabel={busy === "restore" ? `已上传 ${bytes(sent)} / ${bytes(pending.size)}` : "确认恢复"}
           busy={!!busy}
-          onClose={() => { abort.current?.abort(); setPending(null) }}
+          disabled={passwordState.set ? !password : true}
+          onClose={() => { abort.current?.abort(); setPending(null); setPassword("") }}
           onConfirm={() => restore(pending)}
-        />
+        >
+          {passwordState.set ? (
+            <Field
+              label="当前密码"
+              hint={
+                passwordState.generated
+                  ? "首次启动生成的密码见 hub 日志；不确定就先到「设置」改一个"
+                  : "不可撤销，重新输入一次密码确认"
+              }
+            >
+              <Input
+                type="password"
+                autoFocus
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </Field>
+          ) : (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              恢复要用应急密码确认。先到「设置 → 应急密码」设置一个，再回来导入。
+            </p>
+          )}
+        </ConfirmDialog>
       )}
     </div>
   )

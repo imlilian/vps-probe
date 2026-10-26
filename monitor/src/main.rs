@@ -877,9 +877,16 @@ fn first_run(app: &App, url: &str) -> Result<()> {
 }
 
 /// Sets a random 24-character admin password and signs every session out.
+///
+/// Marked as generated, which is what lets the panel replace it without asking
+/// for it: this one is printed once to a terminal or a service log, and a change
+/// that demanded it would strand the operator who never read it. The first
+/// password set from the panel clears the mark, and everything after that asks
+/// for the current one.
 fn new_password(db: &Db) -> Result<String> {
     let password = auth::random_token()[..24].to_owned();
     db.replace_password(&auth::hash_password(&password)?)?;
+    db.set("password_generated", "on")?;
     Ok(password)
 }
 
@@ -1402,12 +1409,14 @@ mod tests {
         first_run(&app, "http://x").unwrap();
         let hash = app.db.get("admin_password_hash").unwrap();
         assert!(hash.starts_with("$argon2"));
+        assert_eq!(app.db.get("password_generated").as_deref(), Some("on"), "printed, not chosen");
         first_run(&app, "http://x").unwrap();
         assert_eq!(app.db.get("admin_password_hash").unwrap(), hash, "must not rotate on restart");
 
         app.db.create_session("s", i64::MAX).unwrap();
         new_password(&app.db).unwrap();
         assert_ne!(app.db.get("admin_password_hash").unwrap(), hash, "a reset must rotate it");
+        assert_eq!(app.db.get("password_generated").as_deref(), Some("on"), "and it is printed too");
         assert!(!app.db.session_valid("s"), "a reset must sign every session out");
     }
 }

@@ -317,15 +317,30 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 const CHUNK = 4 * 1024 * 1024
 
 /**
+ * A password as a header value: the hex of its UTF-8 bytes. A header cannot
+ * carry arbitrary text -- a newline in it is a header injection, and anything
+ * above ASCII depends on what reads it -- so the password travels as bytes the
+ * hub decodes back into exactly what was typed.
+ */
+const hex = (text: string) =>
+  [...new TextEncoder().encode(text)].map((b) => b.toString(16).padStart(2, "0")).join("")
+
+/**
  * Uploads a file one chunk at a time. There is no upload id: the hub tracks an
  * upload by the length of what it has already written, so a chunk states only
  * where it begins. The last one carries the result.
+ *
+ * `confirm` is the password a destructive upload re-enters. It rides on the
+ * first chunk alone, because that is the only one the hub checks -- a later
+ * piece cannot arrive without it, since the hub refuses one that does not begin
+ * exactly where the last ended.
  */
 export async function upload<T>(
   path: string,
   file: File,
   onProgress?: (sent: number) => void,
   signal?: AbortSignal,
+  confirm?: string,
 ): Promise<T> {
   if (file.size === 0) throw new ApiError(400, "文件是空的")
   let last: Response | null = null
@@ -336,7 +351,10 @@ export async function upload<T>(
     if (signal?.aborted) throw new DOMException("aborted", "AbortError")
     const res = await send(`/api${path}?offset=${offset}&total=${file.size}`, {
       method: "POST",
-      headers: { "content-type": "application/octet-stream" },
+      headers: {
+        "content-type": "application/octet-stream",
+        ...(offset === 0 && confirm ? { "x-confirm-password": hex(confirm) } : {}),
+      },
       body: file.slice(offset, offset + CHUNK),
       signal,
     })

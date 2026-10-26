@@ -17,7 +17,8 @@ use tracing::{debug, info, warn};
 
 use crate::agent_ws::Agent;
 use crate::auth::{
-    authed, client_ip, current_session, hash_password, issue_session, issued_at, random_token, with_cookies,
+    authed, client_ip, confirm_password, current_session, hash_password, issue_session, issued_at,
+    random_token, with_cookies,
 };
 use crate::db::{self, Db, Node, NodePatch, PingTask, Traffic, TrafficPatch};
 use crate::{agent_ws, App, Shared};
@@ -1511,6 +1512,23 @@ pub struct Chunk {
     total: u64,
 }
 
+/// The password a destructive request re-enters, as the panel sends it: the hex
+/// of its UTF-8 bytes, which carries a password holding any character at all
+/// through a header value unchanged.
+///
+/// A header rather than a query parameter. The hub logs no URLs, but whatever
+/// proxy stands in front of it logs the request line, and an access log is not
+/// where a password belongs. Anything undecodable reads as an empty password:
+/// what is wrong with it is [`crate::auth::confirm_password`]'s to say.
+fn reentered_password(headers: &HeaderMap) -> String {
+    headers
+        .get("x-confirm-password")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| hex::decode(value).ok())
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_default()
+}
+
 /// Appends one piece to `path`, returning the file's length afterwards; the
 /// caller compares that against `total` to determine completion.
 ///
@@ -1662,9 +1680,20 @@ pub async fn db_restore(
     _: Admin,
     State(app): State<Shared>,
     Query(chunk): Query<Chunk>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
     body: axum::body::Body,
 ) -> Response {
+    // Asked for once, on the piece that creates the file. `receive` refuses a
+    // piece that does not begin exactly where the last one ended and truncates
+    // on offset zero, so the first byte of an upload can only ever be written by
+    // a request that passed here: there is no later piece to slip in through.
+    if chunk.offset == 0 {
+        let ip = client_ip(&app, &headers, peer.ip());
+        if let Some(refusal) = confirm_password(&app, ip, &reentered_password(&headers)) {
+            return refusal;
+        }
+    }
     // One fixed path, which is what allows the file's own length to constitute
     // the entire protocol.
     // ponytail: one upload in flight per hub. Two started simultaneously land on
@@ -1904,6 +1933,13 @@ pub async fn settings(
         "github_secret_set".into(),
         json!(app.db.get("github_client_secret").is_some_and(|v| !v.is_empty())),
     );
+    // Whether there is a password at all, which decides two things in the panel:
+    // a change asks for the current one only when it exists, and a restore needs
+    // it to confirm. Never the hash itself, which is why this is a flag.
+    out.insert("password_set".into(), json!(app.db.get("admin_password_hash").is_some()));
+    // A password the hub generated and printed is not one the operator chose, so
+    // it may be replaced without being produced. See `new_password`.
+    out.insert("password_generated".into(), json!(app.db.get("password_generated").as_deref() == Some("on")));
     // Read-only here. A window is opened and closed through its own route, so the
     // key is always one the hub generated, and `save_settings` continues to refuse
     // both stored names.
@@ -1962,11 +1998,26 @@ fn setting_error(key: &str, value: &Value) -> Option<String> {
 pub async fn save_settings(
     _: Admin,
     State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    let Some(map) = body.as_object() else { return bad("设置格式不对") };
-    for (key, value) in map {
+    let Some(settings) = body.as_object() else { return bad("设置格式不对") };
+    let mut map = settings.clone();
+    // Replacing the password is the other way into the account, so it asks for
+    // the one it replaces: a session proves a browser signed in once, not that
+    // its holder is the owner. Not when a generated password is what stands in
+    // the way -- that one was printed once and may never have been read, so
+    // demanding it would lock out exactly the operator who never saw it.
+    let generated = app.db.get("password_generated").as_deref() == Some("on");
+    if map.contains_key("admin_password") && app.db.get("admin_password_hash").is_some() && !generated {
+        let given =
+            map.remove("current_password").and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+        if let Some(refusal) = confirm_password(&app, client_ip(&app, &headers, peer.ip()), &given) {
+            return refusal;
+        }
+    }
+    for (key, value) in &map {
         if let Some(message) = setting_error(key, value) {
             return bad(&message);
         }
@@ -1974,11 +2025,14 @@ pub async fn save_settings(
     // Set when the password changed: the change signs every session out, and the
     // caller receives a replacement rather than being logged out by it.
     let mut reissued = String::new();
-    for (key, value) in map {
+    for (key, value) in &map {
         let value = value.as_str().unwrap_or_default();
         if key == "admin_password" {
             match hash_password(value).and_then(|h| {
                 app.db.replace_password(&h)?;
+                // The operator's own from here on, so the next change asks for
+                // it; see `new_password`.
+                app.db.set("password_generated", "off")?;
                 issue_session(&app, &headers)
             }) {
                 Ok(cookie) => reissued = cookie,
@@ -2275,12 +2329,17 @@ mod tests {
     /// could silently drop.
     #[tokio::test]
     async fn a_finished_restore_leaves_no_scratch_file_behind() {
+        let _password = crate::auth::PASSWORD_TESTS.lock().await;
         let tmp = crate::TempDir::new("restore");
         let dir = tmp.0.clone();
         let live = dir.join("live.db").to_string_lossy().into_owned();
         let app = std::sync::Arc::new(App::for_test(Db::open(&live).unwrap()));
         node(&app, "kept", true);
         app.db.set("origin_cdn_only", "on").unwrap();
+        // Set before the backup is taken, so the restored file carries one too:
+        // the second chunk arrives without a password, and only the first is
+        // ever asked.
+        app.db.set("admin_password_hash", &hash_password("a-long-enough-password").unwrap()).unwrap();
         // In the backup, and so restored with it unless the restore drops it.
         app.db.create_session(&sha256("backed-up"), Utc::now().timestamp() + 3_600).unwrap();
 
@@ -2294,18 +2353,16 @@ mod tests {
 
         // In two chunks, as the panel sends any backup larger than one.
         let (total, half) = (bytes.len() as u64, bytes.len() / 2);
+        let mut confirm = HeaderMap::new();
+        confirm.insert("x-confirm-password", hex::encode("a-long-enough-password").parse().unwrap());
         let mut done = None;
         for (offset, piece) in [(0, &bytes[..half]), (half as u64, &bytes[half..])] {
             let piece = axum::body::Body::from(piece.to_vec());
+            // Only the first piece carries it; the panel sends it the same way.
+            let headers = if offset == 0 { confirm.clone() } else { HeaderMap::new() };
             done = Some(
-                db_restore(
-                    Admin,
-                    State(app.clone()),
-                    Query(Chunk { offset, total }),
-                    HeaderMap::new(),
-                    piece,
-                )
-                .await,
+                db_restore(Admin, State(app.clone()), Query(Chunk { offset, total }), peer(), headers, piece)
+                    .await,
             );
             let expected = if offset == 0 { 2 } else { 1 };
             assert_eq!(app.db.nodes().unwrap().len(), expected, "restored on the last chunk alone");
@@ -2326,6 +2383,54 @@ mod tests {
             .filter(|name| !matches!(name.as_str(), "live.db" | "live.db-wal" | "live.db-shm"))
             .collect();
         assert!(left.is_empty(), "left beside the database: {left:?}");
+    }
+
+    /// A restore replaces every node, setting and session, and nothing undoes it.
+    /// A session only says some browser signed in within the fortnight, so the
+    /// password is asked for again -- and a refusal writes nothing at all, which
+    /// is what keeps a stolen cookie from meaning a wiped hub.
+    #[tokio::test]
+    async fn a_restore_writes_nothing_until_the_password_is_confirmed() {
+        let _password = crate::auth::PASSWORD_TESTS.lock().await;
+        let tmp = crate::TempDir::new("confirm");
+        let live = tmp.0.join("live.db").to_string_lossy().into_owned();
+        let app = std::sync::Arc::new(App::for_test(Db::open(&live).unwrap()));
+        app.db.set("admin_password_hash", &hash_password("a-long-enough-password").unwrap()).unwrap();
+        node(&app, "kept", true);
+        let upload = format!("{}.upload", app.db.file());
+
+        // One first piece of a three-byte upload. What the body holds never
+        // matters: the check is ahead of it.
+        let try_piece = |headers: HeaderMap| {
+            db_restore(
+                Admin,
+                State(app.clone()),
+                Query(Chunk { offset: 0, total: 3 }),
+                peer(),
+                headers,
+                axum::body::Body::from("abc"),
+            )
+        };
+        let with_password = |password: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-confirm-password", hex::encode(password).parse().unwrap());
+            headers
+        };
+
+        assert_eq!(try_piece(HeaderMap::new()).await.status(), StatusCode::FORBIDDEN, "asked for");
+        assert_eq!(
+            try_piece(with_password("not-the-password")).await.status(),
+            StatusCode::FORBIDDEN,
+            "and refused when wrong"
+        );
+        assert!(!std::path::Path::new(&upload).exists(), "a refused restore must not start a file");
+        assert_eq!(app.db.nodes().unwrap().len(), 1, "and changes nothing");
+
+        // With the right password the check is behind us: what answers now is
+        // the upload not being a database, which is a different refusal.
+        let refused = try_piece(with_password("a-long-enough-password")).await;
+        assert_ne!(refused.status(), StatusCode::FORBIDDEN);
+        assert!(!std::path::Path::new(&upload).exists(), "nor does a failed one linger");
     }
 
     /// A connected agent holding one report. The receiver is returned because
@@ -3472,14 +3577,22 @@ mod tests {
     /// would sign the admin out of every device without explanation.
     #[tokio::test]
     async fn a_settings_write_is_all_or_nothing() {
+        let _password = crate::auth::PASSWORD_TESTS.lock().await;
         let app = std::sync::Arc::new(app());
-        app.db.set("admin_password_hash", "the-old-hash").unwrap();
-        let save = |body: Value| save_settings(Admin, State(app.clone()), HeaderMap::new(), Json(body));
+        let old = hash_password("the-old-password").unwrap();
+        app.db.set("admin_password_hash", &old).unwrap();
+        let save =
+            |body: Value| save_settings(Admin, State(app.clone()), peer(), HeaderMap::new(), Json(body));
 
         // BTreeMap order places the password first, which is the failing case.
-        let refused = save(json!({"admin_password": "a-long-enough-one", "retention_days": "abc"})).await;
+        let refused = save(json!({
+            "admin_password": "a-long-enough-one",
+            "current_password": "the-old-password",
+            "retention_days": "abc",
+        }))
+        .await;
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(app.db.get("admin_password_hash").as_deref(), Some("the-old-hash"));
+        assert_eq!(app.db.get("admin_password_hash").as_deref(), Some(old.as_str()));
 
         // A correctly named key carrying the wrong type is refused rather than
         // discarded while the response reports success.
@@ -3597,8 +3710,11 @@ mod tests {
         let stale = random_token();
         app.db.create_session(&sha256(&stale), Utc::now().timestamp() + 3_600).unwrap();
 
+        // No password is stored yet, so this is the first one: there is nothing
+        // to confirm it against and the change stands on the session alone.
         let body = Json(json!({"admin_password": "a-long-enough-password"}));
-        let response = save_settings(Admin, axum::extract::State(app.clone()), HeaderMap::new(), body).await;
+        let response =
+            save_settings(Admin, axum::extract::State(app.clone()), peer(), HeaderMap::new(), body).await;
 
         assert!(!app.db.session_valid(&sha256(&stale)), "sessions must not outlive the old password");
 
@@ -3612,6 +3728,59 @@ mod tests {
             .unwrap();
         let token = cookie.split(';').next().unwrap().split('=').nth(1).unwrap();
         assert!(app.db.session_valid(&sha256(token)), "the replacement session must work");
+    }
+
+    /// The password is the second way into the account, so replacing it asks for
+    /// the one being replaced. Without that, a stolen session is enough to lock
+    /// the owner out of their own hub and keep it.
+    #[tokio::test]
+    async fn replacing_an_existing_password_asks_for_the_current_one() {
+        let _password = crate::auth::PASSWORD_TESTS.lock().await;
+        let app = std::sync::Arc::new(app());
+        let old = hash_password("the-old-password").unwrap();
+        app.db.set("admin_password_hash", &old).unwrap();
+        let put =
+            |body: Value| save_settings(Admin, State(app.clone()), peer(), HeaderMap::new(), Json(body));
+        let stored = || app.db.get("admin_password_hash");
+
+        let refused = put(json!({"admin_password": "a-long-enough-password"})).await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN, "no current password given");
+        assert_eq!(stored().as_deref(), Some(old.as_str()), "a refused change must leave the old one");
+
+        let refused =
+            put(json!({"admin_password": "a-long-enough-password", "current_password": "wrong"})).await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(stored().as_deref(), Some(old.as_str()));
+
+        // The current password travels beside the new one and is not itself a
+        // setting: the write below must not report it as an unknown key.
+        let changed =
+            put(json!({"admin_password": "a-long-enough-password", "current_password": "the-old-password"}))
+                .await;
+        assert_eq!(changed.status(), StatusCode::OK);
+        assert_ne!(stored().as_deref(), Some(old.as_str()), "the replacement is stored");
+    }
+
+    /// The password a new hub prints is not one the operator chose, and may
+    /// never have been read. It can be replaced without being produced; what the
+    /// operator picks is theirs, and every change after that asks for it.
+    #[tokio::test]
+    async fn a_generated_password_can_be_replaced_without_being_produced() {
+        let _password = crate::auth::PASSWORD_TESTS.lock().await;
+        let app = std::sync::Arc::new(app());
+        app.db.set("admin_password_hash", &hash_password("a-printed-one").unwrap()).unwrap();
+        app.db.set("password_generated", "on").unwrap();
+        let put =
+            |body: Value| save_settings(Admin, State(app.clone()), peer(), HeaderMap::new(), Json(body));
+
+        assert_eq!(put(json!({"admin_password": "a-password-of-my-own"})).await.status(), StatusCode::OK);
+        assert_eq!(app.db.get("password_generated").as_deref(), Some("off"), "the mark is cleared");
+
+        // It is the operator's own now, so a second change is asked for it.
+        assert_eq!(
+            put(json!({"admin_password": "a-third-long-password"})).await.status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     /// The panel hides the delete button on the caller's own row, so the mark is
@@ -3654,7 +3823,8 @@ mod tests {
         app.db.create_session(&sha256(&live), Utc::now().timestamp() + 3_600).unwrap();
 
         let body = Json(json!({"admin_password": "short"}));
-        let response = save_settings(Admin, axum::extract::State(app.clone()), HeaderMap::new(), body).await;
+        let response =
+            save_settings(Admin, axum::extract::State(app.clone()), peer(), HeaderMap::new(), body).await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(app.db.get("admin_password_hash").is_none(), "the password must not have changed");
@@ -3671,6 +3841,7 @@ mod tests {
             save_settings(
                 Admin,
                 State(app.clone()),
+                peer(),
                 HeaderMap::new(),
                 Json(json!({"retention_days": v.to_owned()})),
             )
@@ -3709,7 +3880,7 @@ mod tests {
             "notify_webhook_body": read["notify_webhook_body"],
         });
         assert_eq!(
-            save_settings(Admin, State(app.clone()), HeaderMap::new(), Json(echoed)).await.status(),
+            save_settings(Admin, State(app.clone()), peer(), HeaderMap::new(), Json(echoed)).await.status(),
             StatusCode::OK,
             "a fresh hub's own settings must survive a round trip"
         );

@@ -65,7 +65,7 @@ COOKIE=$(curl -fsS -D - -o /dev/null -H 'content-type: application/json' -d "{\"
 
 # A fresh hub publishes nothing, and the public half of this script is exactly
 # what switching it on exposes. Said once here rather than assumed.
-curl -fsS -o /dev/null -H "Cookie: $COOKIE" -H 'content-type: application/json' \
+curl -fsS -o /dev/null -X PUT -H "Cookie: $COOKIE" -H 'content-type: application/json' \
 	-d '{"public_page": "on"}' "$URL/api/settings" || fail "opening the public page was refused"
 
 # Provisioning answers only a panel on an https domain entry; these two headers
