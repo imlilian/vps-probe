@@ -57,15 +57,17 @@ curl -fsSL https://your-hub/install.sh | sh -s -- --uninstall
 需要 Rust stable 与 node。
 
 ```sh
-make hub      # 后台前端 + 公开页 + hub 二进制（顺序自动编排）
+make theme    # 公开页：装依赖 + 构建（全新 clone 先跑这一次）
+make hub      # 后台前端 + hub 二进制（公开页随后由 build.rs 按源码指纹同步）
 make agent    # 采集端
-make check    # cargo check + 两个前端的 lint
-make test     # cargo test + 前端测试
+make check    # 两个前端的 lint + cargo check
+make test     # 前端测试 + cargo test
 ```
 
-两个前端都是构建期输入：`cargo build` 会先确保它们的 `dist/` 是最新的，再由 rust-embed
-嵌入二进制。改完 `web-site/` 或 `web-admin/` 后重新 `make hub` 即生效，不需要发版、不需要改
-pin、也不需要联网。
+两个前端都是构建期输入：`cargo build` 只保证 `web-site/` 的 `dist/` 跟得上源码（`build.rs` 调
+`scripts/theme.sh`，按源码指纹判断要不要重建），`web-admin/` 的 `dist/` 得由 `make admin` 先建好
+——`make hub` 已经包含这一步。随后 rust-embed 把两份 `dist/` 嵌进二进制。改完 `web-site/` 或
+`web-admin/` 后重新 `make hub` 即生效，不需要发版、不需要改 pin、也不需要联网。
 
 ## 发布
 

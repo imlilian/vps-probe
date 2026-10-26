@@ -1,5 +1,5 @@
 # The build context is two binaries. Whitelisting keeps target/ and
 # node_modules/ out of it whatever else is lying around.
 *
-!monitor-hub-amd64
-!monitor-hub-arm64
+!probe-hub-amd64
+!probe-hub-arm64

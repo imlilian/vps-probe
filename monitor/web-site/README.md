@@ -62,8 +62,10 @@ MONITOR_HUB=https://hub.example.com npm run dev
 
 ## 遗留文件
 
-`theme.json` 与 `preview.png` 是主题市场时代的面板清单与缩略图，hub 已不读取，构建也不再复制；
-留在这里只作为这个页面的元信息记录。
+`theme.json` 仍在用：`src/lib/config.ts` 从它取 `short`（`/themes/{short}/config` 这条路径）和
+`config` 里各项的默认值。主题市场已移除，hub 不再用它挑选或下载主题。
+
+`preview.png` 是主题市场时代的手册缩略图，构建不再复制，仅作文档留存。
 
 ## 许可
 
