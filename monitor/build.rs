@@ -1,16 +1,21 @@
-//! Puts the pinned default theme where `rust-embed` will find it.
+//! Puts the default theme where `rust-embed` will find it.
 //!
-//! The hub embeds a built theme, which `scripts/theme.sh` fetches. Running it
-//! here lets a plain `cargo build` proceed without a setup step, taking its
-//! input from `web-theme.pin` rather than a hand-maintained directory.
+//! The theme is built from `web-site/` (the public status page, a Vite
+//! project beside `web-admin/`), which `scripts/theme.sh` syncs into
+//! `target/theme/` (running `npm run build` when the source changed). Running
+//! it here lets a plain `cargo build` proceed without a setup step and
+//! without any download.
 
 use std::process::Command;
 
 fn main() {
     // Cargo reruns this only when one of these changes. The stamp is listed as
-    // well, so deleting `target/theme` triggers a refetch rather than a later
-    // failure inside rust-embed.
-    println!("cargo:rerun-if-changed=web-theme.pin");
+    // well, so deleting `target/theme` triggers a resync rather than a later
+    // failure inside rust-embed. Watching web-site/ makes any edit there
+    // invalidate the sync (node_modules/ and dist/ live under it, but
+    // theme.sh hashes around them, so a rebuild that changes nothing relevant
+    // stays a no-op).
+    println!("cargo:rerun-if-changed=web-site");
     println!("cargo:rerun-if-changed=target/theme/.pin");
     println!("cargo:rerun-if-changed=scripts/theme.sh");
 

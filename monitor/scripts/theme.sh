@@ -1,49 +1,65 @@
 #!/bin/sh
-# Materialises the pinned default theme into target/theme/, where rust-embed
-# picks it up. The hub embeds a built theme derived from web-theme.pin, placed
-# outside any working tree so nothing can drift from the pin.
+# Materialises the default theme from its source tree (web-site/, sibling of
+# web-admin/ and embedded the same way) into target/theme/, where rust-embed
+# picks it up.
 #
-# Called by build.rs, and by CI before cargo runs so that the download happens
-# on the runner rather than inside the cross container, which does not
-# necessarily carry curl.
+# Called by build.rs. The theme is a build input of the hub binary, so nothing
+# is downloaded: a changed source tree re-runs `npm run build` and re-syncs;
+# an unchanged tree is a no-op, which keeps plain `cargo build` fast.
+#
+# Escape hatch: a dist/ manually placed in the source tree with no prior sync
+# is used as-is (same tolerance the old download script had). With no dist/
+# at all the build fails with instructions.
 set -eu
 
 cd "$(dirname "$0")/.."
-# read returns 1 at EOF, which is also what a pin file without a trailing
-# newline produces; the fields are set either way. Unguarded, set -e would exit
-# here silently and build.rs would report only the empty output.
-read -r TAG SHA <web-theme.pin || true
-[ -n "${TAG:-}" ] && [ -n "${SHA:-}" ] ||
-  { echo "web-theme.pin must hold '<tag> <sha256>'" >&2; exit 1; }
+SRC=web-site
 DEST=target/theme
-URL="https://github.com/monitor-probe/monitor-theme-default/releases/download/$TAG/theme.tar.gz"
 
-# Already unpacked at this pin. A theme placed here manually with a matching
-# stamp is also left alone, which is how an unreleased theme is built against.
-if [ -f "$DEST/.pin" ] && [ "$(cat "$DEST/.pin")" = "$TAG $SHA" ]; then
+[ -f "$SRC/theme.json" ] && [ -f "$SRC/package.json" ] ||
+  { echo "theme source $SRC is missing theme.json/package.json" >&2; exit 1; }
+
+# Stamp: hash of everything that feeds the vite build (node_modules/ and
+# dist/ excluded). A match against target/theme/.pin means the last sync
+# already covered exactly this source state.
+STAMP=$(find "$SRC" -type f \
+  -not -path "$SRC/node_modules/*" \
+  -not -path "$SRC/dist/*" \
+  | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1)
+
+PIN=$(cat "$DEST/.pin" 2>/dev/null || true)
+if [ "$PIN" = "$STAMP" ]; then
   exit 0
 fi
 
-mkdir -p target
-curl -fsSL --retry 3 -o target/theme.tar.gz "$URL"
-
-GOT=$(sha256sum target/theme.tar.gz | cut -d' ' -f1)
-if [ "$GOT" != "$SHA" ]; then
-  echo "theme $TAG hashes to $GOT, not the $SHA that web-theme.pin names" >&2
-  echo "the release asset was replaced or the pin is wrong; neither is safe to build" >&2
-  exit 1
+# dist/ absent, or the source changed since the last sync: rebuild it.
+if [ ! -f "$SRC/dist/index.html" ] || [ -n "$PIN" ]; then
+  if command -v npm >/dev/null 2>&1; then
+    echo "theme source changed (or dist/ absent): rebuilding $SRC" >&2
+    (cd "$SRC" && npm run build) ||
+      { echo "npm run build failed in $SRC" >&2; exit 1; }
+  elif [ -f "$SRC/dist/index.html" ]; then
+    echo "warning: npm not found; embedding the existing $SRC/dist (possibly stale)" >&2
+  else
+    echo "$SRC/dist/index.html does not exist and npm is unavailable." >&2
+    echo "build the theme first:  (cd $SRC && npm install && npm run build)" >&2
+    exit 1
+  fi
 fi
+# else: no .pin but dist/ exists -- a manually built theme, used as-is.
 
 rm -rf "$DEST"
 mkdir -p "$DEST"
-tar xzf target/theme.tar.gz -C "$DEST"
+cp "$SRC/theme.json" "$DEST/theme.json"
+[ -f "$SRC/preview.png" ] && cp "$SRC/preview.png" "$DEST/preview.png"
+cp -R "$SRC/dist" "$DEST/dist"
 
-# The archive is an installable theme directory, the same layout frontend.rs
-# reads from disk. Without it the hub would embed nothing.
+# The layout mirrors what frontend.rs embeds: theme.json, an optional
+# preview.png and dist/. Without index.html the hub would embed nothing.
 if [ ! -f "$DEST/dist/index.html" ] || [ ! -f "$DEST/theme.json" ]; then
-  echo "theme $TAG unpacked without dist/index.html and theme.json" >&2
+  echo "theme build produced no dist/index.html or theme.json" >&2
   exit 1
 fi
 
-printf '%s %s\n' "$TAG" "$SHA" >"$DEST/.pin"
-echo "default theme $TAG unpacked into $DEST"
+printf '%s\n' "$STAMP" >"$DEST/.pin"
+echo "default theme synced from $SRC into $DEST"
