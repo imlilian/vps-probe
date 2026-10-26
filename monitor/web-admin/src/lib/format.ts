@@ -5,7 +5,7 @@ const unitOf = (n: number) => Math.min(Math.floor(Math.log(n) / Math.log(1024)),
 /**
  * 1024-based, as VPS dashboards and `df` report bytes, but labelled MB/GB the way
  * `df -h` and hosting plans write them. Three significant digits by default. Kept
- * in step with the theme's copy of this file.
+ * in step with the public page's copy of this file.
  */
 export function bytes(n: number, digits?: number): string {
   // `< 1` rather than `< 0`: a fraction of a byte puts `unitOf` at -1 and prints

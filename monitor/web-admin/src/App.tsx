@@ -154,8 +154,8 @@ export default function App() {
       <div className="min-h-svh">
         <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur">
           <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
-            {/* The site name is the way back to the status page, as in the
-                theme's own header. */}
+            {/* The site name is the way back to the status page, as on the
+                public page's own header. */}
             <a href="/" className="font-semibold transition-opacity hover:opacity-70">
               {me.site_name || "Monitor"}
             </a>
