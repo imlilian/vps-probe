@@ -52,5 +52,10 @@ tokio = { version = "1", features = ["test-util"] }
 codegen-units = 1
 lto = true
 opt-level = "z"
-panic = "abort"
+# Deliberately no `panic = "abort"`: each connection is its own tokio task, and
+# unwinding drops only that one. Aborting would turn a single malformed frame
+# into a hub that dies and restarts every RestartSec, taking every node offline
+# and raising no alert -- sending those is this very process's job. The agent
+# keeps abort: one process on a host whose systemd restarts it in seconds, where
+# the smaller binary is the better trade.
 strip = true

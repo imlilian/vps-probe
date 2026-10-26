@@ -1777,7 +1777,10 @@ const RELEASES_RETRY: i64 = 600;
 /// is fetched until an administrator opens the panel, so a hub whose panel is
 /// never opened makes no outbound request.
 pub async fn versions(_: Admin, State(app): State<Shared>) -> Json<Value> {
-    let cached = app.releases.lock().unwrap().clone();
+    // Poisoning is ignored on purpose. The lock holds a version number kept for
+    // display, so a write interrupted by a panic leaves nothing a reader has to
+    // trust; refusing to read it would take the panel down with it.
+    let cached = app.releases.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let latest = if fresh_enough(&cached, Utc::now().timestamp()) {
         cached
     } else {
@@ -1790,7 +1793,7 @@ pub async fn versions(_: Admin, State(app): State<Shared>) -> Json<Value> {
             hub: tag.clone().unwrap_or_default(),
             agent: tag.unwrap_or_default(),
         };
-        *app.releases.lock().unwrap() = read.clone();
+        *app.releases.lock().unwrap_or_else(|e| e.into_inner()) = read.clone();
         read
     };
     Json(json!({
