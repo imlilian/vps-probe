@@ -1,0 +1,128 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Read-only by default: the build job runs third-party actions, dependency build
+# scripts and npm install hooks, none of which may hold a token that can
+# publish. Only the job that creates the release asks for more.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v7
+
+      # One tag carries both components, so both versions must agree with it. A
+      # v* tag can be neither moved nor deleted, so a mismatch found afterwards
+      # cannot be corrected, only superseded.
+      - if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          HUB=v$(sed -n 's/^version = "\(.*\)"/\1/p' monitor/Cargo.toml)
+          AGENT=v$(sed -n 's/^version = "\(.*\)"/\1/p' agent/Cargo.toml)
+          [ "$GITHUB_REF_NAME" = "$HUB" ] ||
+            { echo "::error::tag $GITHUB_REF_NAME, monitor/Cargo.toml $HUB"; exit 1; }
+          [ "$GITHUB_REF_NAME" = "$AGENT" ] ||
+            { echo "::error::tag $GITHUB_REF_NAME, agent/Cargo.toml $AGENT"; exit 1; }
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            monitor/web-admin/package-lock.json
+            monitor/web-site/package-lock.json
+
+      # Required before cargo: rust-embed packs both dist/ trees into the hub.
+      - run: npm ci && npm run build
+        working-directory: monitor/web-admin
+      - run: npm ci && npm run build
+        working-directory: monitor/web-site
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # cross builds the aarch64 target inside a container that carries the
+      # toolchain, so both architectures come off one x86_64 runner. ring (used
+      # by rustls) and rusqlite's bundled SQLite both compile under it.
+      - run: cargo install --locked cross
+      - run: cross build --release --locked --target ${{ matrix.target }}
+        working-directory: monitor
+      - run: cross build --release --locked --target ${{ matrix.target }}
+        working-directory: agent
+
+      - name: collect
+        run: |
+          mkdir -p dist
+          cp "monitor/target/${{ matrix.target }}/release/probe-hub" \
+             "dist/probe-hub-${{ matrix.target }}"
+          cp "agent/target/${{ matrix.target }}/release/probe-agent" \
+             "dist/probe-agent-${{ matrix.target }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      # The hub relays an agent binary only when it verifies under the public key
+      # compiled into it, and install-hub.sh holds the same key for the hub
+      # binary itself. Signing here is what makes those two checks mean
+      # anything: the private key reaches this job alone and never touches a
+      # host. Verified against the same public key, so a secret holding any other
+      # key fails the release rather than publishing binaries nothing installs.
+      - name: sign
+        run: |
+          [ -n "$SIGNING_KEY" ] || { echo "::error::the AGENT_SIGNING_KEY secret is not set"; exit 1; }
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/key.pem" "$RUNNER_TEMP/pub.pem"' EXIT
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
+          printf '%s\n' "$PUBLIC_KEY" > "$RUNNER_TEMP/pub.pem"
+          for b in dist/probe-hub-*-musl dist/probe-agent-*-musl; do
+            openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in "$b" -out "$b.sig"
+            openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/pub.pem" -rawin \
+              -in "$b" -sigfile "$b.sig"
+          done
+        env:
+          SIGNING_KEY: ${{ secrets.AGENT_SIGNING_KEY }}
+          PUBLIC_KEY: |
+            -----BEGIN PUBLIC KEY-----
+            MCowBQYDK2VwAyEAEWjdds49q97yv3/zWLQLMe6/A7PvK+/e4NZq8eXO+o8=
+            -----END PUBLIC KEY-----
+
+      # A manual dispatch builds and signs the binaries; only a tag publishes, so
+      # the path can be exercised without cutting a release. gh ships on the
+      # runner, keeping a third-party action out of the contents:write step.
+      #
+      # sha256sums.txt is an operator convenience -- `sha256sum -c` against a
+      # downloaded binary -- and is not what either installer trusts: the
+      # signature is. The `*-musl` glob keeps the .sig files out of it.
+      - if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          cp monitor/install-hub.sh dist/
+          (cd dist && sha256sum probe-hub-*-musl probe-agent-*-musl install-hub.sh > sha256sums.txt)
+          gh release create "$GITHUB_REF_NAME" \
+            dist/probe-hub-* dist/probe-agent-* dist/install-hub.sh dist/sha256sums.txt \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

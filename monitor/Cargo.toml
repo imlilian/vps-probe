@@ -1,10 +1,10 @@
 [package]
-name = "monitor-hub"
-version = "1.5.1"
+name = "probe-hub"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Lightweight server monitoring hub"
-repository = "https://github.com/monitor-probe/monitor"
+repository = "https://github.com/imlilian/vps-probe"
 
 [dependencies]
 anyhow = "1"

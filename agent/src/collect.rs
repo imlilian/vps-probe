@@ -1139,7 +1139,7 @@ mod tests {
 
     impl TempDir {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("monitor-agent-{name}-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("probe-agent-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             Self(dir)
         }

@@ -1781,14 +1781,14 @@ pub async fn versions(_: Admin, State(app): State<Shared>) -> Json<Value> {
     let latest = if fresh_enough(&cached, Utc::now().timestamp()) {
         cached
     } else {
-        // Both at once: one round trip of latency rather than two, and neither
-        // lookup depends on the other.
-        let (hub, agent) =
-            tokio::join!(latest_tag(&app, crate::HUB_REPO), latest_tag(&app, crate::AGENT_REPO));
+        // One repository holds both binaries, so one lookup answers for both:
+        // the same tag carries the hub and the agent. Asking twice would spend
+        // two of GitHub's unauthenticated hourly requests on the same answer.
+        let tag = latest_tag(&app, crate::REPO).await;
         let read = crate::Releases {
             read_at: Utc::now().timestamp(),
-            hub: hub.unwrap_or_default(),
-            agent: agent.unwrap_or_default(),
+            hub: tag.clone().unwrap_or_default(),
+            agent: tag.unwrap_or_default(),
         };
         *app.releases.lock().unwrap() = read.clone();
         read
@@ -1829,7 +1829,7 @@ async fn latest_tag(app: &App, repo: &str) -> Option<String> {
 async fn latest_release(app: &App, repo: &str) -> reqwest::Result<Release> {
     app.http
         .get(format!("https://api.github.com/repos/{repo}/releases/latest"))
-        .header(header::USER_AGENT, "monitor-hub")
+        .header(header::USER_AGENT, "probe-hub")
         .send()
         .await?
         .error_for_status()?
@@ -1935,7 +1935,7 @@ fn setting_error(key: &str, value: &Value) -> Option<String> {
         // setting responsible.
         //
         // https only. What returns from this host is the agent binary, which
-        // `install.sh` writes to /opt/monitor and starts on every node provisioned
+        // `install.sh` writes to /opt/probe and starts on every node provisioned
         // here; over http:// anyone on the path between the hub and the mirror
         // chooses that binary, while the node still sees a valid TLS connection to
         // the hub.
@@ -3722,7 +3722,7 @@ mod tests {
             let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
             String::from_utf8(body.to_vec()).unwrap()
         };
-        let raw = || std::io::Error::other("/opt/monitor/data/monitor.db: disk I/O error");
+        let raw = || std::io::Error::other("/opt/probe/data/probe.db: disk I/O error");
 
         let internal = fail(raw());
         assert_eq!(internal.status(), StatusCode::INTERNAL_SERVER_ERROR);

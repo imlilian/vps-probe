@@ -24,6 +24,7 @@ agent:
 
 check: admin
 	cd monitor && cargo check
+	cd agent && cargo check
 
 test:
 	cd $(THEME_DIR) && npm test

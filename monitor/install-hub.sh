@@ -1,7 +1,7 @@
 #!/bin/sh
-# monitor hub installer.
+# probe hub installer.
 #
-#   curl -fsSL https://github.com/monitor-probe/monitor/releases/latest/download/install-hub.sh -o install-hub.sh
+#   curl -fsSL https://github.com/imlilian/vps-probe/releases/latest/download/install-hub.sh -o install-hub.sh
 #   chmod +x install-hub.sh
 #   sudo ./install-hub.sh
 #
@@ -14,19 +14,24 @@ set -eu
 # Debian does not set it.
 PATH="$PATH:/usr/sbin:/sbin"
 
-REPO="monitor-probe/monitor"
-SERVICE="monitor-hub"
-UNIT="/etc/systemd/system/monitor-hub.service"
-# Everything but the unit lives under one directory: the two binaries at the top,
-# and everything the hub writes -- database and themes/ -- under data/. One path
-# to back up, one to move to another host, and the same split the container image
-# uses, where data/ is mounted at /data.
-ROOT="/opt/monitor"
-BIN="$ROOT/monitor-hub"
+REPO="imlilian/vps-probe"
+# Where the binary, its signature and the checksum file are published. One line,
+# so pointing this at a mirror keeps everything else working: the mirror has to
+# serve the same file names under <base>/. Re-running this script is the upgrade,
+# so a released copy staying put is correct -- the binary is what moves.
+BASE="https://github.com/$REPO/releases/latest/download"
+SERVICE="probe-hub"
+UNIT="/etc/systemd/system/probe-hub.service"
+# Everything but the unit lives under one directory: the binary at the top and
+# everything the hub writes -- the database -- under data/. One path to back up,
+# one to move to another host, and the same split the container image uses,
+# where data/ is mounted at /data.
+ROOT="/opt/probe"
+BIN="$ROOT/probe-hub"
 DATA="$ROOT/data"
 # A fixed data directory requires a fixed owner: DynamicUser= selects its uid at
 # start, and a recycled one would leave the database unreadable.
-USER_NAME="monitor"
+USER_NAME="probe"
 PORT="28080"
 PORT_SET=""
 SITE=""
@@ -34,6 +39,19 @@ SITE_SET=""
 YES=""
 PURGE=""
 ACTION=""
+SOURCE=""
+
+# The ed25519 key the release job signs both binaries with, as PEM. Its private
+# half lives in the repository's Actions secrets and never on a host.
+#
+# Verifying here is the reason this installer does not merely check a sha256:
+# the checksum sits in the same release as the binary, so whoever can replace
+# one can replace the other -- and this binary runs as root on the one machine
+# that hands out agents to the whole fleet. A signature cannot be replaced
+# without the key.
+PUBKEY="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAEWjdds49q97yv3/zWLQLMe6/A7PvK+/e4NZq8eXO+o8=
+-----END PUBLIC KEY-----"
 
 # ---- ui ----
 # Colour only to a terminal, and never when NO_COLOR is set: the output of a
@@ -49,7 +67,7 @@ rule() { printf '  %s───────────────────�
 
 banner() {
 	if [ -t 1 ]; then printf '\033[H\033[2J'; fi
-	printf '\n  %smonitor hub%s  %s·%s  安装器\n' "$B" "$N" "$D" "$N"
+	printf '\n  %sprobe hub%s  %s·%s  安装器\n' "$B" "$N" "$D" "$N"
 	rule
 	printf '\n'
 }
@@ -83,53 +101,12 @@ press() {
 	read -r _ || true
 }
 
-# A copy of this script saved on the machine may be several releases old, and
-# re-running it is the documented way to upgrade: it would rewrite the unit by
-# that version's rules. The release publishes this script and hashes it
-# alongside the binary, so a saved copy measures itself before the menu or the
-# install and, when stale, replaces itself and hands the same request to the
-# new copy. The replacement is unconditional: the stale rules are never the
-# wanted ones, and an unattended run cannot answer a prompt. The new copy is
-# held to the checksum file the binary is, so it is trusted exactly as far as
-# the binary the install fetches.
-#
-# A piped run has no file to measure and needs none: it was fetched a moment
-# ago. The marker keeps `curl | sh`, whose $0 is "sh", from measuring a file of
-# that name in the working directory.
-check_self() {
-	[ -f "$0" ] && grep -qxF '# monitor hub installer.' "$0" 2>/dev/null || return 0
-	base="https://github.com/$REPO/releases/latest/download"
-	self="$(mktemp -d)"
-	trap 'rm -rf "$self"' EXIT
-	# GitHub out of reach is reported by the install, which needs it as well;
-	# the menu's other entries do not. A release published before the script
-	# was an asset carries no line for it.
-	want=""
-	if curl -fsSL --max-time 30 "$base/sha256sums.txt" -o "$self/sums" 2>/dev/null; then
-		want="$(sed -n 's/^\([0-9a-f]\{64\}\)  *install-hub.sh$/\1/p' "$self/sums")"
-	fi
-	if [ -z "$want" ] || [ "$(sha256sum "$0" | cut -d' ' -f1)" = "$want" ]; then
-		rm -rf "$self"
-		trap - EXIT
-		return 0
-	fi
-
-	warn "这份脚本不是最新发布的那一版，先换成新的"
-	curl -fsSL --max-time 30 "$base/install-hub.sh" -o "$self/new" || die "新脚本下载失败：$base/install-hub.sh"
-	[ "$(sha256sum "$self/new" | cut -d' ' -f1)" = "$want" ] || die "新脚本校验不通过，已丢弃，$0 未改动"
-	# Written through the existing file, which keeps its mode and owner. The shell
-	# reads nothing further from it: exec follows.
-	cat "$self/new" >"$0" || die "写不进 $0。手动更新：curl -fsSL $base/install-hub.sh -o $0"
-	rm -rf "$self"
-	ok "脚本" "已更新"
-	# The parser consumed "$@", so the request is rebuilt from what it recorded;
-	# only the menu or an install reaches here.
-	set --
-	[ -z "$PORT_SET" ] || set -- "$@" --port "$PORT"
-	[ -z "$SITE_SET" ] || set -- "$@" --site "$SITE"
-	[ -z "$YES" ] || set -- "$@" --yes
-	exec sh "$0" "$@"
-}
+# A saved copy of this script is deliberately left alone. The original replaced
+# itself with a newer copy fetched from the release and re-executed the result as
+# root -- the same shape as the theme market this fork removed, and unnecessary:
+# re-running the release URL is the upgrade. What matters is the binary, and that
+# is verified by signature below, so even a stale copy of this script installs
+# only bytes the release key signed.
 
 check_port() {
 	case "$1" in "" | *[!0-9]*) die "端口必须是 1-65535 的整数：$1" ;; esac
@@ -159,8 +136,7 @@ install_hub() {
 	aarch64 | arm64) arch=aarch64 ;;
 	*) die "不支持的架构：$(uname -m)（发布的是 x86_64 与 aarch64）" ;;
 	esac
-	asset="monitor-hub-$arch-unknown-linux-musl"
-	base="https://github.com/$REPO/releases/latest/download"
+	asset="probe-hub-$arch-unknown-linux-musl"
 	ok "架构" "$arch"
 
 	# Whatever the command line did not specify is recovered from the old unit;
@@ -203,33 +179,50 @@ install_hub() {
 	# Only a missing database makes this a first install, which sets the
 	# password. Checked before anything is installed.
 	first=""
-	[ -f "$DATA/monitor.db" ] || first=1
+	[ -f "$DATA/probe.db" ] || first=1
 
-	# The tag comes from GitHub's own redirect for "latest", so there is no API
-	# call to be rate-limited and no JSON to parse. Only the first hop carries it
-	# -- the chain ends on release-assets.githubusercontent.com, whose URL
-	# contains no tag -- so this must not follow redirects. A missing asset still
-	# redirects, so the download below is what catches an architecture that was
-	# never published.
-	tag="$(curl -fsSI -o /dev/null -w '%{redirect_url}' "$base/$asset" 2>/dev/null |
-		sed -n 's#.*/download/\([^/]*\)/.*#\1#p')" || true
-	[ -n "$tag" ] || die "查不到最新发布版；GitHub 不可达，或还没有任何发布"
-	ok "版本" "$tag"
-
+	# The download happens before anything is stopped, so a host that cannot fetch
+	# the binary keeps the hub it is running.
 	tmp="$(mktemp -d)"
 	trap 'rm -rf "$tmp"' EXIT
-	curl -fsSL --max-time 300 "$base/$asset" -o "$tmp/$asset" || die "二进制下载失败：$base/$asset"
-	ok "下载" "$(du -h "$tmp/$asset" | cut -f1)"
+	if [ -n "$SOURCE" ]; then
+		# A local file skips the network: for a host that cannot reach github.com,
+		# and for a binary built straight from the working tree. The signature is
+		# expected beside it, so the same check applies either way.
+		[ -f "$SOURCE" ] || die "找不到文件：$SOURCE"
+		cp "$SOURCE" "$tmp/$asset" || die "读不了 $SOURCE"
+		[ ! -f "$SOURCE.sig" ] || cp "$SOURCE.sig" "$tmp/$asset.sig"
+		ok "来源" "$SOURCE"
+	else
+		# The tag comes from GitHub's own redirect for "latest", so there is no API
+		# call to be rate-limited and no JSON to parse. Only the first hop carries
+		# it -- the chain ends on release-assets.githubusercontent.com, whose URL
+		# contains no tag -- so this must not follow redirects. A missing asset
+		# still redirects, so the download below is what catches an architecture
+		# that was never published.
+		tag="$(curl -fsSI -o /dev/null -w '%{redirect_url}' "$BASE/$asset" 2>/dev/null |
+			sed -n 's#.*/download/\([^/]*\)/.*#\1#p')" || true
+		[ -n "$tag" ] || die "查不到最新发布版；GitHub 不可达，或还没有任何发布"
+		ok "版本" "$tag"
 
-	# Verified against the release's own checksum file, so a truncated transfer or
-	# a substituted asset is caught before anything lands in /opt/monitor.
-	curl -fsSL --max-time 30 "$base/sha256sums.txt" -o "$tmp/sums" ||
-		die "校验文件下载失败"
-	want="$(sed -n "s/^\([0-9a-f]\{64\}\)  *$asset\$/\1/p" "$tmp/sums")"
-	[ -n "$want" ] || die "sha256sums.txt 里没有 $asset 这一项"
-	got="$(sha256sum "$tmp/$asset" | cut -d' ' -f1)"
-	[ "$got" = "$want" ] || die "校验不通过，已丢弃下载的文件。期望 $want，实得 $got"
-	ok "校验" "sha256 一致"
+		curl -fsSL --max-time 300 "$BASE/$asset" -o "$tmp/$asset" || die "二进制下载失败：$BASE/$asset"
+		curl -fsSL --max-time 30 "$BASE/$asset.sig" -o "$tmp/$asset.sig" ||
+			die "签名下载失败：$BASE/$asset.sig"
+		ok "下载" "$(du -h "$tmp/$asset" | cut -f1)"
+	fi
+
+	# Verified by signature rather than by the release's checksum file. The
+	# checksum sits in the same release as the binary, so whoever can replace one
+	# can replace the other; a signature needs the key, which never leaves this
+	# machine's owner. It also covers a truncated transfer and a mirror's error
+	# page, which is everything the checksum was there for.
+	[ -f "$tmp/$asset.sig" ] || die "缺少签名文件 $asset.sig，不安装未经签名的二进制"
+	command -v openssl >/dev/null 2>&1 || die "需要 openssl 验证签名（apt install openssl）"
+	printf '%s\n' "$PUBKEY" >"$tmp/pub.pem"
+	openssl pkeyutl -verify -pubin -inkey "$tmp/pub.pem" -rawin \
+		-in "$tmp/$asset" -sigfile "$tmp/$asset.sig" >/dev/null 2>&1 ||
+		die "签名校验不通过，已丢弃下载的文件：这份二进制不是用本项目的发布密钥签的"
+	ok "校验" "ed25519 签名一致"
 
 	# Keep the old binary until the new one has proved it starts: a failed upgrade
 	# must leave a running hub rather than a dead service.
@@ -255,11 +248,11 @@ install_hub() {
 	# the clear, and there is no port to firewall. Reaching it is the reverse
 	# proxy's responsibility, and 127.0.0.1 rather than [::1] because that is
 	# every proxy's default upstream; the hub binds one address, not both.
-	args="--listen 127.0.0.1:$PORT --db $DATA/monitor.db"
+	args="--listen 127.0.0.1:$PORT --db $DATA/probe.db"
 	[ -z "$SITE" ] || args="$args --site $SITE"
 	cat >"$UNIT" <<UNIT
 [Unit]
-Description=monitor hub
+Description=probe hub
 After=network-online.target
 Wants=network-online.target
 
@@ -268,8 +261,8 @@ Type=simple
 ExecStart=$BIN $args
 Restart=always
 RestartSec=5
-# The database and the themes/ directory beside it live in data/, which is the
-# only path this service may write to, excluding even the binary above it.
+# The database lives in data/, which is the only path this service may write
+# to, excluding even the binary above it.
 User=$USER_NAME
 WorkingDirectory=$ROOT
 ReadWritePaths=$DATA
@@ -281,6 +274,11 @@ PrivateTmp=yes
 PrivateDevices=yes
 RestrictAddressFamilies=AF_INET AF_INET6
 MemoryMax=256M
+# The default soft limit is 1024, which sustains roughly 850 agents: past that
+# the hub stops accepting connections, including the panel's own, and logs
+# nothing about it. The binary raises its own limit at startup but cannot pass
+# the hard one, so it is raised here where systemd may.
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
@@ -293,7 +291,7 @@ UNIT
 	# an empty file as an empty database.
 	pw=""
 	if [ -n "$first" ]; then
-		install -m 0600 -o "$USER_NAME" /dev/null "$DATA/monitor.db"
+		install -m 0600 -o "$USER_NAME" /dev/null "$DATA/probe.db"
 		pw="$(new_password)"
 	fi
 
@@ -316,7 +314,7 @@ UNIT
 		# journal. A backup, if any, stays for the next run.
 		if [ -n "$first" ]; then
 			systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
-			rm -f "$DATA/monitor.db" "$DATA/monitor.db-wal" "$DATA/monitor.db-shm"
+			rm -f "$DATA/probe.db" "$DATA/probe.db-wal" "$DATA/probe.db-shm"
 			die "服务启动失败。日志：journalctl -u $SERVICE -n 50"
 		fi
 		if [ -n "$backup" ]; then
@@ -343,7 +341,7 @@ UNIT
 			field "密码" "没取到，重跑安装器选「重置密码」"
 		fi
 	fi
-	field "数据" "$DATA/monitor.db"
+	field "数据" "$DATA/probe.db"
 	field "服务" "systemctl status $SERVICE"
 	field "日志" "journalctl -u $SERVICE -f"
 	printf '\n'
@@ -357,9 +355,7 @@ UNIT
 		printf '     面板只监听本机，公网访问不到——这是故意的，凭证不会在链路上裸奔。\n'
 		printf '     用 nginx / caddy / cf tunnel 任选一种，把 hub.example.com 换成你的域名，\n'
 		printf '     配好之后用域名访问面板，我相信这难不倒你。\n'
-		# The documented configurations use the default port.
-		[ "$PORT" = 28080 ] || printf '     文档里的 28080 换成 %s。\n' "$PORT"
-		printf '     反向代理文档：https://monitor-document.pages.dev/install/reverse-proxy\n'
+		[ "$PORT" = 28080 ] || printf '     反代要指向 %s 这个端口。\n' "$PORT"
 	fi
 }
 
@@ -368,13 +364,13 @@ UNIT
 # is safe: SQLite gives the -wal and -shm files it creates the database file's
 # owner.
 new_password() {
-	"$BIN" --db "$DATA/monitor.db" --reset-password | sed -n 's/^Emergency password: //p'
+	"$BIN" --db "$DATA/probe.db" --reset-password | sed -n 's/^Emergency password: //p'
 }
 
 reset_password() {
 	# The data outlives --uninstall, so the database alone does not mean a hub.
-	if [ ! -f "$BIN" ] || [ ! -f "$DATA/monitor.db" ]; then
-		die "这台机器上没有装 monitor hub"
+	if [ ! -f "$BIN" ] || [ ! -f "$DATA/probe.db" ]; then
+		die "这台机器上没有装 probe hub"
 	fi
 	confirm "重置面板密码？所有已登录的会话都会被登出" || return 0
 	pw="$(new_password)"
@@ -395,12 +391,12 @@ uninstall_hub() {
 			return 0
 		fi
 		[ ! -e "$DATA" ] || die "服务已经卸载了，数据还留在 $DATA；要一并删掉就加 --purge"
-		die "这台机器上没有装 monitor hub"
+		die "这台机器上没有装 probe hub"
 	fi
 	if [ -n "$PURGE" ]; then
-		confirm "卸载 monitor hub，并删除 $DATA 下的数据库？不可撤销" || return 0
+		confirm "卸载 probe hub，并删除 $DATA 下的数据库？不可撤销" || return 0
 	else
-		confirm "卸载 monitor hub？数据保留在 $DATA" || return 0
+		confirm "卸载 probe hub？数据保留在 $DATA" || return 0
 	fi
 	systemctl disable --now "$SERVICE" 2>/dev/null || true
 	rm -f "$UNIT" "$BIN" "$BIN.old"
@@ -454,10 +450,12 @@ menu() {
 
 usage() {
 	cat <<TXT
-monitor hub 安装器
+probe hub 安装器
 
   sudo ./install-hub.sh                有终端时给菜单，否则按默认安装
+  sudo ./install-hub.sh --upgrade      升级到最新发布版，配置沿用上次
   sudo ./install-hub.sh --port 8443    指定端口安装
+  sudo ./install-hub.sh --from FILE    用本地二进制安装，不是从 GitHub 取
   sudo ./install-hub.sh --uninstall    卸载，保留数据
   sudo ./install-hub.sh --purge        卸载并删除数据库
   sudo ./install-hub.sh --reset-password
@@ -469,16 +467,17 @@ monitor hub 安装器
                  进面板的域名不是同一个；走 SSH 隧道进面板（地址栏是
                  127.0.0.1，节点连不上它）；反代不发 X-Forwarded-Proto
                  （那时会话 cookie 拿不到 Secure 标志）
+  --from <file>  不从发布源取，改用本地文件；同名 .sig 要放在它旁边
   --yes, -y      跳过确认
   --help, -h     显示这段
 
 hub 只监听 127.0.0.1，公网访问不到，需要自己配 nginx / caddy / CF 隧道把
-域名指过来，配法见 https://monitor-document.pages.dev/install/reverse-proxy
+域名指过来，装完用 --site 填你的域名。
 
-重跑一次就是升级：校验通过后才替换二进制，起不来会自动回滚到上一版；
-没写的参数沿用上次的，所以升级不会把端口和 --site 冲掉。
-这份脚本不是最新发布的那一版时，会先把自己换成新版再接着装。
-二进制和数据都在 $ROOT 下（数据库和主题在 $DATA），卸载默认保留数据。
+二进制按 ed25519 签名校验：签名私钥只在发布流水线里，任何机器上都没有，
+所以发布源被换掉也装不进来。校验不过直接拒绝，不落盘。
+重跑一次就是升级，起不来会自动回滚到上一版；没写的参数沿用上次的，升级
+不会把端口和 --site 冲掉。二进制和数据都在 $ROOT 下，卸载默认保留数据。
 TXT
 }
 
@@ -489,6 +488,10 @@ while [ $# -gt 0 ]; do
 	# this message.
 	--port) [ $# -ge 2 ] || die "--port 后面要跟端口号"; PORT="$2"; PORT_SET=1; shift 2 ;;
 	--site) [ $# -ge 2 ] || die "--site 后面要跟地址"; SITE="$2"; SITE_SET=1; shift 2 ;;
+	--from) [ $# -ge 2 ] || die "--from 后面要跟文件路径"; SOURCE="$2"; shift 2 ;;
+	# Named for what it does, though it is also what a bare run does: the
+	# distinction users care about is install versus the other actions.
+	--upgrade) ACTION=install; shift ;;
 	--uninstall) ACTION=uninstall; shift ;;
 	--purge) ACTION=uninstall; PURGE=1; shift ;;
 	--reset-password) ACTION=reset; shift ;;
@@ -524,16 +527,19 @@ if [ -n "$SITE" ]; then
 	esac
 fi
 [ "$(id -u)" = 0 ] || die "需要 root：sudo sh $0"
-command -v curl >/dev/null 2>&1 || die "需要 curl"
-command -v sha256sum >/dev/null 2>&1 || die "需要 sha256sum（装 coreutils）"
+# A local file needs no network, and uninstalling needs neither network nor
+# openssl: checked here so a host without them can still be cleaned up.
+if [ -z "$SOURCE" ] && [ "$ACTION" != uninstall ] && [ "$ACTION" != reset ]; then
+	command -v curl >/dev/null 2>&1 || die "需要 curl"
+	command -v openssl >/dev/null 2>&1 || die "需要 openssl 验证签名（apt install openssl）"
+fi
 command -v systemctl >/dev/null 2>&1 ||
-	die "这个安装器只装 systemd 服务。手动运行：$BIN --listen 127.0.0.1:$PORT --db $DATA/monitor.db"
+	die "这个安装器只装 systemd 服务。手动运行：$BIN --listen 127.0.0.1:$PORT --db $DATA/probe.db"
 
 case "$ACTION" in
 uninstall) banner; uninstall_hub ;;
 reset) banner; reset_password ;;
 *)
-	check_self
 	if [ -t 0 ]; then
 		menu
 	else

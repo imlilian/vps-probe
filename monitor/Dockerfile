@@ -1,8 +1,8 @@
 # Carries the musl binary release.yml already built, rather than building one of
 # its own: a from-source stage would have to repeat the panel build,
 # scripts/theme.sh and cross, and would then drift from the binary CI actually
-# ships. Put monitor-hub-amd64 / monitor-hub-arm64 beside this file to build it
-# by hand; otherwise pull ghcr.io/monitor-probe/monitor.
+# ships. Put probe-hub-amd64 / probe-hub-arm64 beside this file to build it
+# by hand.
 
 # Pinned to the build platform because zoneinfo is arch-independent data, which
 # is what keeps a two-platform build from needing QEMU.
@@ -24,8 +24,8 @@ COPY --from=base --chown=65534:65534 /data /data
 # --chmod, because the executable bit does not survive the round trip through
 # actions/upload-artifact: without it the image carries a 0644 binary and every
 # container exits at exec with "permission denied".
-COPY --chmod=0755 --chown=65534:65534 monitor-hub-$TARGETARCH /monitor-hub
+COPY --chmod=0755 --chown=65534:65534 probe-hub-$TARGETARCH /probe-hub
 USER 65534:65534
 
 EXPOSE 28080
-ENTRYPOINT ["/monitor-hub", "--db", "/data/monitor.db"]
+ENTRYPOINT ["/probe-hub", "--db", "/data/probe.db"]

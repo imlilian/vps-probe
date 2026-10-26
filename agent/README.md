@@ -1,6 +1,6 @@
-# monitor-agent
+# probe-agent
 
-[monitor](https://github.com/monitor-probe/monitor) 的 Linux agent。采集本机指标，经 WebSocket 上报 hub。
+[vps-probe](https://github.com/imlilian/vps-probe) 的 Linux agent。采集本机指标，经 WebSocket 上报 hub。
 
 静态链接单文件，无运行时依赖，常驻内存数 MB。
 
@@ -20,21 +20,21 @@
 curl -fsSL https://your-hub/install.sh | sh -s -- --server https://your-hub --token <token>
 ```
 
-安装脚本识别 systemd 与 OpenRC，二进制装到 `/opt/monitor/monitor-agent`，token 写入
-`/opt/monitor/agent.env`（0600）——和 hub 同一个目录，那台机器上只有这一处要看。
+安装脚本识别 systemd 与 OpenRC，二进制装到 `/opt/probe/probe-agent`，token 写入
+`/opt/probe/agent.env`（0600）——和 hub 同一个目录，那台机器上只有这一处要看。
 
 ## 运行
 
 ```bash
-monitor-agent --server https://your-hub --token <token>
+probe-agent --server https://your-hub --token <token>
 ```
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--server` | 必填 | hub 地址，也可用 `MONITOR_SERVER` |
-| `--token` | 必填 | 节点 token，也可用 `MONITOR_TOKEN` |
+| `--server` | 必填 | hub 地址，也可用 `PROBE_SERVER` |
+| `--token` | 必填 | 节点 token，也可用 `PROBE_TOKEN` |
 | `--interval` | 1 | 上报间隔（秒），1–3600 |
-| `--iface` | 空 | 流量统计的网卡，逗号分隔，也可用 `MONITOR_IFACE`；见下 |
+| `--iface` | 空 | 流量统计的网卡，逗号分隔，也可用 `PROBE_IFACE`；见下 |
 
 ### 统计哪些网卡的流量
 
@@ -69,7 +69,7 @@ monitor-agent --server https://your-hub --token <token>
 连接 hub 时逐个尝试解析出的地址，除最后一个外每个限 5 秒。网卡上只有内网 IPv4（NAT）时先连 hub 的
 IPv4：NAT 的公网地址不在网卡上，hub 只有看到一条 IPv4 连接才知道它。
 
-协议说明见文档站的[架构与协议](https://monitor-document.pages.dev/dev/architecture)。
+线上协议以 `src/collect.rs` 的 `Facts` / `Metrics` 为准，hub 侧对应 `monitor/src/api.rs` 的公开指标白名单。
 
 ## 构建
 

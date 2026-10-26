@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    # Prose changes nothing a compiler or linter can check.
+    paths-ignore: ["**.md", "LICENSE", "docs/**"]
+  pull_request:
+    paths-ignore: ["**.md", "LICENSE", "docs/**"]
+
+# A new push supersedes any run still in progress for the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # A hanging test would otherwise consume the six-hour default; a cold build
+    # of both crates plus the two frontends takes a few minutes.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            monitor/web-admin/package-lock.json
+            monitor/web-site/package-lock.json
+
+      # Both dist/ trees are build inputs of the hub binary: rust-embed packs
+      # them at compile time, and scripts/theme.sh rebuilds the public one from
+      # source instead of downloading an archive. Built before cargo, because
+      # build.rs runs that script.
+      - name: panel
+        run: npm ci && npm run lint && npm test && npm run build
+        working-directory: monitor/web-admin
+      - name: public site
+        run: npm ci && npm test && npm run build
+        working-directory: monitor/web-site
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: hub fmt
+        run: cargo fmt --all --check
+        working-directory: monitor
+      - name: hub clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: monitor
+      - name: hub test
+        run: cargo test
+        working-directory: monitor
+
+      - name: agent fmt
+        run: cargo fmt --all --check
+        working-directory: agent
+      - name: agent clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: agent
+      - name: agent test
+        run: cargo test
+        working-directory: agent
+
+      # Both installers run as root on the user's machine. Everything below
+      # warning level is SC2015 on `[ a ] && [ b ] || die`, which is meant to
+      # die when either test fails.
+      - name: installer lint
+        run: shellcheck -S warning install.sh install-hub.sh scripts/*.sh
+        working-directory: monitor
+
+      # This commit's hub against this commit's agent. Before the split into one
+      # repository each side was tested against the other's latest release,
+      # which is the pairing an upgrade meets first; within one tag the two are
+      # always built together, so the pairing to check is the one shipping.
+      - name: e2e
+        run: |
+          cargo build --manifest-path monitor/Cargo.toml
+          cargo build --manifest-path agent/Cargo.toml
+          monitor/scripts/e2e.sh monitor/target/debug/probe-hub agent/target/debug/probe-agent

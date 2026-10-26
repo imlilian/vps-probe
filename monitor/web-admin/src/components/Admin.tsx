@@ -3017,7 +3017,7 @@ function Data() {
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             导出的是整个数据库，含节点凭证与登录密码哈希，请当作密钥保管。恢复会用备份文件整体覆盖当前数据，当前节点、设置、历史全部作废，所有设备需要重新登录。
             <br />
-            请用这里导出的文件恢复：直接复制 <code>monitor.db</code> 会丢掉预写日志里还没落盘的那部分。
+            请用这里导出的文件恢复：直接复制 <code>probe.db</code> 会丢掉预写日志里还没落盘的那部分。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -3068,7 +3068,7 @@ function Data() {
   )
 }
 
-const releaseUrl = (repo: string, version: string) => `https://github.com/monitor-probe/${repo}/releases/tag/v${version}`
+const releaseUrl = (version: string) => `https://github.com/imlilian/vps-probe/releases/tag/v${version}`
 
 /** `v1.2.0 → v1.3.0` when something is published, the running version alone otherwise. */
 function VersionPair({ current, latest }: { current: string; latest: string }) {
@@ -3142,7 +3142,7 @@ function Update({ versions, reload, nodes, site, refusal }: {
             <VersionPair current={versions.hub} latest={versions.hub_latest} />
             {behind(versions.hub, versions.hub_latest) && (
               <Button size="sm" variant="ghost" asChild>
-                <a href={releaseUrl("monitor", versions.hub_latest)} target="_blank" rel="noreferrer">
+                <a href={releaseUrl(versions.hub_latest)} target="_blank" rel="noreferrer">
                   发布说明
                 </a>
               </Button>
@@ -3178,7 +3178,7 @@ function Update({ versions, reload, nodes, site, refusal }: {
                   </Button>
                   {versions.agent_latest && (
                     <Button size="sm" variant="ghost" asChild>
-                      <a href={releaseUrl("agent", versions.agent_latest)} target="_blank" rel="noreferrer">
+                      <a href={releaseUrl(versions.agent_latest)} target="_blank" rel="noreferrer">
                         发布说明
                       </a>
                     </Button>

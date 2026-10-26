@@ -2,11 +2,9 @@
 # Runs one hub binary against one agent binary on loopback: a node is created
 # through the panel API, the agent reports into it, and both views of the node
 # are checked. Needs curl and jq.
-#   scripts/e2e.sh <monitor-hub> <monitor-agent>
-# CI pairs each repository's build with the other's latest release, the
-# combination every upgrade of either side meets first. Agent CI runs this file
-# from the hub's main against the latest hub release, so a change here must keep
-# working with that release.
+#   scripts/e2e.sh <probe-hub> <probe-agent>
+# CI runs this against the hub and the agent built from the same commit: one tag
+# carries both binaries, so that is the pairing that actually ships.
 set -eu
 
 HUB=$1

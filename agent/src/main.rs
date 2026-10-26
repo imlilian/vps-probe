@@ -1,4 +1,4 @@
-//! monitor-agent: reports one Linux host to a monitor hub over WebSocket.
+//! probe-agent: reports one Linux host to a monitor hub over WebSocket.
 
 mod collect;
 
@@ -32,8 +32,8 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "monitor-agent {}\n\n\
-         Usage: monitor-agent --server <url> --token <token> [options]\n\n\
+        "probe-agent {}\n\n\
+         Usage: probe-agent --server <url> --token <token> [options]\n\n\
          Options:\n  \
            --server <url>       Hub base URL, e.g. https://hub.example.com\n  \
            --token <token>      Node token from the hub panel\n  \
@@ -64,9 +64,9 @@ fn parse_args() -> Result<Args> {
             other => bail!("unknown argument: {other}"),
         }
     }
-    let server = server.or_else(|| std::env::var("MONITOR_SERVER").ok()).unwrap_or_else(|| usage());
-    let token = token.or_else(|| std::env::var("MONITOR_TOKEN").ok()).unwrap_or_else(|| usage());
-    let iface = iface.or_else(|| std::env::var("MONITOR_IFACE").ok()).unwrap_or_default();
+    let server = server.or_else(|| std::env::var("PROBE_SERVER").ok()).unwrap_or_else(|| usage());
+    let token = token.or_else(|| std::env::var("PROBE_TOKEN").ok()).unwrap_or_else(|| usage());
+    let iface = iface.or_else(|| std::env::var("PROBE_IFACE").ok()).unwrap_or_default();
     let ifaces = collect::Ifaces::parse(&iface).map_err(anyhow::Error::msg)?;
     Ok(Args { server, token, interval: interval.clamp(1, 3600), ifaces, insecure })
 }

@@ -947,39 +947,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monitor-hub"
-version = "1.5.1"
-dependencies = [
- "anyhow",
- "argon2",
- "axum",
- "base64 0.22.1",
- "chrono",
- "flate2",
- "futures-core",
- "hex",
- "hyper",
- "hyper-util",
- "mime_guess",
- "rand 0.9.5",
- "reqwest",
- "ring",
- "rusqlite",
- "rust-embed",
- "rustix",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sha2",
- "tokio",
- "tokio-util",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1048,6 +1015,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
+]
+
+[[package]]
+name = "probe-hub"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "flate2",
+ "futures-core",
+ "hex",
+ "hyper",
+ "hyper-util",
+ "mime_guess",
+ "rand 0.9.5",
+ "reqwest",
+ "ring",
+ "rusqlite",
+ "rust-embed",
+ "rustix",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

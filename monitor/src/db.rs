@@ -2903,7 +2903,7 @@ mod tests {
     impl Scratch {
         fn new() -> Self {
             let dir = crate::TempDir::new("test");
-            Self(dir.0.join("monitor.db").to_string_lossy().into_owned(), dir)
+            Self(dir.0.join("probe.db").to_string_lossy().into_owned(), dir)
         }
     }
 
@@ -3049,7 +3049,7 @@ mod tests {
     /// shows the setting took.
     #[test]
     fn temporary_files_go_beside_the_database() {
-        let database = std::env::temp_dir().join("monitor.db");
+        let database = std::env::temp_dir().join("probe.db");
         temp_files_beside(&database.to_string_lossy()).unwrap();
         let set: String = Connection::open_in_memory()
             .unwrap()

@@ -1,9 +1,9 @@
-# monitor
+# probe-hub
 
-hub：管理后台、API 与公开状态页宿主。单仓库（monorepo），hub、agent 与公开页主题一起维护。
+hub：管理后台、API 与公开页宿主。整个仓库是单仓库（monorepo），hub、agent 与公开页一起维护；
+总览、安装与发布流程见仓库根目录的 `README.md`。
 
-上游文档：[monitor-document.pages.dev](https://monitor-document.pages.dev)，安装、配置与反向代理都在这里。
-注意：上游文档里的「主题市场 / 主题开发」部分在本仓库已移除，见下方差异说明。
+上游的「主题市场 / 主题开发」已整体移除，见下方差异说明。
 
 ## 特性
 

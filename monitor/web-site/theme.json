@@ -4,7 +4,7 @@
   "description": "内置状态面板，黑白配色",
   "version": "1.4.2",
   "author": "stqfdyr",
-  "url": "https://github.com/monitor-probe/monitor-theme-default",
+  "url": "https://github.com/imlilian/vps-probe",
   "config": [
     {
       "key": "show_summary",

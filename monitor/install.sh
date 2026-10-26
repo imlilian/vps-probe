@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs monitor-agent as a systemd or OpenRC service.
+# Installs probe-agent as a systemd or OpenRC service.
 #   curl -fsSL https://hub.example.com/install.sh | sh -s -- --server URL --token TOKEN [options]
 #   curl -fsSL https://hub.example.com/install.sh | sh -s -- --server URL --register KEY [options]
 #   curl -fsSL https://hub.example.com/install.sh | sh -s -- --upgrade
@@ -12,12 +12,12 @@ PATH="$PATH:/usr/sbin:/sbin"
 
 # Binary and token in one directory, the same one the hub uses, giving a node a
 # single path to inspect and a single path to remove.
-ROOT="/opt/monitor"
-BIN="$ROOT/monitor-agent"
+ROOT="/opt/probe"
+BIN="$ROOT/probe-agent"
 ENV_FILE="$ROOT/agent.env"
-UNIT_FILE="/etc/systemd/system/monitor-agent.service"
-RC_FILE="/etc/init.d/monitor-agent"
-LOG_FILE="/var/log/monitor-agent.log"
+UNIT_FILE="/etc/systemd/system/probe-agent.service"
+RC_FILE="/etc/init.d/probe-agent"
+LOG_FILE="/var/log/probe-agent.log"
 SERVER=""
 TOKEN=""
 REGISTER=""
@@ -59,14 +59,14 @@ done
 # hub may be installed in $ROOT as well, so the directory is removed only once
 # empty.
 if [ -n "$UNINSTALL" ]; then
-	rc-service monitor-agent stop 2>/dev/null || true
-	rc-update del monitor-agent default >/dev/null 2>&1 || true
-	systemctl disable --now monitor-agent 2>/dev/null || true
+	rc-service probe-agent stop 2>/dev/null || true
+	rc-update del probe-agent default >/dev/null 2>&1 || true
+	systemctl disable --now probe-agent 2>/dev/null || true
 	rm -f "$UNIT_FILE" "$RC_FILE" "$LOG_FILE" "$BIN" "$BIN.old" "$ENV_FILE"
 	systemctl daemon-reload 2>/dev/null || true
-	userdel monitor-agent 2>/dev/null || deluser monitor-agent 2>/dev/null || true
+	userdel probe-agent 2>/dev/null || deluser probe-agent 2>/dev/null || true
 	rmdir "$ROOT" 2>/dev/null || true
-	echo "monitor-agent uninstalled"
+	echo "probe-agent uninstalled"
 	exit 0
 fi
 
@@ -79,8 +79,8 @@ fi
 if [ -n "$UPGRADE" ]; then
 	[ -z "$TOKEN$REGISTER" ] ||
 		{ echo "--upgrade takes no --token or --register; it reuses what this machine holds" >&2; exit 2; }
-	TOKEN=$(sed -n 's/^MONITOR_TOKEN=//p' "$ENV_FILE" 2>/dev/null | tail -n 1)
-	[ -n "$SERVER" ] || SERVER=$(sed -n 's/^MONITOR_SERVER=//p' "$ENV_FILE" 2>/dev/null | tail -n 1)
+	TOKEN=$(sed -n 's/^PROBE_TOKEN=//p' "$ENV_FILE" 2>/dev/null | tail -n 1)
+	[ -n "$SERVER" ] || SERVER=$(sed -n 's/^PROBE_SERVER=//p' "$ENV_FILE" 2>/dev/null | tail -n 1)
 	[ -n "$TOKEN" ] && [ -n "$SERVER" ] || {
 		echo "no agent is installed here: $ENV_FILE holds no token and hub address." >&2
 		echo "install it with the command from the panel instead" >&2
@@ -125,7 +125,7 @@ case "$INTERVAL" in "" | *[!0-9]*) echo "interval must be an integer from 1 to 3
 # restart forever while this script reported success. The character set also
 # keeps it inert where OpenRC sources the file as shell.
 if [ -z "$IFACE_SET" ]; then
-	IFACE=$(sed -n 's/^MONITOR_IFACE=//p' "$ENV_FILE" 2>/dev/null | tail -n 1)
+	IFACE=$(sed -n 's/^PROBE_IFACE=//p' "$ENV_FILE" 2>/dev/null | tail -n 1)
 	[ -z "$IFACE" ] || echo "keeping --iface $IFACE from the previous install"
 else
 	case ",$IFACE," in
@@ -225,9 +225,9 @@ fi
 # -H no home.
 add_user() {
 	if command -v useradd >/dev/null; then
-		useradd --system --no-create-home --shell /usr/sbin/nologin monitor-agent
+		useradd --system --no-create-home --shell /usr/sbin/nologin probe-agent
 	else
-		adduser -S -D -H -s /sbin/nologin monitor-agent
+		adduser -S -D -H -s /sbin/nologin probe-agent
 	fi
 }
 
@@ -235,8 +235,8 @@ add_user() {
 # the download and the registration, so a host where this fails keeps the agent
 # it already runs and spends no registration key. One case passes this check
 # without a user and is settled after the old agent stops; see there.
-id -u monitor-agent >/dev/null 2>&1 || add_user ||
-	{ echo "cannot create the system user monitor-agent" >&2; exit 1; }
+id -u probe-agent >/dev/null 2>&1 || add_user ||
+	{ echo "cannot create the system user probe-agent" >&2; exit 1; }
 
 case "$(uname -m)" in
 x86_64 | amd64) ARCH=x86_64 ;;
@@ -248,11 +248,11 @@ esac
 # to: an IPv6-only or blocked machine cannot resolve github.com. A hub unable to
 # fetch releases itself is configured with a GitHub proxy in its own settings,
 # which is why none is requested here.
-URL="${SERVER%/}/agent/$ARCH"
+URL="${SERVER%/}/probe/$ARCH"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 
-echo "downloading monitor-agent ($ARCH)"
+echo "downloading probe-agent ($ARCH)"
 # The hub relays four downloads at once and queues the rest for 30 seconds. A
 # batch run on more machines than drain in that time is turned away with 503,
 # which is retried here rather than failing the machine. Any other refusal is
@@ -294,9 +294,9 @@ if [ -z "$TOKEN" ]; then
 	# Only for the same hub: a token issued by hub A means nothing to hub B.
 	HELD=""
 	# An env file written before the scheme was lowercased may hold HTTP://.
-	CACHED=$(sed -n 's/^MONITOR_SERVER=//p' "$ENV_FILE" 2>/dev/null || true)
+	CACHED=$(sed -n 's/^PROBE_SERVER=//p' "$ENV_FILE" 2>/dev/null || true)
 	if [ "$(lower_scheme "${CACHED%/}")" = "${SERVER%/}" ]; then
-		HELD=$(sed -n 's/^MONITOR_TOKEN=//p' "$ENV_FILE" 2>/dev/null || true)
+		HELD=$(sed -n 's/^PROBE_TOKEN=//p' "$ENV_FILE" 2>/dev/null || true)
 	fi
 	# --name as given, which the hub trims and bounds. The hostname is not sent
 	# in its place: it often carries the machine's address or the provider's
@@ -336,17 +336,17 @@ fi
 # unlinking rather than failing with ETXTBSY. Placed after the download, so a
 # node that cannot fetch the binary keeps running.
 if [ "$INIT" = openrc ]; then
-	rc-service monitor-agent stop 2>/dev/null || true
+	rc-service probe-agent stop 2>/dev/null || true
 else
-	systemctl stop monitor-agent 2>/dev/null || true
+	systemctl stop probe-agent 2>/dev/null || true
 	# An agent installed before the fixed user ran under DynamicUser=, and while
 	# it runs nss-systemd resolves its transient user of the same name: the check
 	# above passes, and useradd refuses the name as taken. Stopping the unit
 	# releases that user, so the fixed one is created here. Should that fail, the
 	# old binary and unit are still in place and are started again.
-	id -u monitor-agent >/dev/null 2>&1 || add_user || {
-		systemctl start monitor-agent 2>/dev/null || true
-		echo "cannot create the system user monitor-agent" >&2
+	id -u probe-agent >/dev/null 2>&1 || add_user || {
+		systemctl start probe-agent 2>/dev/null || true
+		echo "cannot create the system user probe-agent" >&2
 		exit 1
 	}
 fi
@@ -365,10 +365,10 @@ install -m 0755 "$TMP" "$BIN"
 (
 	umask 077
 	cat >"$ENV_FILE" <<ENV
-MONITOR_SERVER=$SERVER
-MONITOR_TOKEN=$TOKEN
+PROBE_SERVER=$SERVER
+PROBE_TOKEN=$TOKEN
 ENV
-	[ -z "$IFACE" ] || printf 'MONITOR_IFACE=%s\n' "$IFACE" >>"$ENV_FILE"
+	[ -z "$IFACE" ] || printf 'PROBE_IFACE=%s\n' "$IFACE" >>"$ENV_FILE"
 )
 
 # The new agent is not running. The binary it replaced is put back and started
@@ -376,26 +376,26 @@ ENV
 # and env file just written suit that binary as well, since an upgrade keeps the
 # token and the settings. A first install has nothing to put back.
 not_started() {
-	echo "monitor-agent did not start; see: $1" >&2
+	echo "probe-agent did not start; see: $1" >&2
 	[ -f "$BIN.old" ] || exit 1
 	mv -f "$BIN.old" "$BIN"
 	if [ "$INIT" = openrc ]; then
-		rc-service monitor-agent restart >/dev/null 2>&1 || true
+		rc-service probe-agent restart >/dev/null 2>&1 || true
 	else
-		systemctl restart monitor-agent || true
+		systemctl restart probe-agent || true
 	fi
-	echo "the previous monitor-agent binary is back in place and was restarted" >&2
+	echo "the previous probe-agent binary is back in place and was restarted" >&2
 	exit 1
 }
 
 if [ "$INIT" = openrc ]; then
 	cat >"$RC_FILE" <<RC
 #!/sbin/openrc-run
-description="monitor agent"
+description="probe agent"
 command="$BIN"
 command_args="--interval $INTERVAL${INSECURE:+ --insecure}"
 supervisor="supervise-daemon"
-command_user="monitor-agent"
+command_user="probe-agent"
 respawn_delay=5
 output_log="$LOG_FILE"
 error_log="$LOG_FILE"
@@ -409,29 +409,29 @@ depend() {
 # opens the log only after dropping to command_user, so the file must be the
 # agent's, including one an earlier install left to root.
 start_pre() {
-	checkpath --file --owner monitor-agent --mode 0600 $LOG_FILE
+	checkpath --file --owner probe-agent --mode 0600 $LOG_FILE
 	set -a
 	. $ENV_FILE
 	set +a
 }
 RC
 	chmod 0755 "$RC_FILE"
-	rc-update add monitor-agent default >/dev/null
-	rc-service monitor-agent restart
+	rc-update add probe-agent default >/dev/null
+	rc-service probe-agent restart
 	# supervise-daemon reports the service started while it respawns an agent
 	# that exits at once, so the process itself is what is looked for, inside
 	# the respawn delay. pidof rather than pgrep -x, which BusyBox matches
 	# against the full path.
 	sleep 3
-	pidof monitor-agent >/dev/null || not_started "$LOG_FILE"
+	pidof probe-agent >/dev/null || not_started "$LOG_FILE"
 	rm -f "$BIN.old"
-	echo "monitor-agent installed; follow it with: tail -f $LOG_FILE"
+	echo "probe-agent installed; follow it with: tail -f $LOG_FILE"
 	exit 0
 fi
 
 cat >"$UNIT_FILE" <<UNIT
 [Unit]
-Description=monitor agent
+Description=probe agent
 After=network-online.target
 Wants=network-online.target
 
@@ -446,7 +446,7 @@ RestartSec=5
 # and the other mount sandboxing for a unit with a static User=, but refuses to
 # start one with DynamicUser= and exits 226/NAMESPACE. DynamicUser= also implied
 # RestrictSUIDSGID=, which is therefore stated below.
-User=monitor-agent
+User=probe-agent
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 ProtectSystem=strict
@@ -463,17 +463,17 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable monitor-agent >/dev/null
+systemctl enable probe-agent >/dev/null
 # restart rather than `enable --now`: --now leaves an already-running service
 # untouched, so reinstalling over a live agent would keep the old binary
 # running.
-systemctl restart monitor-agent
+systemctl restart probe-agent
 # Type=simple counts the service started once it is forked, so `restart` above
 # succeeds also for one that fails at once -- a user it cannot resolve
 # (217/USER), a binary that exits -- and is then restarted every RestartSec.
 # Checked inside that window, so a batch run shows the failure on the machine
 # where it happened rather than a line reading "installed".
 sleep 3
-systemctl is-active --quiet monitor-agent || not_started "journalctl -u monitor-agent -n 20"
+systemctl is-active --quiet probe-agent || not_started "journalctl -u probe-agent -n 20"
 rm -f "$BIN.old"
-echo "monitor-agent installed; follow it with: journalctl -u monitor-agent -f"
+echo "probe-agent installed; follow it with: journalctl -u probe-agent -f"

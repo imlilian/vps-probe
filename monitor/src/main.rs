@@ -1,4 +1,4 @@
-//! monitor-hub: collects from monitor agents and serves the panel.
+//! probe-hub: collects from monitor agents and serves the panel.
 //!
 //! No configuration is required to start. Everything beyond the listen address
 //! and the database path is configured in the panel and stored in SQLite,
@@ -158,11 +158,12 @@ fn forwarded_proto(headers: &HeaderMap) -> Option<&str> {
     Some(chain.split(',').next()?.trim())
 }
 
-/// Where the agent binaries are published, and where this hub is published. Not
-/// settings: redirecting either implies a fork, which rebuilds these lines
+/// Where this project publishes its releases. One tag carries every asset the
+/// hub reads -- both agent architectures, each beside its signature -- so a
+/// single repository name answers for the hub's own lookup and for the relay.
+/// Not a setting: redirecting it implies a fork, which rebuilds this line
 /// anyway.
-pub const AGENT_REPO: &str = "monitor-probe/agent";
-pub const HUB_REPO: &str = "monitor-probe/monitor";
+pub const REPO: &str = "imlilian/vps-probe";
 
 /// The one-line installer pasted onto a new VPS.
 async fn install_script() -> Response {
@@ -182,7 +183,7 @@ fn release_url(app: &App, arch: &str) -> String {
     proxied(
         app,
         format!(
-            "https://github.com/{AGENT_REPO}/releases/latest/download/monitor-agent-{arch}-unknown-linux-musl"
+            "https://github.com/{REPO}/releases/latest/download/probe-agent-{arch}-unknown-linux-musl"
         ),
     )
 }
@@ -245,7 +246,7 @@ const RELAY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
 /// never run -- nor would the upstream timeout on the reqwest body, which is
 /// equally poll-driven. Four connections that accept the response and never read
 /// it would hold all four slots for as long as they remained open, and
-/// `/agent/{arch}` is the path every node installs through. The permit therefore
+/// `/probe/{arch}` is the path every node installs through. The permit therefore
 /// belongs to a task with its own timer, and this end of the channel -- dropped
 /// with the body, whether it completed or the connection died -- releases it
 /// early.
@@ -281,8 +282,8 @@ impl<S: futures_core::Stream + Unpin> futures_core::Stream for Metered<S> {
 /// The key the agent's release job signs each binary with (ed25519, the raw 32
 /// bytes). Rotating it takes a hub release.
 const AGENT_SIGNING_KEY: [u8; 32] = [
-    0x9a, 0x7c, 0x5e, 0x29, 0xf8, 0x79, 0x5a, 0x0a, 0x72, 0x12, 0x3e, 0xe1, 0xf0, 0x6a, 0x93, 0x41, 0xf2,
-    0x95, 0x34, 0xdb, 0xc2, 0x85, 0xb9, 0xab, 0xbe, 0xe6, 0xa0, 0x06, 0xdc, 0x65, 0xee, 0xef,
+    0x11, 0x68, 0xdd, 0x76, 0xce, 0x3d, 0xab, 0xde, 0xf2, 0xbf, 0x7f, 0xf3, 0x58, 0xb4, 0x0b, 0x31,
+    0xee, 0xbf, 0x03, 0xb3, 0xef, 0x2b, 0xef, 0xde, 0xe0, 0xd6, 0x6a, 0xf1, 0xe5, 0xce, 0xfa, 0x8f,
 ];
 
 /// Far above the 1.8 MB an agent weighs; bounds what a proxy can make the hub
@@ -437,7 +438,7 @@ fn default_listen() -> &'static str {
 
 fn parse_args() -> Result<Args> {
     let mut listen = None;
-    let mut database = "monitor.db".to_owned();
+    let mut database = "probe.db".to_owned();
     let mut site = String::new();
     let mut reset_password = false;
     let mut it = std::env::args().skip(1);
@@ -450,9 +451,9 @@ fn parse_args() -> Result<Args> {
             "--reset-password" => reset_password = true,
             "-h" | "--help" => {
                 println!(
-                    "monitor-hub {}\n\n\
-                     Usage: monitor-hub [--listen [::]:28080] [--db monitor.db] [--site https://hub.example.com]\n       \
-                     monitor-hub --db monitor.db --reset-password\n\n\
+                    "probe-hub {}\n\n\
+                     Usage: probe-hub [--listen [::]:28080] [--db probe.db] [--site https://hub.example.com]\n       \
+                     probe-hub --db probe.db --reset-password\n\n\
                      --listen defaults to [::]:28080, one socket serving IPv6 and IPv4\n\
                      both; where the kernel has no dual-stack sockets it is 0.0.0.0:28080.\n\
                      --site is the https:// domain agents should use. Left out, the hub\n\
@@ -663,7 +664,7 @@ async fn main() -> Result<()> {
                 .route("/api/agent/echo", get(agent_ws::echo))
                 .route("/api/agent/register", post(api::agent_register))
                 .route("/install.sh", get(install_script))
-                .route("/agent/{arch}", get(agent_binary))
+                .route("/probe/{arch}", get(agent_binary))
                 .layer(tower_http::limit::RequestBodyLimitLayer::new(64 * 1024))
                 .with_state(app.clone()),
         )
@@ -1381,7 +1382,7 @@ mod tests {
     fn a_github_proxy_prefixes_the_release_url_and_an_empty_one_does_not() {
         let app = app("");
         let direct = release_url(&app, "x86_64");
-        assert!(direct.starts_with("https://github.com/monitor-probe/agent/releases/"), "{direct}");
+        assert!(direct.starts_with("https://github.com/imlilian/vps-probe/releases/"), "{direct}");
 
         for set in ["https://ghfast.top", "https://ghfast.top/", "  https://ghfast.top/  "] {
             app.db.set("github_proxy", set).unwrap();
