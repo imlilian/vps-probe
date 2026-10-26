@@ -1,5 +1,12 @@
 name: ci
 
+# Without this, GitHub titles a run with the head commit's first line, and a
+# commit called "release: 0.1.1" makes ci, audit and release identical in the
+# runs list -- one push, three runs that look like the same failed attempt to
+# publish. The workflow belongs in the title. `head_ref` is the branch a pull
+# request comes from; on a push it is empty and the ref name is the branch.
+run-name: ci · ${{ github.head_ref || github.ref_name }}
+
 on:
   push:
     branches: [main]

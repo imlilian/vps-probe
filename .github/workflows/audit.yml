@@ -1,5 +1,12 @@
 name: audit
 
+# Named rather than left to the commit subject, for the same reason as ci: a
+# release commit is exactly when this and every other workflow fire together,
+# and three rows reading "release: 0.1.1" say nothing about which is which. A
+# scheduled run has no branch of its own, so it is labelled with the default
+# branch; the runs list already shows the event in its own column.
+run-name: audit · ${{ github.head_ref || github.ref_name }}
+
 on:
   push:
     branches: [main]

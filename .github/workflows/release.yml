@@ -1,5 +1,10 @@
 name: release
 
+# The tag, so a manual run (which builds and signs without publishing) is
+# distinguishable at a glance from the one that shipped. Default naming would
+# show the commit subject here too, which on a release commit reads the same.
+run-name: release · ${{ github.ref_name }}
+
 on:
   push:
     tags: ["v*"]
