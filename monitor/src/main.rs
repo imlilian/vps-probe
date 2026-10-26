@@ -33,7 +33,6 @@ mod notify;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::Result;
@@ -78,8 +77,6 @@ pub struct App {
     /// set, or a loopback listener would place 127.0.0.1 in the install commands
     /// the panel builds.
     pub site: String,
-    /// Parent directory containing one folder per installed public theme.
-    pub themes: PathBuf,
     /// Alerts on their way out; see `notify::send`.
     pub notes: tokio::sync::mpsc::Sender<notify::Note>,
     /// The latest published tags, as last read from GitHub. Filled when the panel
@@ -98,7 +95,7 @@ pub struct Releases {
 }
 
 impl App {
-    fn new(db: Db, site: String, themes: PathBuf, notes: tokio::sync::mpsc::Sender<notify::Note>) -> Self {
+    fn new(db: Db, site: String, notes: tokio::sync::mpsc::Sender<notify::Note>) -> Self {
         Self {
             db,
             agents: RwLock::default(),
@@ -111,7 +108,6 @@ impl App {
                 .build()
                 .expect("http client"),
             site,
-            themes,
             notes,
             releases: Mutex::default(),
         }
@@ -120,7 +116,7 @@ impl App {
     #[cfg(test)]
     pub fn for_test(db: Db) -> Self {
         // Nothing delivers in tests; `notify::send` drops into the closed channel.
-        Self::new(db, String::new(), PathBuf::from("themes"), tokio::sync::mpsc::channel(1).0)
+        Self::new(db, String::new(), tokio::sync::mpsc::channel(1).0)
     }
 
     pub fn public_page(&self) -> bool {
@@ -192,8 +188,8 @@ fn release_url(app: &App, arch: &str) -> String {
 }
 
 /// Places the panel's GitHub proxy in front of a github.com URL when one is
-/// set. Shared by the agent relay and the theme updater: a hub that cannot reach
-/// github.com for one cannot reach it for the other.
+/// set. Shared by the agent relay and the release lookup: a hub that cannot
+/// reach github.com for one cannot reach it for the other.
 pub fn proxied(app: &App, url: String) -> String {
     match app.db.get("github_proxy").filter(|v| !v.trim().is_empty()) {
         Some(proxy) => format!("{}/{url}", proxy.trim().trim_end_matches('/')),
@@ -421,7 +417,6 @@ struct Args {
     listen_defaulted: bool,
     database: String,
     site: String,
-    themes: PathBuf,
     reset_password: bool,
 }
 
@@ -444,7 +439,6 @@ fn parse_args() -> Result<Args> {
     let mut listen = None;
     let mut database = "monitor.db".to_owned();
     let mut site = String::new();
-    let mut themes = None;
     let mut reset_password = false;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -453,16 +447,14 @@ fn parse_args() -> Result<Args> {
             "--listen" => listen = Some(value()),
             "--db" => database = value(),
             "--site" => site = value(),
-            "--themes" => themes = Some(PathBuf::from(value())),
             "--reset-password" => reset_password = true,
             "-h" | "--help" => {
                 println!(
                     "monitor-hub {}\n\n\
-                     Usage: monitor-hub [--listen [::]:28080] [--db monitor.db] [--themes themes] [--site https://hub.example.com]\n       \
+                     Usage: monitor-hub [--listen [::]:28080] [--db monitor.db] [--site https://hub.example.com]\n       \
                      monitor-hub --db monitor.db --reset-password\n\n\
                      --listen defaults to [::]:28080, one socket serving IPv6 and IPv4\n\
                      both; where the kernel has no dual-stack sockets it is 0.0.0.0:28080.\n\
-                     --themes defaults to a themes/ directory beside the database.\n\
                      --site is the https:// domain agents should use. Left out, the hub\n\
                      answers on whatever ip:port it is asked, and the panel builds install\n\
                      commands from the address in the browser's bar, which behind a TLS\n\
@@ -485,15 +477,11 @@ fn parse_args() -> Result<Args> {
     }
     let listen_defaulted = listen.is_none();
     let listen: SocketAddr = listen.unwrap_or_else(|| default_listen().to_owned()).parse()?;
-    let themes = themes.unwrap_or_else(|| {
-        std::path::Path::new(&database).parent().unwrap_or_else(|| std::path::Path::new(".")).join("themes")
-    });
     Ok(Args {
         listen,
         listen_defaulted,
         database,
         site: site.trim_end_matches('/').to_owned(),
-        themes,
         reset_password,
     })
 }
@@ -556,12 +544,11 @@ async fn main() -> Result<()> {
     }
     // After the two arguments that print and exit, so their output stays theirs.
     raise_open_files();
-    std::fs::create_dir_all(&args.themes)?;
     if let Err(e) = db::temp_files_beside(&args.database) {
         warn!("SQLite keeps its temporary files in its default directory: {e:#}");
     }
     let (notes, inbox) = tokio::sync::mpsc::channel(notify::QUEUE);
-    let app = Arc::new(App::new(Db::open(&args.database)?, args.site.clone(), args.themes, notes));
+    let app = Arc::new(App::new(Db::open(&args.database)?, args.site.clone(), notes));
     let url = advertised_url(&args.site, args.listen);
     first_run(&app, &url)?;
     let port = args.listen.port();
@@ -627,7 +614,6 @@ async fn main() -> Result<()> {
         .route("/api/nodes", get(api::nodes))
         .route("/api/nodes/{id}/metrics", get(api::metrics))
         .route("/api/ws", get(api::live_ws))
-        .route("/api/themes/{short}/config", get(api::theme_config))
         // Sign-in.
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/logout", post(auth::logout))
@@ -650,31 +636,20 @@ async fn main() -> Result<()> {
         .route("/api/settings", get(api::settings).put(api::save_settings))
         .route("/api/version", get(api::versions))
         .route("/api/notify/test", post(notify::test))
-        .route("/api/themes", get(api::themes))
-        .route("/api/themes/{short}", delete(api::delete_theme))
-        .route("/api/themes/{short}/preview", get(api::theme_preview))
-        .route("/api/themes/{short}/update", post(api::update_theme))
-        // Not under /api/themes/: a fixed segment there would shadow the theme
-        // of that name for the routes keyed by `{short}`.
-        .route("/api/theme-install", post(api::install_theme))
-        .route("/api/themes/{short}/config", put(api::save_theme_config))
         .route("/api/db", get(api::db_stats))
         .route("/api/db/backup", get(api::db_backup))
         .route("/api/db/vacuum", post(api::db_vacuum))
         .fallback(frontend::serve)
-        // Every body above is a JSON form of a few KiB at most. The ceiling also
-        // bounds a theme's saved settings, which anonymous callers read back.
+        // Every body above is a JSON form of a few KiB at most.
         .layer(tower_http::limit::RequestBodyLimitLayer::new(64 * 1024))
-        // The two chunked uploads, merged after that layer rather than beneath
-        // it. They raise the ceiling on a single request to `api::MAX_CHUNK`,
-        // not on the file behind it: a 1 GiB backup arrives as 256 of the
-        // panel's 4 MiB pieces, so no reverse proxy needs to know the database
-        // size. The whole-file ceilings live on `total` and are checked on the
-        // first request.
+        // The chunked upload, merged after that layer rather than beneath it. It
+        // raises the ceiling on a single request to `api::MAX_CHUNK`, not on the
+        // file behind it: a 1 GiB backup arrives as 256 of the panel's 4 MiB
+        // pieces, so no reverse proxy needs to know the database size. The
+        // whole-file ceiling lives on `total` and is checked on the first request.
         .merge(
             Router::new()
                 .route("/api/db/restore", post(api::db_restore))
-                .route("/api/themes", post(api::upload_theme))
                 .layer(tower_http::limit::RequestBodyLimitLayer::new(api::MAX_CHUNK))
                 .with_state(app.clone()),
         )
@@ -906,7 +881,7 @@ fn new_password(db: &Db) -> Result<String> {
 }
 
 /// Cycles stored under a name. Any other length is stored as `<n>m`; the names
-/// remain because themes built for hub 1.3.0 and earlier recognize only these.
+/// remain because the public page's own code recognizes only these.
 const NAMED_CYCLES: [(&str, u32); 6] = [
     ("monthly", 1),
     ("quarterly", 3),
@@ -1051,7 +1026,7 @@ fn compressible() -> impl Predicate {
 /// when dropped, so a failing test leaves nothing behind either. A mutation run
 /// fails thousands of them.
 #[cfg(test)]
-pub(crate) struct TempDir(pub PathBuf);
+pub(crate) struct TempDir(pub std::path::PathBuf);
 
 #[cfg(test)]
 impl TempDir {
@@ -1116,12 +1091,7 @@ mod tests {
     }
 
     fn app(site: &str) -> App {
-        App::new(
-            Db::open(":memory:").unwrap(),
-            site.into(),
-            PathBuf::from("themes"),
-            tokio::sync::mpsc::channel(1).0,
-        )
+        App::new(Db::open(":memory:").unwrap(), site.into(), tokio::sync::mpsc::channel(1).0)
     }
 
     /// A request as a reverse proxy would forward it, or as it arrives with none

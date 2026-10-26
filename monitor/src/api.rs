@@ -288,8 +288,8 @@ fn node_view(
     // hostname or private note may ever reach a visitor.
     if let Some(m) = view["metrics"].as_object_mut() {
         m.retain(|k, _| PUBLIC_METRICS.contains(&k.as_str()) || (full && k == "iface"));
-        // The same figures as the top-level ones, from the same row. Both official
-        // themes refuse a node's live view without them.
+        // The same figures as the top-level ones, from the same row. The public
+        // page refuses a node's live view without them.
         for (key, value) in agent_ws::INJECTED.into_iter().zip([
             traffic.total_rx,
             traffic.total_tx,
@@ -470,7 +470,7 @@ pub async fn metrics(
         // `loss` on the rows. Both are required and neither replaces the other:
         // the row figure is what a tooltip reads, while the window figure is the
         // only one that can be accurate, since the denominators it divides by are
-        // gone by the time the rows are built. Additive, so a theme unaware of it
+        // gone by the time the rows are built. Additive, so a reader unaware of it
         // continues to work.
         let (ping, loss) = if want_ping { app.db.ping_records(id, span)? } else { (vec![], json!({})) };
         // `step` is the seconds each point spans, against which a row's `minutes`
@@ -657,8 +657,8 @@ fn stream_audience(app: &App, session: Option<&str>) -> Option<bool> {
 #[derive(Deserialize)]
 pub struct Stream {
     /// Present for each public frame gzipped, in a binary message; the admin
-    /// frame stays text. Without it frames are text, which every theme written
-    /// before it reads.
+    /// frame stays text. Without it frames are text, which is what a caller that
+    /// does not ask for gzip receives.
     gzip: Option<String>,
 }
 
@@ -725,7 +725,7 @@ pub async fn live_ws(
 }
 
 async fn stream_live(app: Shared, mut socket: WebSocket, session: Option<String>, gzip: bool) {
-    // The panel and both official themes treat 10 s without a frame as a lost
+    // The panel and the public page treat 10 s without a frame as a lost
     // stream and reconnect, so the interval must stay well below that. Not one
     // second to match the agent's default report: that would double what every
     // open page costs -- a hundred nodes are 15 KB a frame compressed, 110 KB for
@@ -861,7 +861,7 @@ fn node_limits(reset_day: Option<u32>, price: Option<f64>, limit: Option<i64>) -
     None
 }
 
-/// A theme shows the group as a tab label or a section title, so it is held to a
+/// The public page shows the group as a tab label or a section title, so it is held to a
 /// length that fits one line on a 390 px phone.
 const MAX_GROUP: usize = 13;
 
@@ -875,7 +875,7 @@ fn group_error(group: &mut String) -> Option<&'static str> {
     None
 }
 
-/// Node and probe names, as a panel row, a theme card and a chart legend show
+/// Node and probe names, as a panel row, a public card and a chart legend show
 /// them. Refused rather than truncated, as a group name is.
 const MAX_NAME: usize = 64;
 
@@ -898,7 +898,7 @@ const MAX_PUBLIC_REMARK: usize = 100;
 /// Normalizes the currency and billing cycle, or names the one that cannot be
 /// stored. The currency is held to the ISO 4217 form of three letters, the only
 /// one `Intl.NumberFormat` accepts. Hubs before 1.3.1 stored it unchecked, so a
-/// theme still guards the call against a throw. Each cycle length is stored in a
+/// client still guards the call against a throw. Each cycle length is stored in a
 /// single spelling, see `cycle_name`.
 fn billing_error(currency: Option<&mut String>, cycle: Option<&mut String>) -> Option<&'static str> {
     if let Some(code) = currency {
@@ -976,7 +976,7 @@ pub async fn me(State(app): State<Shared>, headers: HeaderMap) -> Json<Value> {
         "github": app.db.get("github_client_id").is_some_and(|v| !v.is_empty()),
         "site_name": app.db.get("site_name").unwrap_or_else(|| "Monitor".into()),
         "public_page": app.public_page(),
-        // How far back a chart may reach, so a theme offers only windows the hub
+        // How far back a chart may reach, so the page offers only windows the hub
         // answers in full; `metrics` narrows a wider one without saying so.
         "history_days": app.db.retention_days(),
         // Whether this browser may provision is not answered here: a GET carries
@@ -1466,7 +1466,6 @@ const READABLE_SETTINGS: &[&str] = &[
     "github_client_id",
     "github_allowed_users",
     "retention_days",
-    "theme",
     "github_proxy",
     "update_notice",
     "favicon",
@@ -1498,7 +1497,6 @@ pub const MAX_CHUNK: usize = 8 * 1024 * 1024;
 /// nodes with four probes, a week of minute rows and a year of hourly ones come
 /// to about 720 MiB.
 pub const MAX_RESTORE: u64 = 1024 * 1024 * 1024;
-pub const MAX_THEME: u64 = 32 * 1024 * 1024;
 
 /// One request of an upload: `total` is the whole file, `offset` where this piece
 /// belongs within it.
@@ -1762,59 +1760,6 @@ pub async fn db_vacuum(_: Admin, State(app): State<Shared>) -> Response {
     }
 }
 
-/// Installs an uploaded theme archive, one chunk per request.
-///
-/// The archive lands in the themes directory under a name `valid_short` rejects,
-/// so a partial upload is invisible to both the theme list and the public page.
-/// Installation is performed by `frontend::install`, which unpacks to a staging
-/// directory and publishes with a rename: the switch is atomic, and the page is
-/// never served from a partially written directory.
-pub async fn upload_theme(
-    _: Admin,
-    State(app): State<Shared>,
-    Query(chunk): Query<Chunk>,
-    body: axum::body::Body,
-) -> Response {
-    let path = app.themes.join(".upload.tar.gz");
-    let name = path.to_string_lossy().into_owned();
-    let received = match receive(&name, &chunk, MAX_THEME, body).await {
-        Ok(received) => received,
-        Err(e) => return fail(e),
-    };
-    if received < chunk.total {
-        return Json(json!({"received": received})).into_response();
-    }
-
-    // Moved off the shared upload name for the same reason as the restore path: a
-    // second upload landing on it could continue writing while this archive is
-    // read, leaving the unpacker reading a file changed beneath it. Named so
-    // `valid_short` still rejects it, keeping a partial archive out of the theme
-    // list.
-    let source = app.themes.join(format!(".installing-{}.tar.gz", &random_token()[..16]));
-    if let Err(e) = std::fs::rename(&path, &source) {
-        let _ = std::fs::remove_file(&path);
-        return fail(e);
-    }
-
-    // Off the runtime: gunzip plus a few thousand small writes.
-    let installed = {
-        let (app, path) = (app.clone(), source.clone());
-        tokio::task::spawn_blocking(move || {
-            crate::frontend::install(&app.themes, std::fs::File::open(&path)?, None)
-        })
-        .await
-    };
-    let _ = std::fs::remove_file(&source);
-    match installed.map_err(|e| anyhow::anyhow!(e)).and_then(|r| r) {
-        Ok(theme) => Json(json!({"theme": theme})).into_response(),
-        Err(e) => fail(e),
-    }
-}
-
-/// The asset a theme repository publishes, and the only name the hub fetches: the
-/// same `theme.tar.gz` the upload button accepts.
-const ARCHIVE: &str = "theme.tar.gz";
-
 /// How long a release lookup stands before the panel asks GitHub again, and how
 /// long a failed one does. The short retry keeps one unreachable moment from
 /// hiding an update for the rest of the day; the long one keeps a panel left
@@ -1892,304 +1837,11 @@ async fn latest_release(app: &App, repo: &str) -> reqwest::Result<Release> {
         .await
 }
 
+/// The one field of a release the hub still reads. The assets were listed for
+/// the theme archive, which the panel no longer installs.
 #[derive(Deserialize)]
 struct Release {
     tag_name: String,
-    #[serde(default)]
-    assets: Vec<Asset>,
-}
-
-#[derive(Deserialize)]
-struct Asset {
-    name: String,
-}
-
-/// The `<owner>/<repo>` a theme's `url` or an address pasted to install one
-/// names, where it names a GitHub repository at all.
-///
-/// An allowlist rather than a filter. Every address the update and install paths
-/// fetch is constructed from these two strings, so neither a manifest nor a pasted
-/// address can direct the hub at a host it did not choose, which is why no
-/// private-address check is needed here. The only host that is not github.com
-/// is the GitHub proxy in the panel's settings, configured by the operator and
-/// already used by the agent relay.
-fn github_repo(url: &str) -> Option<(&str, &str)> {
-    let (owner, rest) = url.strip_prefix("https://github.com/")?.split_once('/')?;
-    // A link to a branch or a file is still a link to the repository, as is the
-    // `?tab=readme-ov-file` or `#readme` a browser's address bar often carries;
-    // neither part reaches the addresses built from the result.
-    let repo = rest.split(['/', '?', '#']).next()?;
-    let repo = repo.strip_suffix(".git").unwrap_or(repo);
-    (path_segment(owner) && path_segment(repo)).then_some((owner, repo))
-}
-
-/// One URL path segment the hub will build a github.com address from: nothing
-/// that opens a new segment, and nothing that escapes the current one.
-fn path_segment(segment: &str) -> bool {
-    !segment.is_empty()
-        && segment != "."
-        && segment != ".."
-        && segment.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
-}
-
-/// Reinstalls one theme from the latest GitHub release of the repository its
-/// manifest names.
-///
-/// The manifest supplies `<owner>/<repo>` and nothing more: the release is read
-/// from api.github.com and the archive from github.com, both at addresses the hub
-/// constructs itself, so no URL from the theme is ever followed. The installed
-/// version is compared against the release tag first, which is all most
-/// invocations do, making this also the check-for-updates action.
-pub async fn update_theme(_: Admin, State(app): State<Shared>, Path(short): Path<String>) -> Response {
-    match update(&app, &short).await {
-        Ok((updated, version)) => Json(json!({"updated": updated, "version": version})).into_response(),
-        Err(e) => fail(e),
-    }
-}
-
-async fn update(app: &App, short: &str) -> Result<(bool, String), anyhow::Error> {
-    let Some(installed) = crate::frontend::themes(app)?.into_iter().find(|theme| theme.short == short) else {
-        refuse!("没有这个主题");
-    };
-    let Some((owner, repo)) = github_repo(&installed.url) else {
-        refuse!("这个主题的 url 不是 https://github.com/<owner>/<repo>，只能手动上传新包");
-    };
-    let release = latest_theme(app, owner, repo).await?;
-
-    // Tags read `v1.2.3` while manifests carry `1.2.3`. Equal means up to date;
-    // anything else is installed, including a deliberate downgrade, since the
-    // release is what the author published.
-    let tag = &release.tag_name;
-    if tag.strip_prefix('v').unwrap_or(tag) == installed.version {
-        return Ok((false, installed.version));
-    }
-    // Constrained to the theme it may replace. The built-in theme has no
-    // directory until this runs: updating it writes one, which then serves in
-    // place of the embedded copy until it is deleted.
-    let theme = fetch_theme(app, owner, repo, &release, Some(short)).await?;
-    Ok((true, theme.version))
-}
-
-/// Installs a theme from the latest release of a GitHub repository the
-/// administrator pastes, in place of downloading its `theme.tar.gz` and
-/// uploading it.
-///
-/// The trust is that of an upload: either way the administrator vouches for the
-/// repository. The address is read as an update reads a manifest's `url`, with
-/// only `<owner>/<repo>` taken from it, so the hub still fetches from no host but
-/// GitHub and the configured proxy.
-pub async fn install_theme(_: Admin, State(app): State<Shared>, Json(body): Json<Repository>) -> Response {
-    let url = body.url.trim();
-    // A bare `github.com/...`, the form addresses are often passed along in.
-    let url = if url.starts_with("github.com/") { format!("https://{url}") } else { url.to_owned() };
-    let Some((owner, repo)) = github_repo(&url) else {
-        return bad("填主题的 GitHub 仓库地址，形如 https://github.com/作者/仓库");
-    };
-    let release = match latest_theme(&app, owner, repo).await {
-        Ok(release) => release,
-        Err(e) => return fail(e),
-    };
-    match fetch_theme(&app, owner, repo, &release, None).await {
-        Ok(theme) => Json(json!({"theme": theme})).into_response(),
-        Err(e) => fail(e),
-    }
-}
-
-#[derive(Deserialize)]
-pub struct Repository {
-    url: String,
-}
-
-/// The latest release of a theme's repository, with GitHub's refusal put into
-/// words the panel can show.
-async fn latest_theme(app: &App, owner: &str, repo: &str) -> Result<Release, anyhow::Error> {
-    use anyhow::Context;
-
-    latest_release(app, &format!("{owner}/{repo}")).await.or_else(|e| {
-        let why = match e.status().map(|s| s.as_u16()) {
-            None if e.is_decode() => "GitHub 的回复无法识别，稍后再试",
-            // A private repository answers the same as a missing one.
-            Some(404) => "仓库不存在，或者还没有正式 release",
-            // Unauthenticated callers get 60 requests an hour per address.
-            Some(403 | 429) => "GitHub 限制了这台机器的请求次数，过一小时再试",
-            Some(_) => "GitHub 接口出错，稍后再试",
-            None => "hub 连不上 api.github.com，检查它的网络",
-        };
-        Err(e).context(crate::Shown(format!("读不到 {owner}/{repo} 的最新 release：{why}")))
-    })
-}
-
-/// Downloads the `theme.tar.gz` of `release` and installs it; `expect` names
-/// the theme it must replace, as for [`crate::frontend::install`].
-async fn fetch_theme(
-    app: &App,
-    owner: &str,
-    repo: &str,
-    release: &Release,
-    expect: Option<&str>,
-) -> Result<crate::frontend::Theme, anyhow::Error> {
-    use anyhow::Context;
-
-    let tag = &release.tag_name;
-    if !path_segment(tag) {
-        refuse!("release 的 tag {tag:?} 不能出现在下载地址里");
-    }
-    // Checked here rather than by downloading and reading a 404: the asset name is
-    // the contract, and stating so is the entire error message.
-    if !release.assets.iter().any(|asset| asset.name == ARCHIVE) {
-        refuse!("release {tag} 里没有 {ARCHIVE}");
-    }
-
-    // Through the panel's GitHub proxy when one is configured, the archive being
-    // the part a blocked network cannot reach. The API call in `latest_theme` is
-    // not proxied: most proxies front only releases, and a hub that cannot read
-    // the tag still has the upload path.
-    let direct = format!("https://github.com/{owner}/{repo}/releases/download/{tag}/{ARCHIVE}");
-    let url = crate::proxied(app, direct.clone());
-    let proxy = url != direct;
-    let unreachable = || {
-        crate::Shown(if proxy {
-            format!("经 GitHub 代理下载 {ARCHIVE} 失败，换一个代理，或清空代理让 hub 直连")
-        } else {
-            format!("下载 {ARCHIVE} 失败：hub 连不上 github.com 时，在设置里填 GitHub 代理")
-        })
-    };
-    let response = app
-        .http
-        .get(url)
-        // With the release lookup's 15 s, this keeps the request inside the 100 s
-        // Cloudflare waits for an origin before answering 524 itself: a download
-        // too slow to finish is then reported as one, naming the proxy setting,
-        // rather than as a hub that did not respond.
-        .timeout(std::time::Duration::from_secs(75))
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .with_context(unreachable)?;
-    // The transfer stops at Content-Length, so checking it checks the body: a
-    // header understating the archive cannot make more arrive. GitHub always
-    // sends one; a proxy that omits it is refused rather than read unbounded.
-    match response.content_length() {
-        Some(size) if size <= MAX_THEME => {}
-        Some(size) => {
-            refuse!("主题包 {} MiB，超过 {} MiB 的上限", size / 1024 / 1024, MAX_THEME / 1024 / 1024)
-        }
-        None => refuse!("下载没有给出大小，无法确认它在 {} MiB 以内", MAX_THEME / 1024 / 1024),
-    }
-    let archive = response.bytes().await.with_context(unreachable)?;
-    // Checked here as well as in `unpack`, whose answer is written for an upload.
-    // A proxy answers with a page of its own -- a block notice, a sign-in wall --
-    // under a 200.
-    if !archive.starts_with(&crate::frontend::GZIP_MAGIC) {
-        if proxy {
-            refuse!("GitHub 代理返回的不是主题包，换一个代理，或清空代理让 hub 直连");
-        }
-        refuse!("release {tag} 里的 {ARCHIVE} 不是 gzip 格式，包本身有问题，请联系主题作者");
-    }
-
-    // The same unpacking, validation and atomic replace an upload undergoes.
-    let (themes, expect) = (app.themes.clone(), expect.map(str::to_owned));
-    tokio::task::spawn_blocking(move || {
-        crate::frontend::install(&themes, std::io::Cursor::new(archive), expect.as_deref())
-    })
-    .await?
-}
-
-/// The thumbnail the theme list displays, where the theme provides one; the list
-/// reports which do.
-pub async fn theme_preview(_: Admin, State(app): State<Shared>, Path(short): Path<String>) -> Response {
-    match crate::frontend::preview(&app.themes, &short) {
-        // Not cached: reinstalling a theme under the same name also replaces the
-        // image, and this is a panel-only request for a local file.
-        Some(png) => {
-            ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-cache")], png).into_response()
-        }
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-/// Deletes an installed theme. Deleting the one in use is permitted: the public
-/// page falls back to the built-in theme from the next request, the same path a
-/// broken theme already takes, and leaving the setting intact means reinstalling
-/// the theme restores it.
-pub async fn delete_theme(_: Admin, State(app): State<Shared>, Path(short): Path<String>) -> Response {
-    match crate::frontend::remove(&app.themes, &short) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => fail(e),
-    }
-}
-
-/// Where a theme's saved settings live. Keyed by `short` in the database rather
-/// than stored beside the theme, so updating, reinstalling or deleting the
-/// theme leaves them in place, and a backup carries them.
-fn theme_config_key(short: &str) -> String {
-    format!("theme_config:{short}")
-}
-
-/// The settings saved for one theme in the panel: only the fields changed from
-/// the defaults its `theme.json` declares, which the theme fills in itself.
-/// Any theme may be named, installed or not, so a theme under development
-/// reads its own settings from whichever hub it proxies to.
-///
-/// Anonymous, under the same condition as `/api/nodes`. One request is one
-/// primary-key read answering at most 64 KiB, the router's body limit having
-/// bounded the write. That is the cost class of `/api/me`, so there is no gate:
-/// on a three-core hub (debug build), 120 concurrent requests for a 60 KiB
-/// value held the panel's `/api/nodes` at a 230 ms median, against 160 ms
-/// under the same load on `/api/me`.
-///
-/// A failed read answers 500 rather than `{}`: the panel saves on top of what
-/// it reads, so an empty answer would erase every saved override.
-pub async fn theme_config(
-    State(app): State<Shared>,
-    headers: HeaderMap,
-    Path(short): Path<String>,
-) -> Response {
-    if !authed(&app, &headers) && !app.public_page() {
-        return answer(StatusCode::UNAUTHORIZED, "需要登录后查看");
-    }
-    if !crate::frontend::valid_short(&short) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    match app.db.lookup(&theme_config_key(&short)) {
-        Ok(saved) => {
-            let saved = saved.unwrap_or_else(|| "{}".into());
-            ([(header::CONTENT_TYPE, "application/json")], saved).into_response()
-        }
-        Err(e) => fail(e),
-    }
-}
-
-/// Replaces a theme's saved settings. Values are not checked against the
-/// theme's declared fields: the theme must validate what it reads regardless,
-/// since a value saved under one version of the theme meets the next.
-pub async fn save_theme_config(
-    _: Admin,
-    State(app): State<Shared>,
-    Path(short): Path<String>,
-    Json(values): Json<serde_json::Map<String, Value>>,
-) -> Response {
-    if !crate::frontend::valid_short(&short) || !crate::frontend::selectable(&app, &short) {
-        return bad("主题没有安装");
-    }
-    match app.db.set(&theme_config_key(&short), &Value::Object(values).to_string()) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => fail(e),
-    }
-}
-
-pub async fn themes(_: Admin, State(app): State<Shared>) -> Response {
-    match crate::frontend::themes(&app) {
-        Ok(mut themes) => {
-            // Reads each image to answer, as serving it would: a handful of
-            // themes, each image capped at 8 MiB.
-            for theme in &mut themes {
-                theme.preview = crate::frontend::preview(&app.themes, &theme.short).is_some();
-            }
-            Json(json!({"themes": themes})).into_response()
-        }
-        Err(e) => fail(e),
-    }
 }
 
 /// Every live session, with the caller's own marked.
@@ -2265,13 +1917,12 @@ pub async fn settings(
 /// afterwards -- on a later key, in whatever order the map iterates -- carries no
 /// Set-Cookie, signing the admin out of every device through a password change
 /// the UI reported as rejected.
-fn setting_error(app: &App, key: &str, value: &Value) -> Option<String> {
+fn setting_error(key: &str, value: &Value) -> Option<String> {
     // Settings are stored as text. A caller sending the natural JSON type --
     // `{"public_page": false}`, `{"retention_days": 7}` -- is refused rather than
     // skipped, which would write nothing while the response reported success.
     let Some(value) = value.as_str() else { return Some(format!("设置 {key} 的值格式不对")) };
     match key {
-        "theme" if !crate::frontend::selectable(app, value) => Some("主题没有安装".into()),
         // Housekeeping clamps whatever it reads, so an unparsable value would be
         // stored, echoed back, and silently mean the default indefinitely.
         "retention_days"
@@ -2313,7 +1964,7 @@ pub async fn save_settings(
 ) -> Response {
     let Some(map) = body.as_object() else { return bad("设置格式不对") };
     for (key, value) in map {
-        if let Some(message) = setting_error(&app, key, value) {
+        if let Some(message) = setting_error(key, value) {
             return bad(&message);
         }
     }
@@ -2577,52 +2228,6 @@ mod tests {
         }
         let stored: Vec<i64> = app.db.ping_tasks().unwrap().iter().map(|t| t.interval).collect();
         assert_eq!(stored, vec![5, 60, 3_600]);
-    }
-
-    /// The update and install paths follow a manifest's `url` or a pasted address
-    /// to build a download address, so what counts as a GitHub repository
-    /// constitutes the entire trust boundary: whatever this accepts, the hub will
-    /// fetch.
-    #[test]
-    fn only_a_github_repository_url_can_name_a_release_to_download() {
-        assert_eq!(
-            github_repo("https://github.com/monitor-probe/monitor"),
-            Some(("monitor-probe", "monitor"))
-        );
-        // A link to the repository, in whatever form the author wrote it or the
-        // address bar showed it.
-        assert_eq!(github_repo("https://github.com/a/b.git"), Some(("a", "b")));
-        assert_eq!(github_repo("https://github.com/a/b/tree/main"), Some(("a", "b")));
-        assert_eq!(github_repo("https://github.com/a/b/"), Some(("a", "b")));
-        assert_eq!(github_repo("https://github.com/a/b?tab=readme-ov-file"), Some(("a", "b")));
-        assert_eq!(github_repo("https://github.com/a/b#readme"), Some(("a", "b")));
-
-        for hostile in [
-            "",
-            // Not github.com, however much of it appears in the string.
-            "http://github.com/a/b",
-            "https://github.com.evil.test/a/b",
-            "https://github.com@evil.test/a/b",
-            "https://evil.test/https://github.com/a/b",
-            // On github.com, but naming no repository to fetch from.
-            "https://github.com/a",
-            "https://github.com//b",
-            "https://github.com/../../etc/passwd",
-            "https://github.com/a/..",
-            // Anything that could open a segment of its own in the URL built from
-            // it, whether encoded, queried or fragmented.
-            "https://github.com/a/b%2f..%2fc",
-            "https://github.com/a?x=/b",
-            "https://github.com/a#/b",
-            "https://github.com/a b",
-        ] {
-            assert_eq!(github_repo(hostile), None, "{hostile} must not name a download");
-        }
-
-        // The release tag also lands in that URL, arriving from the API rather
-        // than the manifest.
-        assert!(path_segment("v0.1.15") && path_segment("2024.1"));
-        assert!(!path_segment("release/1.0") && !path_segment("..") && !path_segment(""));
     }
 
     /// The entire chunked-upload protocol: an upload is only ever as long as what
@@ -3237,34 +2842,6 @@ mod tests {
         assert_eq!(put("港".repeat(MAX_PUBLIC_REMARK)).await.status(), StatusCode::OK);
     }
 
-    /// What the panel saves is what an anonymous visitor reads, under the same
-    /// condition as the node list, and only an installed theme takes a write.
-    #[tokio::test]
-    async fn saved_theme_settings_reach_visitors_while_the_status_page_is_open() {
-        let app = std::sync::Arc::new(app());
-        let state = || axum::extract::State(app.clone());
-        let read = |short: &str| theme_config(state(), HeaderMap::new(), Path(short.to_owned()));
-        let body = |r: Response| async { axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap() };
-
-        assert_eq!(&body(read("default").await).await[..], b"{}", "nothing saved reads as no overrides");
-        let values = json!({"notice": "维护中", "show_price": false}).as_object().unwrap().clone();
-        let saved = save_theme_config(Admin, state(), Path("default".into()), Json(values.clone())).await;
-        assert_eq!(saved.status(), StatusCode::NO_CONTENT);
-        let read_back: Value = serde_json::from_slice(&body(read("default").await).await).unwrap();
-        assert_eq!(read_back, Value::Object(values.clone()));
-
-        let missing = save_theme_config(Admin, state(), Path("aurora".into()), Json(values.clone())).await;
-        assert_eq!(missing.status(), StatusCode::BAD_REQUEST, "a theme that is not installed takes no write");
-        assert_eq!(read("../etc").await.status(), StatusCode::NOT_FOUND);
-
-        app.db.set("public_page", "off").unwrap();
-        assert_eq!(
-            read("default").await.status(),
-            StatusCode::UNAUTHORIZED,
-            "a closed status page hides them too"
-        );
-    }
-
     /// Days to expiry are counted on the hub's calendar and are public, like the
     /// date itself; no date counts nothing.
     #[test]
@@ -3423,8 +3000,8 @@ mod tests {
         assert_eq!(app.db.nodes().unwrap().len(), 1, "nothing was created");
     }
 
-    /// A length with a name is stored under it, so a theme built for hub 1.3.0
-    /// still labels it.
+    /// A length with a name is stored under it, so a client that knows the
+    /// names still labels it.
     #[tokio::test]
     async fn currency_and_cycle_are_stored_in_one_spelling() {
         let app = std::sync::Arc::new(app());
@@ -4145,7 +3722,7 @@ mod tests {
             let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
             String::from_utf8(body.to_vec()).unwrap()
         };
-        let raw = || std::io::Error::other("/opt/monitor/data/themes/.staging-1: incomplete deflate stream");
+        let raw = || std::io::Error::other("/opt/monitor/data/monitor.db: disk I/O error");
 
         let internal = fail(raw());
         assert_eq!(internal.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -4153,10 +3730,10 @@ mod tests {
 
         // The shown message, wherever it sits in the chain, and never its cause.
         let wrapped =
-            anyhow::Error::from(raw()).context(crate::Shown("主题包损坏".into())).context("installing");
+            anyhow::Error::from(raw()).context(crate::Shown("数据库读不出来".into())).context("installing");
         let refused = fail(wrapped);
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(read(refused).await, "主题包损坏");
+        assert_eq!(read(refused).await, "数据库读不出来");
 
         let rejection =
             (StatusCode::UNPROCESSABLE_ENTITY, "Failed to deserialize the JSON body").into_response();

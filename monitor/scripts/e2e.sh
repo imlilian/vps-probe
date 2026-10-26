@@ -55,7 +55,7 @@ reported() {
 	curl -fs "$URL/api/nodes" | jq -e '.nodes[0] | .online and .metrics != null'
 }
 
-"$HUB" --listen "${URL#http://}" --db "$DIR/hub.db" --themes "$DIR/themes" >"$DIR/hub.log" 2>&1 &
+"$HUB" --listen "${URL#http://}" --db "$DIR/hub.db" >"$DIR/hub.log" 2>&1 &
 HUB_PID=$!
 wait_for "the hub to listen" curl -fs "$URL/api/me"
 PASSWORD=$(sed -n 's/.*Emergency password: //p' "$DIR/hub.log")

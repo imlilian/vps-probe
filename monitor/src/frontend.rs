@@ -1,8 +1,16 @@
-//! Built-in admin UI plus a replaceable public theme.
+//! Built-in admin UI. The public page is a single built-in theme, embedded the
+//! same way: nothing here reads a theme from disk or installs one.
+//!
+//! TEMPORARY: the archive-handling half of this module (`install`, `unpack`,
+//! `publish`, `remove`, `preview` and their limits) no longer has a caller since
+//! the theme market was removed. Phase 3 deletes it together with the `tar` and
+//! `flate2` dependencies; until then its dead code is silenced here rather than
+//! item by item, so a real warning cannot hide among them.
+#![allow(dead_code)]
 
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 
@@ -101,12 +109,6 @@ fn respond(app: &App, path: &str, query: Option<&str>, known: Option<&str>, shel
         );
     }
 
-    let theme = app.db.get("theme").unwrap_or_default();
-    if let Some(root) = external_theme(&app.themes, &theme) {
-        if let Some(response) = disk(&root, path, known, shell) {
-            return response;
-        }
-    }
     embedded::<DefaultThemeAssets>(path, "默认主题缺失，运行 scripts/theme.sh", known, shell)
 }
 
@@ -233,19 +235,6 @@ fn embedded<T: RustEmbed>(requested: &str, remedy: &str, known: Option<&str>, sh
     }
 }
 
-fn disk(root: &Path, requested: &str, known: Option<&str>, shell: Shell) -> Option<Response> {
-    let path = if requested.is_empty() { "index.html" } else { requested };
-    if let Some(data) = read_inside(root, path) {
-        return Some(page(path, data, known, shell));
-    }
-    // None rather than a 404: an external theme lacking the file defers to the
-    // built-in one, which issues the refusal.
-    if is_asset(path) {
-        return None;
-    }
-    read_inside(root, "index.html").map(|data| page("index.html", data, known, shell))
-}
-
 /// Serves one file with the caching policy its path warrants.
 ///
 /// Hashed names under `assets/` are immutable for a year: the browser never
@@ -289,95 +278,16 @@ fn read_inside(root: &Path, relative: &str) -> Option<Vec<u8>> {
     fs::read(file).ok()
 }
 
+// ---- installing a theme from an uploaded archive ----
+
 /// Whether a short names a directory under `<themes>`, which rules out an empty
-/// name and anything carrying a path separator. `default` is admitted: an
-/// installed copy of the built-in theme takes that name and is served in its
-/// place, leaving the embedded one as the fallback beneath it.
-pub fn valid_short(short: &str) -> bool {
+/// name and anything carrying a path separator.
+///
+/// Only the install path asks this now: the panel stopped naming themes when the
+/// market was removed. Phase 3 deletes it with the rest of the archive handling.
+fn valid_short(short: &str) -> bool {
     !short.is_empty() && short.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
-
-fn external_theme(themes: &Path, short: &str) -> Option<PathBuf> {
-    // The setting is empty until a theme is chosen, and names the default one.
-    let short = if short.is_empty() { "default" } else { short };
-    if !valid_short(short) {
-        return None;
-    }
-    let themes = themes.canonicalize().ok()?;
-    let root = themes.join(short).canonicalize().ok()?;
-    if !root.starts_with(&themes) || !root.is_dir() {
-        return None;
-    }
-    let dist = root.join("dist").canonicalize().ok()?;
-    // Checks only that the entry point exists, not its contents: this runs on
-    // every request the theme serves. A symlinked entry point is still read
-    // through `read_inside`, which is where directory escapes are refused.
-    if !dist.starts_with(&root) || !dist.is_dir() || !dist.join("index.html").is_file() {
-        return None;
-    }
-    Some(dist)
-}
-
-fn manifest(root: &Path, short: &str) -> Option<Theme> {
-    let data = read_inside(root, "theme.json")?;
-    if data.len() > 64 * 1024 {
-        return None;
-    }
-    let theme: Theme = serde_json::from_slice(&data)
-        .inspect_err(|e| {
-            tracing::warn!("{short}/theme.json is not a valid manifest; the theme is left out: {e}")
-        })
-        .ok()?;
-    (theme.short == short).then_some(theme)
-}
-
-pub fn themes(app: &App) -> std::io::Result<Vec<Theme>> {
-    let built_in = Theme {
-        builtin: true,
-        ..serde_json::from_str(include_str!("../target/theme/theme.json"))
-            .expect("the built-in theme manifest must be valid")
-    };
-    let mut list = vec![built_in];
-
-    if let Ok(base) = app.themes.canonicalize() {
-        for entry in fs::read_dir(&base)? {
-            let Ok(entry) = entry else { continue };
-            let Ok(kind) = entry.file_type() else { continue };
-            let Some(short) = entry.file_name().to_str().map(str::to_owned) else { continue };
-            if !kind.is_dir() || !valid_short(&short) || external_theme(&base, &short).is_none() {
-                continue;
-            }
-            let Ok(root) = entry.path().canonicalize() else { continue };
-            if let Some(theme) = manifest(&root, &short) {
-                // An installed copy of the built-in theme replaces it in the
-                // list rather than appearing beside it, matching `serve`, which
-                // reads the directory before the binary.
-                if theme.short == "default" {
-                    list[0] = theme;
-                } else {
-                    list.push(theme);
-                }
-            }
-        }
-    }
-
-    let configured = app.db.get("theme").unwrap_or_default();
-    let selected =
-        if list.iter().any(|theme| theme.short == configured) { configured } else { "default".into() };
-    for theme in &mut list {
-        theme.selected = theme.short == selected;
-    }
-    list[1..].sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(list)
-}
-
-pub fn selectable(app: &App, short: &str) -> bool {
-    short.is_empty()
-        || short == "default"
-        || themes(app).is_ok_and(|list| list.iter().any(|t| t.short == short))
-}
-
-// ---- installing a theme from an uploaded archive ----
 
 /// Limits on what one archive may expand to. A gz stream conceals its ratio
 /// behind the 32 MiB upload ceiling, so the expanded total is gated in its own
@@ -704,234 +614,6 @@ mod tests {
         assert!(refused(&[full.as_slice(), &[1]].concat()));
     }
 
-    /// Everything an uploaded archive must satisfy before replacing a theme
-    /// currently being served.
-    #[test]
-    fn an_uploaded_theme_is_checked_before_it_replaces_the_one_in_place() {
-        let tmp = crate::TempDir::new("install-test");
-        let base = tmp.0.clone();
-        let archive = base.join("upload.tar.gz");
-
-        let manifest: &[u8] =
-            r#"{"name":"极光","short":"aurora","description":"","version":"1","author":"a","url":""}"#
-                .as_bytes();
-        let pack = |files: &[(&str, &[u8])], link: Option<(&str, &str)>| {
-            let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
-                fs::File::create(&archive).unwrap(),
-                flate2::Compression::fast(),
-            ));
-            for (name, data) in files {
-                let mut header = tar::Header::new_gnu();
-                header.set_size(data.len() as u64);
-                // As packed under umask 000; installed, the files are 0644.
-                header.set_mode(0o666);
-                builder.append_data(&mut header, name, *data).unwrap();
-            }
-            if let Some((name, target)) = link {
-                let mut header = tar::Header::new_gnu();
-                header.set_entry_type(tar::EntryType::Symlink);
-                header.set_size(0);
-                header.set_mode(0o777);
-                builder.append_link(&mut header, name, target).unwrap();
-            }
-            builder.into_inner().unwrap().finish().unwrap();
-            fs::File::open(&archive).unwrap()
-        };
-
-        // The directory is named by the manifest, never by the uploaded file.
-        let theme = install(&base, pack(&[("theme.json", manifest), ("dist/index.html", b"v1")], None), None)
-            .unwrap();
-        assert_eq!(theme.short, "aurora");
-        assert_eq!(fs::read(base.join("aurora/dist/index.html")).unwrap(), b"v1");
-        use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(base.join("aurora/dist/index.html")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o644, "the packer's mode is masked");
-
-        // The same name again: replaced wholesale, not merged.
-        install(
-            &base,
-            pack(&[("theme.json", manifest), ("dist/index.html", b"v2"), ("dist/old.js", b"x")], None),
-            None,
-        )
-        .unwrap();
-        install(&base, pack(&[("theme.json", manifest), ("dist/index.html", b"v3")], None), None).unwrap();
-        assert_eq!(fs::read(base.join("aurora/dist/index.html")).unwrap(), b"v3");
-        assert!(!base.join("aurora/dist/old.js").exists(), "the replaced theme must not leave files behind");
-
-        let deep: Vec<(String, &[u8])> =
-            (0..100).map(|i| (format!("d{i}/{}f", "a/".repeat(20)), &b"x"[..])).collect();
-        let deep: Vec<(&str, &[u8])> = deep.iter().map(|(n, d)| (n.as_str(), *d)).collect();
-        // A file where a directory must go, a theme the hub cannot serve, a name
-        // that cannot be a directory, and a symlink -- the entry type that
-        // writes where the path check cannot look.
-        for bad in [
-            pack(&[("theme.json", manifest), ("dist", b"x"), ("dist/index.html", b"x")], None),
-            pack(&[("theme.json", manifest)], None),
-            pack(&[("theme.json", r#"{"name":"x","short":"../evil","description":"","version":"1","author":"a","url":""}"#.as_bytes()), ("dist/index.html", b"x")], None),
-            pack(&[("theme.json", manifest), ("dist/index.html", b"x")], Some(("dist/link", "/etc/passwd"))),
-            pack(&[("dist/index.html", b"x")], None),
-            // 100 files, but 2100 directories implied by their paths.
-            pack(
-                &[&[("theme.json", manifest), ("dist/index.html", &b"x"[..])][..], &deep].concat(),
-                None,
-            ),
-        ] {
-            // A reason for the panel, never the 500 of a failure on this machine.
-            let Err(e) = install(&base, bad, None) else { panic!("a bad package installed") };
-            assert!(e.downcast_ref::<crate::Shown>().is_some(), "{e:#}");
-        }
-        // Named as such, not left to the filesystem's refusal.
-        let long = format!("dist/{}", "a".repeat(5000));
-        let Err(e) = install(&base, pack(&[("theme.json", manifest), (&long, b"x")], None), None) else {
-            panic!("a path too long installed")
-        };
-        assert_eq!(
-            e.downcast_ref::<crate::Shown>().map(|s| s.0.as_str()),
-            Some("主题包里的路径过长"),
-            "{e:#}"
-        );
-        // A download cut short says so, rather than quoting the decoder.
-        pack(&[("theme.json", manifest), ("dist/index.html", b"v9")], None);
-        let whole = fs::read(&archive).unwrap();
-        let Err(e) = install(&base, &whole[..whole.len() / 2], None) else {
-            panic!("half an archive installed")
-        };
-        assert_eq!(e.downcast_ref::<crate::Shown>().map(|s| s.0.as_str()), Some(DAMAGED), "{e:#}");
-        // Cut past tar's end marker, or with one byte changed on the way: every
-        // header reads, so only the gzip checksum can refuse either.
-        let mut altered = whole.clone();
-        let crc = altered.len() - 8;
-        altered[crc] ^= 1;
-        for damaged in [&whole[..whole.len() - 4], &altered[..]] {
-            let Err(e) = install(&base, damaged, None) else { panic!("a damaged archive installed") };
-            assert_eq!(e.downcast_ref::<crate::Shown>().map(|s| s.0.as_str()), Some(DAMAGED), "{e:#}");
-        }
-        // The wrong file rather than a damaged one: a zip, or the same tar
-        // already decompressed. Downloading it again cannot help, so the answer
-        // names the right file instead.
-        let mut plain = Vec::new();
-        flate2::read::GzDecoder::new(&whole[..]).read_to_end(&mut plain).unwrap();
-        for wrong in [&b"PK\x03\x04"[..], &plain[..]] {
-            let Err(e) = install(&base, wrong, None) else { panic!("a file that is not gzip installed") };
-            assert_eq!(e.downcast_ref::<crate::Shown>().map(|s| s.0.as_str()), Some(NOT_GZIP), "{e:#}");
-        }
-        // Source code (tar.gz): a pax global header, then the repository one
-        // directory down. It reaches the missing manifest, which names the file.
-        let mut source =
-            tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
-        let mut header = tar::Header::new_ustar();
-        header.set_entry_type(tar::EntryType::XGlobalHeader);
-        header.set_size(6);
-        header.set_mode(0o644);
-        source.append_data(&mut header, "pax_global_header", &b"6 a=b\n"[..]).unwrap();
-        for (name, data) in [("aurora-1/theme.json", manifest), ("aurora-1/dist/index.html", b"v9")] {
-            let mut header = tar::Header::new_gnu();
-            header.set_size(data.len() as u64);
-            header.set_mode(0o644);
-            source.append_data(&mut header, name, data).unwrap();
-        }
-        let source = source.into_inner().unwrap().finish().unwrap();
-        let Err(e) = install(&base, &source[..], None) else { panic!("a source archive installed") };
-        assert!(e.to_string().contains("Source code"), "{e:#}");
-        // Past the end marker, padding and nothing more.
-        let mut padded = tar::Builder::new(Vec::new());
-        let mut header = tar::Header::new_gnu();
-        header.set_size(2);
-        header.set_mode(0o644);
-        padded.append_data(&mut header, "theme.json", &b"{}"[..]).unwrap();
-        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        std::io::Write::write_all(&mut gz, &padded.into_inner().unwrap()).unwrap();
-        std::io::Write::write_all(&mut gz, &vec![0; (MAX_PADDING + 1) as usize]).unwrap();
-        let Err(e) = install(&base, &gz.finish().unwrap()[..], None) else {
-            panic!("an oversized tail installed")
-        };
-        assert!(e.to_string().contains("tar 结尾之后"), "{e:#}");
-        // A GNU long-name header declaring 400 MiB, which tar reads into memory
-        // before any entry is seen: stopped at the stream budget.
-        let mut header = [0u8; 512];
-        header[..13].copy_from_slice(b"././@LongLink");
-        header[124..135].copy_from_slice(format!("{:011o}", 400u64 << 20).as_bytes());
-        header[148..156].fill(b' ');
-        header[156] = b'L';
-        header[257..265].copy_from_slice(b"ustar  \0");
-        let sum: u32 = header.iter().map(|&b| u32::from(b)).sum();
-        header[148..155].copy_from_slice(format!("{sum:06o}\0").as_bytes());
-        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
-        std::io::Write::write_all(&mut gz, &header).unwrap();
-        std::io::Write::write_all(&mut gz, &vec![b'a'; (MAX_STREAM + 1) as usize]).unwrap();
-        let Err(e) = install(&base, &gz.finish().unwrap()[..], None) else {
-            panic!("a long-name bomb installed")
-        };
-        assert!(e.to_string().contains("解压后超过"), "{e:#}");
-
-        // None of that affected the theme being served or left a staging
-        // directory behind.
-        assert_eq!(fs::read(base.join("aurora/dist/index.html")).unwrap(), b"v3");
-        let left: Vec<_> = fs::read_dir(&base)
-            .unwrap()
-            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
-            .filter(|name| name != "upload.tar.gz")
-            .collect();
-        assert_eq!(left, ["aurora"]);
-
-        // An optional preview.png is carried along; a theme without one returns
-        // nothing rather than erroring.
-        install(
-            &base,
-            pack(&[("theme.json", manifest), ("dist/index.html", b"v3"), ("preview.png", b"PNG")], None),
-            None,
-        )
-        .unwrap();
-        assert_eq!(preview(&base, "aurora").unwrap(), b"PNG");
-        install(&base, pack(&[("theme.json", manifest), ("dist/index.html", b"v3")], None), None).unwrap();
-        assert!(preview(&base, "aurora").is_none());
-
-        // An installed copy of the built-in theme takes its place: it is read
-        // from disk down to the thumbnail, and stands in the list where the
-        // embedded copy was rather than beside it.
-        let built_in: &[u8] =
-            r#"{"name":"默认主题","short":"default","description":"","version":"9","author":"a","url":""}"#
-                .as_bytes();
-        install(
-            &base,
-            pack(&[("theme.json", built_in), ("dist/index.html", b"d1"), ("preview.png", b"DISK")], None),
-            None,
-        )
-        .unwrap();
-        let mut app = App::for_test(crate::db::Db::open(":memory:").unwrap());
-        app.themes = base.clone();
-        let list = themes(&app).unwrap();
-        assert_eq!(list.iter().filter(|t| t.short == "default").count(), 1);
-        assert!(!list[0].builtin && list[0].version == "9" && list[0].selected);
-        assert_eq!(preview(&base, "default").unwrap(), b"DISK");
-
-        // Deleting it leaves the embedded copy serving, which no directory can
-        // be made to answer for.
-        remove(&base, "default").unwrap();
-        assert!(themes(&app).unwrap()[0].builtin);
-        assert_ne!(preview(&base, "default"), Some(b"DISK".to_vec()));
-
-        // An update replaces the theme it targets, so a package that renamed
-        // itself is refused rather than installed alongside.
-        assert!(install(
-            &base,
-            pack(&[("theme.json", manifest), ("dist/index.html", b"v4")], None),
-            Some("nebula"),
-        )
-        .is_err());
-        assert!(!base.join("nebula").exists());
-        assert_eq!(fs::read(base.join("aurora/dist/index.html")).unwrap(), b"v3");
-        install(&base, pack(&[("theme.json", manifest), ("dist/index.html", b"v4")], None), Some("aurora"))
-            .unwrap();
-        assert_eq!(fs::read(base.join("aurora/dist/index.html")).unwrap(), b"v4");
-
-        // Deletion is the way back out.
-        remove(&base, "aurora").unwrap();
-        assert!(!base.join("aurora").exists());
-        assert!(remove(&base, "aurora").is_err(), "already deleted");
-        assert!(remove(&base, "../etc").is_err(), "not a name a theme directory can carry");
-    }
-
     /// The shell changes under a fixed URL -- a new build, or the public page
     /// switched to another theme -- so it revalidates. The validator keeps that
     /// from costing the whole file and makes a switch land on the next request
@@ -1010,29 +692,6 @@ mod tests {
         // Only the icon that changed moves.
         let touch = |html: &str| html.split("apple-touch-icon.png").nth(1).unwrap().to_owned();
         assert_eq!(touch(&after), touch(&before));
-    }
-
-    /// The two guards on a theme name, applied together by the settings page:
-    /// which strings may name a directory on disk, and which names the panel may
-    /// switch to.
-    #[test]
-    fn a_theme_name_is_checked_before_it_reaches_the_disk_or_the_settings_row() {
-        assert!(valid_short("aurora") && valid_short("my-theme_2"));
-        // Anything that could redirect the path join.
-        for bad in ["", "..", "a/b", "a\\b", "./x", "~", "a b", "th\u{e9}me"] {
-            assert!(!valid_short(bad), "{bad:?} must not name a theme directory");
-        }
-        // `default` names a directory like any other: an installed copy of the
-        // built-in theme takes it and is served in place of the embedded one.
-        assert!(valid_short("default"));
-
-        // Still selectable from the panel, along with the empty string it is
-        // stored as: switching back is the only recovery from a broken external
-        // theme, so it can never be refused. `selectable` therefore lists it
-        // both in its own right and at the head of the list.
-        let app = App::for_test(crate::db::Db::open(":memory:").unwrap());
-        assert!(selectable(&app, "") && selectable(&app, "default"));
-        assert!(!selectable(&app, "aurora"), "a theme that is not installed is not selectable");
     }
 
     /// A symlink in the themes directory that leads out of it is refused, and
