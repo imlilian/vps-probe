@@ -457,6 +457,25 @@ PrivateDevices=yes
 # kernel; without it the agent reports none.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
 MemoryMax=64M
+# The agent needs no capability: it reads /proc, opens one socket, and runs as
+# a plain user. The empty set makes that structural.
+CapabilityBoundingSet=
+# Kernel surfaces the agent never touches. Each is a mount-namespace option, so
+# a container that cannot create one degrades to a warning rather than a unit
+# that refuses to start.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# The agent creates no namespaces at run time.
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+# Sockets, files and the timer loop; reading /proc is unaffected, since a
+# syscall filter says nothing about which paths are open to the service.
+SystemCallFilter=@system-service
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

@@ -280,6 +280,34 @@ MemoryMax=256M
 # the hard one, so it is raised here where systemd may.
 LimitNOFILE=65536
 
+# Nothing the hub does needs a capability: it binds a high port, writes one
+# directory, and runs as a plain user. The empty set makes that structural --
+# a capability gained later by a bug cannot be used, because none are in the
+# bounding set to begin with.
+CapabilityBoundingSet=
+# Kernel surfaces a status server never touches. Each is a mount-namespace
+# option, so a container that cannot create one degrades to a warning rather
+# than a unit that refuses to start.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# The hub creates no namespaces at run time.
+RestrictNamespaces=yes
+# Refuses the 32-bit syscall entry, which nothing in a native build calls.
+SystemCallArchitectures=native
+# What a normal system service is expected to use: sockets, files, SQLite,
+# name resolution, timers. Checked against a pass over every route with an
+# agent connected, so a rejected call shows up as status=31/SYS in the journal
+# rather than as a mystery. That status is the first thing to look for if a
+# future change reaches outside the set.
+SystemCallFilter=@system-service
+# Anything the service creates -- journals, and the temporary files a restore
+# writes -- is private to it by default.
+UMask=0077
+
 [Install]
 WantedBy=multi-user.target
 UNIT
