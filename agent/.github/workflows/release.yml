@@ -1,0 +1,85 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Read-only by default: the build jobs run third-party actions, dependency
+# build scripts and install hooks, none of which may hold a token that can
+# publish. Only the job that creates the release asks for more.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v7
+      # A v* tag can be neither moved nor deleted, so one that disagrees with the
+      # version the agent reports stops here, before anything is published.
+      - if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          V=v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
+          [ "$GITHUB_REF_NAME" = "$V" ] || { echo "::error::tag $GITHUB_REF_NAME, Cargo.toml $V"; exit 1; }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo install --locked cross
+      - run: cross build --release --locked --target ${{ matrix.target }}
+      # install.sh downloads exactly this name; changing it breaks every
+      # install command the hub issues.
+      - run: cp "target/${{ matrix.target }}/release/monitor-agent" "monitor-agent-${{ matrix.target }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: monitor-agent-${{ matrix.target }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+      # The hub relays these through an operator-configured GitHub proxy and
+      # install.sh executes what arrives, so the hub relays a binary only with a
+      # signature that verifies under the public key built into it. The private
+      # key reaches this job alone. Checked against that same public key here, so
+      # a secret holding any other key fails the release instead of publishing
+      # binaries no hub will relay. Runs on a manual dispatch too.
+      - run: |
+          [ -n "$AGENT_SIGNING_KEY" ] || { echo "::error::the AGENT_SIGNING_KEY secret is not set"; exit 1; }
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/key.pem"' EXIT
+          printf '%s\n' "$AGENT_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
+          printf '%s\n' "$PUBLIC_KEY" > "$RUNNER_TEMP/pub.pem"
+          for b in monitor-agent-*-musl; do
+            openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in "$b" -out "$b.sig"
+            openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/pub.pem" -rawin -in "$b" -sigfile "$b.sig"
+          done
+        env:
+          AGENT_SIGNING_KEY: ${{ secrets.AGENT_SIGNING_KEY }}
+          # The hub's `AGENT_SIGNING_KEY` (src/main.rs in the hub repository).
+          PUBLIC_KEY: |
+            -----BEGIN PUBLIC KEY-----
+            MCowBQYDK2VwAyEAmnxeKfh5WgpyEj7h8GqTQfKVNNvChbmrvuagBtxl7u8=
+            -----END PUBLIC KEY-----
+      # A manual dispatch builds and signs the binaries; only a tag publishes,
+      # so the path can be exercised without cutting a release. gh ships on the
+      # runner, keeping a third-party action out of the contents:write step.
+      # sha256sums.txt is generated inside bin/, so the names in it are bare; the
+      # `*-musl` glob keeps the signatures beside the binaries out of it.
+      - if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p bin && mv monitor-agent-* bin/
+          (cd bin && sha256sum monitor-agent-*-musl > sha256sums.txt)
+          gh release create "$GITHUB_REF_NAME" bin/monitor-agent-* bin/sha256sums.txt \
+            --generate-notes --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}

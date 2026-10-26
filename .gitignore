@@ -1,0 +1,11 @@
+# 私有文档与本地 AI 工作区数据，不入库
+/docs/
+/.workbuddy/
+/CLAUDE.md
+/.claude/
+
+# 运行期数据与本地环境
+*.db
+*.db-shm
+*.db-wal
+.env
