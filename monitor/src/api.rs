@@ -1929,6 +1929,13 @@ pub async fn settings(
     // `retention_days()` already holds the default `prune` and the data page read,
     // so it answers here as well.
     out.insert("retention_days".into(), json!(app.db.retention_days().to_string()));
+    // The other key with a meaning the stored row does not always carry: any
+    // value but "on" closes the page, so a hub that never wrote this one is
+    // closed (`public_page`). Echoing the raw row would answer "", which every
+    // reader here has to remember to interpret -- and the panel, which treats
+    // "not off" as on, would show an open switch over a closed page, then write
+    // that "on" back when some unrelated field was saved.
+    out.insert("public_page".into(), json!(if app.public_page() { "on" } else { "off" }));
     out.insert(
         "github_secret_set".into(),
         json!(app.db.get("github_client_secret").is_some_and(|v| !v.is_empty())),
@@ -3885,6 +3892,28 @@ mod tests {
             "a fresh hub's own settings must survive a round trip"
         );
         assert_eq!(app.db.retention_days(), 30, "and the stored window is the one that was shown");
+    }
+
+    /// The switch has to show what the hub does. Reading back the stored row
+    /// answers "" for a hub that never wrote it, and both directions went wrong
+    /// from there: the panel, which treated "not off" as on, drew an open switch
+    /// over a closed page, and saving the form -- which sends every field --
+    /// wrote that "on" down, publishing a page nobody asked to publish.
+    #[tokio::test]
+    async fn the_public_page_switch_reports_what_the_hub_does() {
+        let app = std::sync::Arc::new(app());
+        let Json(fresh) = settings(Admin, State(app.clone()), peer(), HeaderMap::new()).await;
+        assert_eq!(fresh["public_page"], "off", "a hub that never wrote the key serves closed");
+
+        app.db.set("public_page", "on").unwrap();
+        let Json(opened) = settings(Admin, State(app.clone()), peer(), HeaderMap::new()).await;
+        assert_eq!(opened["public_page"], "on");
+
+        // Anything that is not "on" closes it, and the answer says so rather than
+        // handing back a value whose meaning the caller has to work out.
+        app.db.set("public_page", "").unwrap();
+        let Json(cleared) = settings(Admin, State(app), peer(), HeaderMap::new()).await;
+        assert_eq!(cleared["public_page"], "off");
     }
 
     #[tokio::test]

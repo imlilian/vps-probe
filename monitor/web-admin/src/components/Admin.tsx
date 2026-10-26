@@ -2415,7 +2415,9 @@ function SettingsTab({ onSaved }: { onSaved: () => void }) {
           <SwitchRow
             label="开放公开状态页"
             hint="关闭后所有页面需登录"
-            checked={s.public_page !== "off"}
+            // "on" is the only value that opens it -- the hub closes the page on
+            // anything else, including a key it never wrote.
+            checked={s.public_page === "on"}
             onChange={(v) => set("public_page", v ? "on" : "off")}
           />
           <SwitchRow
@@ -2456,7 +2458,9 @@ function SettingsTab({ onSaved }: { onSaved: () => void }) {
                 retention_days: String(s.retention_days || "30"),
                 github_proxy: String(s.github_proxy ?? ""),
                 origin_cdn_only: s.origin_cdn_only === "on" ? "on" : "off",
-                public_page: s.public_page === "off" ? "off" : "on",
+                // Strict for the same reason: this form is saved whole, so a
+                // value the switch did not mean would be written here instead.
+                public_page: s.public_page === "on" ? "on" : "off",
               }).then((ok) => ok && onSaved())
             }
           >
