@@ -119,8 +119,12 @@ impl App {
         Self::new(db, String::new(), tokio::sync::mpsc::channel(1).0)
     }
 
+    /// Whether the public page answers without a session. Off unless it was
+    /// explicitly turned on: the page carries every node's location, traffic
+    /// and latency, which is a ready-made inventory of the fleet for whoever
+    /// asks. A hub whose owner wants it public says so once, in the panel.
     pub fn public_page(&self) -> bool {
-        self.db.get("public_page").as_deref() != Some("off")
+        self.db.get("public_page").as_deref() == Some("on")
     }
 
     /// Whether a session cookie may be marked Secure. With `--site` this follows
@@ -182,9 +186,7 @@ async fn install_script() -> Response {
 fn release_url(app: &App, arch: &str) -> String {
     proxied(
         app,
-        format!(
-            "https://github.com/{REPO}/releases/latest/download/probe-agent-{arch}-unknown-linux-musl"
-        ),
+        format!("https://github.com/{REPO}/releases/latest/download/probe-agent-{arch}-unknown-linux-musl"),
     )
 }
 
@@ -282,8 +284,8 @@ impl<S: futures_core::Stream + Unpin> futures_core::Stream for Metered<S> {
 /// The key the agent's release job signs each binary with (ed25519, the raw 32
 /// bytes). Rotating it takes a hub release.
 const AGENT_SIGNING_KEY: [u8; 32] = [
-    0x11, 0x68, 0xdd, 0x76, 0xce, 0x3d, 0xab, 0xde, 0xf2, 0xbf, 0x7f, 0xf3, 0x58, 0xb4, 0x0b, 0x31,
-    0xee, 0xbf, 0x03, 0xb3, 0xef, 0x2b, 0xef, 0xde, 0xe0, 0xd6, 0x6a, 0xf1, 0xe5, 0xce, 0xfa, 0x8f,
+    0x11, 0x68, 0xdd, 0x76, 0xce, 0x3d, 0xab, 0xde, 0xf2, 0xbf, 0x7f, 0xf3, 0x58, 0xb4, 0x0b, 0x31, 0xee,
+    0xbf, 0x03, 0xb3, 0xef, 0x2b, 0xef, 0xde, 0xe0, 0xd6, 0x6a, 0xf1, 0xe5, 0xce, 0xfa, 0x8f,
 ];
 
 /// Far above the 1.8 MB an agent weighs; bounds what a proxy can make the hub
@@ -1299,13 +1301,13 @@ mod tests {
     }
 
     #[test]
-    fn the_public_page_is_on_unless_it_is_switched_off() {
+    fn the_public_page_is_off_unless_it_is_switched_on() {
         let app = app("http://x");
+        assert!(!app.public_page(), "a fresh hub must not publish itself");
+        app.db.set("public_page", "on").unwrap();
         assert!(app.public_page());
         app.db.set("public_page", "off").unwrap();
         assert!(!app.public_page());
-        app.db.set("public_page", "on").unwrap();
-        assert!(app.public_page());
     }
 
     /// A stream that ends immediately, standing in for a release.

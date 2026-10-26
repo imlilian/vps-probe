@@ -186,6 +186,18 @@ fn embedded<T: RustEmbed>(requested: &str, remedy: &str, known: Option<&str>, sh
     }
 }
 
+/// Sent with every document this origin serves. `script-src 'self'` is the one
+/// that earns its keep: both bundles load nothing from elsewhere, so a
+/// dependency that injected an external script would be blocked rather than
+/// run. `'unsafe-inline'` is needed for styles alone -- React writes them as
+/// style attributes, which CSP counts as inline -- and not for scripts.
+///
+/// `ws:` and `wss:` are named because `'self'` matches the page's own http(s)
+/// origin only, while the live feed opens a WebSocket, a scheme of its own.
+const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+     img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'; \
+     base-uri 'none'; form-action 'self'";
+
 /// Serves one file with the caching policy its path warrants.
 ///
 /// Hashed names under `assets/` are immutable for a year: the browser never
@@ -211,6 +223,12 @@ fn asset(path: &str, data: Vec<u8>, known: Option<&str>) -> Response {
         (header::CONTENT_TYPE, mime.as_ref()),
         (header::CACHE_CONTROL, "no-cache"),
         (header::ETAG, etag.as_str()),
+        // A document here may not be framed, which is what keeps a panel's
+        // delete and restore buttons from being clicked through an invisible
+        // iframe laid over someone else's page.
+        (header::CONTENT_SECURITY_POLICY, CSP),
+        (header::X_FRAME_OPTIONS, "DENY"),
+        (header::REFERRER_POLICY, "no-referrer"),
     ];
     if known == Some(etag.as_str()) {
         return (StatusCode::NOT_MODIFIED, headers).into_response();
@@ -249,6 +267,27 @@ mod tests {
         let hashed = asset("assets/index-CSjcYfL9.js", b"console.log(1)".to_vec(), None);
         assert_eq!(hashed.status(), StatusCode::OK);
         assert_eq!(etag(&hashed), None);
+    }
+
+    /// The shell is framed by nobody and loads only what it shipped with.
+    /// Asserted because neither header has a visible symptom when it goes
+    /// missing: the page works exactly the same until someone embeds it.
+    #[test]
+    fn a_served_document_forbids_framing_and_foreign_scripts() {
+        let response = asset("index.html", b"<html></html>".to_vec(), None);
+        let headers = response.headers();
+        let csp = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+        assert!(csp.contains("script-src 'self'"), "{csp}");
+        assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+        // The live feed is a WebSocket, whose scheme `'self'` does not cover.
+        assert!(csp.contains("ws:") && csp.contains("wss:"), "{csp}");
+        assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
+        assert_eq!(headers[header::REFERRER_POLICY], "no-referrer");
+
+        // A hashed asset is loaded by the shell rather than framed itself, and
+        // its name is already immutable: a policy there would cost bytes only.
+        let hashed = asset("assets/index-CSjcYfL9.js", b"console.log(1)".to_vec(), None);
+        assert!(!hashed.headers().contains_key(header::CONTENT_SECURITY_POLICY));
     }
 
     /// The bytes decide the type, whatever the data URL declares, and anything

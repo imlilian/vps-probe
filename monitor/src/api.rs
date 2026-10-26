@@ -3034,6 +3034,9 @@ mod tests {
     #[test]
     fn a_stream_re_reads_both_answers_its_handshake_tested() {
         let app = app();
+        // A fresh hub publishes nothing; this test starts from the
+        // published state it then narrows or closes.
+        app.db.set("public_page", "on").unwrap();
         let hash = sha256("live-token");
         app.db.create_session(&hash, Utc::now().timestamp() + 3_600).unwrap();
 
@@ -3057,6 +3060,9 @@ mod tests {
     #[tokio::test]
     async fn a_closed_status_page_and_a_sibling_origin_see_no_admin_data() {
         let app = std::sync::Arc::new(app());
+        // A fresh hub publishes nothing; this test starts from the
+        // published state it then narrows or closes.
+        app.db.set("public_page", "on").unwrap();
         app.db.create_session(&sha256("live-token"), Utc::now().timestamp() + 3_600).unwrap();
         let signed_in = |site: &str| {
             let mut headers = HeaderMap::new();
@@ -3084,6 +3090,9 @@ mod tests {
     #[tokio::test]
     async fn only_the_admin_node_list_is_marked_no_transform() {
         let app = std::sync::Arc::new(app());
+        // A fresh hub publishes nothing; this test starts from the
+        // published state it then narrows or closes.
+        app.db.set("public_page", "on").unwrap();
         app.db.create_session(&sha256("live-token"), Utc::now().timestamp() + 3_600).unwrap();
         let mut signed_in = HeaderMap::new();
         signed_in.insert(header::COOKIE, format!("{}=live-token", crate::auth::COOKIE).parse().unwrap());
@@ -3097,6 +3106,9 @@ mod tests {
     #[tokio::test]
     async fn the_public_node_list_reuses_the_compressed_frame() {
         let app = std::sync::Arc::new(app());
+        // A fresh hub publishes nothing; this test starts from the
+        // published state it then narrows or closes.
+        app.db.set("public_page", "on").unwrap();
         node(&app, "listed", true);
         let ask = |encoding: &'static str| {
             let mut headers = HeaderMap::new();
@@ -3426,6 +3438,9 @@ mod tests {
     async fn history_queries_past_the_gate_are_refused_rather_than_queued() {
         let _serial = HISTORY_TESTS.lock().await;
         let app = std::sync::Arc::new(app());
+        // A fresh hub publishes nothing; this test starts from the
+        // published state it then narrows or closes.
+        app.db.set("public_page", "on").unwrap();
         let id = node(&app, "n", true);
         let ask = || {
             metrics(
@@ -3502,6 +3517,9 @@ mod tests {
     #[test]
     fn per_node_reads_follow_the_public_flag_and_the_public_page_switch() {
         let app = app();
+        // A fresh hub publishes nothing; this test starts from the published
+        // state it then narrows or closes.
+        app.db.set("public_page", "on").unwrap();
         let open = node(&app, "open", true);
         let hidden = node(&app, "hidden", false);
 
@@ -3524,6 +3542,9 @@ mod tests {
     async fn a_history_window_stops_at_the_retention_window() {
         let _serial = HISTORY_TESTS.lock().await;
         let app = std::sync::Arc::new(app());
+        // A fresh hub publishes nothing; this test starts from the
+        // published state it then narrows or closes.
+        app.db.set("public_page", "on").unwrap();
         let id = node(&app, "n", true);
         let now = Utc::now().timestamp();
         // One sample per day for a month, so a row's presence identifies its

@@ -42,7 +42,7 @@ if [ ! -f "$SRC/dist/index.html" ] || [ -n "$PIN" ]; then
     echo "warning: npm not found; embedding the existing $SRC/dist (possibly stale)" >&2
   else
     echo "$SRC/dist/index.html does not exist and npm is unavailable." >&2
-    echo "build the theme first:  (cd $SRC && npm install && npm run build)" >&2
+    echo "build the theme first:  (cd $SRC && npm ci && npm run build)" >&2
     exit 1
   fi
 fi

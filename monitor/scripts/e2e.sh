@@ -63,6 +63,11 @@ COOKIE=$(curl -fsS -D - -o /dev/null -H 'content-type: application/json' -d "{\"
 	"$URL/api/auth/login" | tr -d '\r' | sed -n 's/^[Ss]et-[Cc]ookie: \(monitor_session=[^;]*\).*/\1/p')
 [ -n "$COOKIE" ] || fail "sign-in returned no session cookie"
 
+# A fresh hub publishes nothing, and the public half of this script is exactly
+# what switching it on exposes. Said once here rather than assumed.
+curl -fsS -o /dev/null -H "Cookie: $COOKIE" -H 'content-type: application/json' \
+	-d '{"public_page": "on"}' "$URL/api/settings" || fail "opening the public page was refused"
+
 # Provisioning answers only a panel on an https domain entry; these two headers
 # are what a browser sends from one.
 curl -fsS -o /dev/null -H "Cookie: $COOKIE" -H 'Origin: https://hub.example.com' -H 'Sec-Fetch-Site: same-origin' \

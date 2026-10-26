@@ -11,10 +11,10 @@ ADMIN_DIR  := monitor/web-admin
 all: hub agent
 
 theme:
-	cd $(THEME_DIR) && npm install && npm run build
+	cd $(THEME_DIR) && npm ci && npm run build
 
 admin:
-	cd $(ADMIN_DIR) && npm install && npm run build
+	cd $(ADMIN_DIR) && npm ci && npm run build
 
 hub: admin
 	cd monitor && cargo build --release
