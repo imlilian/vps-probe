@@ -19,7 +19,7 @@ COPY --from=base /usr/share/zoneinfo /usr/share/zoneinfo
 ENV TZ=UTC
 
 # Nothing in this image can mkdir -- no shell, and the hub runs unprivileged --
-# so /data is baked in already owned. The hub creates themes/ under it itself.
+# so /data is baked in already owned. The hub creates the SQLite files there.
 COPY --from=base --chown=65534:65534 /data /data
 # --chmod, because the executable bit does not survive the round trip through
 # actions/upload-artifact: without it the image carries a 0644 binary and every

@@ -16,8 +16,8 @@ cd "$(dirname "$0")/.."
 SRC=web-site
 DEST=target/theme
 
-[ -f "$SRC/theme.json" ] && [ -f "$SRC/package.json" ] ||
-  { echo "theme source $SRC is missing theme.json/package.json" >&2; exit 1; }
+[ -f "$SRC/package.json" ] ||
+  { echo "theme source $SRC is missing package.json" >&2; exit 1; }
 
 # Stamp: hash of everything that feeds the vite build (node_modules/ and
 # dist/ excluded). A match against target/theme/.pin means the last sync
@@ -50,14 +50,12 @@ fi
 
 rm -rf "$DEST"
 mkdir -p "$DEST"
-cp "$SRC/theme.json" "$DEST/theme.json"
-[ -f "$SRC/preview.png" ] && cp "$SRC/preview.png" "$DEST/preview.png"
 cp -R "$SRC/dist" "$DEST/dist"
 
-# The layout mirrors what frontend.rs embeds: theme.json, an optional
-# preview.png and dist/. Without index.html the hub would embed nothing.
-if [ ! -f "$DEST/dist/index.html" ] || [ ! -f "$DEST/theme.json" ]; then
-  echo "theme build produced no dist/index.html or theme.json" >&2
+# dist/ is all frontend.rs embeds. A build that produced no shell embeds
+# nothing, and the public page would answer 404 until the next sync.
+if [ ! -f "$DEST/dist/index.html" ]; then
+  echo "theme build produced no dist/index.html" >&2
   exit 1
 fi
 

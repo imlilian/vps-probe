@@ -1,8 +1,9 @@
 # monitor
 
-文档：[monitor-document.pages.dev](https://monitor-document.pages.dev)，安装、配置、反向代理与主题开发都在这里。
+hub：管理后台、API 与公开状态页宿主。单仓库（monorepo），hub、agent 与公开页主题一起维护。
 
-主题站：[monitor-themes.pages.dev](https://monitor-themes.pages.dev)，在线预览各个公开页主题，复制地址即可在面板安装。
+上游文档：[monitor-document.pages.dev](https://monitor-document.pages.dev)，安装、配置与反向代理都在这里。
+注意：上游文档里的「主题市场 / 主题开发」部分在本仓库已移除，见下方差异说明。
 
 ## 特性
 
@@ -13,13 +14,34 @@
 
 ## 组成
 
-| 仓库 | 说明 |
+| 目录 | 说明 |
 |---|---|
-| [monitor](https://github.com/monitor-probe/monitor) | hub：后台、API、公开页宿主 |
-| [agent](https://github.com/monitor-probe/agent) | Linux agent |
-| [monitor-theme-default](https://github.com/monitor-probe/monitor-theme-default) | 内置默认主题 |
-| [themes](https://github.com/monitor-probe/themes) | 主题站：收录第三方主题，提供在线预览 |
+| `monitor/` | hub：后台、API、公开页宿主（Rust + axum + SQLite） |
+| `agent/` | Linux agent（独立二进制，WebSocket + JSON-RPC 2.0 上报） |
+| `monitor/web-admin/` | 管理后台前端（Vite + React），构建期嵌入 hub |
+| `monitor/web-site/` | 公开状态页主题（Vite + React），构建期嵌入 hub |
 
 ```
 agent (Linux)  ──WebSocket / JSON-RPC 2.0──▶  hub (axum + SQLite)  ──▶  后台 + 状态页
 ```
+
+## 构建
+
+```bash
+make hub      # 后台前端 + 主题 + hub 二进制（三者顺序自动编排）
+make agent    # 采集端
+make check    # cargo check + 两个前端的 lint
+make test     # cargo test + 前端测试
+```
+
+两个前端都是构建期输入：`cargo build` 会先确保它们的 `dist/` 是最新的，再由 rust-embed 嵌入
+二进制。改完 `web-site/` 或 `web-admin/` 后重新 `make hub` 即生效——不需要发版、不需要改 pin、
+也不需要联网。
+
+## 与上游的差异（个人 fork）
+
+- **主题市场已整体移除**：没有主题上传、安装、更新、删除、预览，也没有 `/api/themes*` 与
+  `--themes` 参数。公开页固定使用 `monitor/web-site/` 那一份内嵌主题，管理面板不再有「主题」页。
+- **构建不联网**：默认主题从本仓库源码构建后嵌入，不再按 `web-theme.pin` 从 GitHub Release 下载。
+- 相应地，`tar`/`flate2` 里的解压链路只保留公开 WebSocket gzip 帧所需的那部分，主题包的 tar.gz
+  解压代码及其依赖已删除。

@@ -2331,7 +2331,7 @@ impl Db {
         }
         close_bucket(&mut out, &mut open, bucket * step);
         // Probe by probe in the panel's order, each probe's rows still in time
-        // order. Themes take their series, colours and legend from the order in
+        // order. The shipped page takes its series, colours and legend from the order in
         // which probes first appear; bucket by bucket, that would be whichever
         // probe happened to answer inside the window's partial first bucket.
         let rank: HashMap<i64, usize> = conn
@@ -3845,7 +3845,7 @@ mod tests {
         assert_eq!(db.nodes().unwrap().iter().map(|n| n.id).collect::<Vec<_>>(), vec![c, a, b, d]);
     }
 
-    /// Themes draw probes in the order they first appear in the rows, so the rows
+    /// The page draws probes in the order they first appear in the rows, so the rows
     /// follow the panel's order even when a later probe alone answered in the
     /// window's first bucket.
     #[test]

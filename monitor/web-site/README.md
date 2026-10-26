@@ -1,12 +1,16 @@
-# monitor-theme-default
+# monitor-web-site
 
-[monitor](https://github.com/monitor-probe/monitor) 的内置默认主题，同时作为第三方主题的参考实现。
+hub 的公开状态页，也是 hub 唯一内置、唯一使用的前端主题。
 
 React + Vite + shadcn/ui，黑白配色。
 
+本目录是 hub 的**构建期输入**：`npm run build` 产出 `dist/`，hub 的 `build.rs` 在编译时把它同步到
+`target/theme/dist/` 并用 rust-embed 嵌进二进制。改这里的源码后重新 `make hub` 即生效，不需要打包
+发布，也没有任何安装/切换/更新的入口——hub 里不存在主题市场。
+
 ## 开发
 
-主题只读公开数据，开发服务器直接拿一个现成的 hub 当数据源，要求它开着公开状态页：
+页面只读公开数据。开发服务器直接拿一个现成的 hub 当数据源，要求它开着公开状态页：
 
 ```bash
 npm ci
@@ -14,45 +18,16 @@ npm ci
 MONITOR_HUB=https://hub.example.com npm run dev
 ```
 
-不设 `MONITOR_HUB` 时代理至 `http://127.0.0.1:9911`。在本机起 hub、自己造节点的写法见文档站的
-[主题开发](https://monitor-document.pages.dev/dev/theme)页。
+不设 `MONITOR_HUB` 时代理至 `http://127.0.0.1:9911`。
 
 构建产物位于 `dist/`。提交前运行 `npm run build && npm run lint && npm test`。
 
 `npm test` 校验数字格式化、坐标轴与时间刻度，以及实时指标的输入边界。没有测试框架，Node 自己剥掉
 类型，失败时退出码非零。
 
-## 主题包
+## 页面契约
 
-一个可安装主题是一个目录，名字必须与 `theme.json` 的 `short` 相同：
-
-```text
-<themes-dir>/<short>/
-├── theme.json
-├── preview.png        # 可选，面板上的预览图
-└── dist/
-    └── index.html
-```
-
-`theme.json` 除 `config` 外的六个字段都要写，均为字符串，`description`、`version`、`author`、`url` 可以留空，少写一个 hub 就不认这个主题：
-
-| 字段 | 含义 |
-|---|---|
-| `name` | 显示名称 |
-| `short` | 唯一短名，限字母、数字、`-`、`_`，取 `default` 则顶替 hub 内置的那份 |
-| `description` | 简介 |
-| `version` | 主题版本 |
-| `author` | 作者 |
-| `url` | 源码地址 |
-| `config` | 可选，数组，站长在后台可调的设置，后台按它画表单 |
-
-每个 tag 的 release 里的 `theme.tar.gz` 解开就是这个目录——hub 构建时嵌入的是同一个包。
-
-将目录复制到 hub 的 `--themes` 位置，在后台「主题」页切换，无需重启。
-
-## 主题契约
-
-主题是纯静态 SPA，只能依赖下列同源接口：
+页面是纯静态 SPA，只能依赖下列同源接口：
 
 | 接口 | 用途 |
 |---|---|
@@ -60,9 +35,6 @@ MONITOR_HUB=https://hub.example.com npm run dev
 | `GET /api/nodes` | 节点列表、实时指标和累计流量 |
 | `GET /api/nodes/{id}/metrics` | 历史指标和延迟记录 |
 | `GET /api/ws` | 每 2 秒推送一次节点快照的 WebSocket；带 `?gzip` 时每帧 gzip 后以二进制消息发出 |
-| `GET /api/themes/{short}/config` | 站长改过的主题设置，只含与默认值不同的项 |
-
-主题自带设置界面时，站长登录后可以 `PUT` 同一地址保存。`config` 的声明格式、两个接口的规则与约定见文档站的[主题开发](https://monitor-document.pages.dev/dev/theme#主题设置)。
 
 `metrics` 的三个查询参数都可省：
 
@@ -79,14 +51,19 @@ MONITOR_HUB=https://hub.example.com npm run dev
 本来就是残缺的，探测启停、节点掉线、agent 跳过一轮都会再造几个。十三次里丢一次，平均桶百分比会
 算出 50%。
 
-匿名访问 `GET /api/nodes` 仅返回 `public=1` 的节点，响应中不含 `ip`、`hostname`、`remark`。字段定义以 hub 的 `src/api.rs` 为准。
+匿名访问 `GET /api/nodes` 仅返回 `public=1` 的节点，响应中不含 `ip`、`hostname`、`remark`。字段定义以 hub 的 `monitor/src/api.rs` 为准。
 
-未知路径回落到主题的 `dist/index.html`，客户端路由可用。`/admin/*` 由 hub 内置后台接管，不属于主题契约。
+未知路径回落到本页面的 `dist/index.html`，客户端路由可用。`/admin/*` 由 hub 内置后台接管，不属于本页面的契约。
 
-本主题用 `/node/{id}` 作为详情页。hub 的回落对它够用，但**hub 前面若有按路径做正向白名单的反代
+本页面用 `/node/{id}` 作为详情页。hub 的回落对它够用，但**hub 前面若有按路径做正向白名单的反代
 或 WAF，得把这个前缀放行**：从列表点进去只是 pushState，边缘看不见，刷新详情页才会真的请求
 `/node/{id}`，症状是「点进去正常，一刷新就被拦」。
 图标 `/favicon.svg` 和 `/apple-touch-icon.png` 同样要放行，后者被拦时 iOS 收藏和添加到主屏幕都没有图标。
+
+## 遗留文件
+
+`theme.json` 与 `preview.png` 是主题市场时代的面板清单与缩略图，hub 已不读取，构建也不再复制；
+留在这里只作为这个页面的元信息记录。
 
 ## 许可
 

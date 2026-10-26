@@ -102,8 +102,7 @@ LEAKED=$(jq -nc --argjson a "$ADMIN" --argjson p "$PUBLIC" --arg t "$TOKEN" '
 		| [($a.nodes[0] | .ip, .ipv4, .ipv6, .hostname, .remark), $t | select(. != "" and IN($shown[]))])')
 [ "$LEAKED" = "[]" ] || fail "the public view discloses $LEAKED: $PUBLIC"
 
-# Both official themes drop a node from the page when any of these is not a
-# non-negative number.
+# The page drops a node when any of these is not a non-negative number.
 BAD=$(echo "$PUBLIC" | jq -c '.nodes[0].metrics as $m
 	| ["uptime", "cpu", "mem_total", "mem_used", "swap_total", "swap_used", "disk_total", "disk_used",
 		"net_rx", "net_tx", "total_rx", "total_tx", "month_rx", "month_tx", "tcp", "udp", "procs"]
