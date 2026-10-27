@@ -115,8 +115,9 @@ try {
     assert.ok(overview.includes(want), `missing ${want}`)
   }
   // Seven of the eight sample nodes are up. React separates two text children
-  // with a comment, so the pair is matched rather than searched for.
-  assert.match(overview, /7<span[^>]*> \/ <!-- -->8/)
+  // with a comment, so the pair is matched rather than searched for; the total
+  // is set a step down, since a total is a unit and not a second count.
+  assert.match(overview, /7<span[^>]*text-base[^>]*>\/ <!-- -->8/)
   // Two sample nodes are inside the month, so the row has to say a bill is
   // coming rather than that nothing is.
   assert.match(overview, /台 30 天内到期/)
@@ -132,9 +133,10 @@ try {
   // The estimate is drawn in dollars whatever the machines are billed in, and
   // the mark is a unit: a size down, and separated from the figure by a gap.
   assert.match(overview, /text-base[^"]*">US\$</)
-  // Every tile centres its figure between the label and the note, so four cards
-  // of unequal content share one line rather than one hanging from its label.
-  assert.equal(overview.match(/flex flex-1 items-center/g)?.length, 4)
+  // One height for every tile, whatever it holds: the box is what gives the
+  // figure its air, and a traffic card with no note must not be shorter.
+  assert.equal(overview.match(/min-h-27/g)?.length, 4)
+  assert.ok(!overview.includes("0 点累计"), "the traffic tile needs no footnote")
   console.log("the overview counts the fleet, the peak, the traffic and the bill")
 } finally {
   await server.close()

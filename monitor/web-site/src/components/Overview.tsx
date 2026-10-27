@@ -16,10 +16,11 @@ function Tile({ icon, label, hint, note, children }: {
   icon: LucideIcon
   label: string
   /**
-   * A qualifier that belongs to the label rather than to a line of its own. It
-   * is dropped rather than wrapped where the card is too narrow to hold both:
-   * under 126px of card the two words would start to ellipsize, and what they
-   * name -- the columns, in the order they are drawn -- the units already say.
+   * A qualifier that belongs to the label rather than to a line of its own:
+   * `流量（实时/今日）` names the two columns without spending a row on them.
+   * Measured in a system face the whole head is 116px against the 130px a card
+   * has on a 360px screen -- the narrowest phone still shipping -- so it does
+   * not need a fallback for a smaller one.
    */
   hint?: ReactNode
   /** The line under the figure, pinned to the bottom. */
@@ -27,35 +28,42 @@ function Tile({ icon, label, hint, note, children }: {
   children: ReactNode
 }) {
   return (
-    <Card className="@container gap-0 p-3.5">
+    // One height for all four: 14 + 16 (label) + 8 + 32 (figure) + 8 + 16
+    // (note) + 14. Auto-height made every tile shrink to its own content, so a
+    // two-line traffic table and a single percentage sat in boxes of different
+    // shapes and the shortest one read as crowded; the fixed box is what lets
+    // the same figure breathe in all of them.
+    <Card className="@container flex min-h-27 flex-col gap-0 p-3.5">
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <Glyph icon={icon} />
         <span className="min-w-0 truncate">
           {label}
-          {hint && <span className="hidden text-2xs opacity-70 @[126px]:inline">{hint}</span>}
+          {hint && <span className="text-2xs opacity-70">{hint}</span>}
         </span>
       </div>
-      {/* One body, centred between the label and the note: with the figure hung
-          from the label, a card whose neighbour had a taller body left a hole
-          above the note, and the four cards did not share a baseline. */}
-      <div className="flex flex-1 items-center">{children}</div>
+      <div className="mt-2">{children}</div>
       {note}
     </Card>
   )
 }
 
-/** The figure a card exists for. */
+/**
+ * The figure a card exists for. A 32px line box around a 24px glyph rather than
+ * `leading-none`: the number then has 4px of air above and below it inside its
+ * own line, which is what keeps it from touching the label and the note.
+ */
 function Big({ children }: { children: ReactNode }) {
-  return <div className="tnum text-2xl font-semibold leading-none">{children}</div>
+  return <div className="tnum text-2xl font-semibold leading-8 tracking-tight">{children}</div>
 }
 
 /**
- * The line under it: what the figure is made of, or what to do about it. It is
- * the last thing in the card, so four cards of unequal content still line up.
+ * The line under it: what the figure is made of, or what to do about it. `mt-auto`
+ * pins it to the bottom of the fixed box, so four cards of unequal content line
+ * up along it.
  */
 function Note({ children, tone, title }: { children: ReactNode; tone?: string; title?: string }) {
   return (
-    <div title={title} className={cn("truncate pt-2 text-xs", tone ?? "text-muted-foreground")}>
+    <div title={title} className={cn("mt-auto truncate text-xs", tone ?? "text-muted-foreground")}>
       {children}
     </div>
   )
@@ -136,9 +144,12 @@ export function Overview({ nodes }: { nodes: Node[] }) {
         label="节点"
         note={<Note>{offline > 0 ? `${offline} 个离线` : total > 0 ? "全部在线" : "还没有节点"}</Note>}
       >
+        {/* The total is a unit, not a second figure: at the same 24px as the
+            count, `7 / 8` reads as two numbers of equal standing and the pair
+            fills the card's widest line. */}
         <Big>
           {online}
-          <span className="text-muted-foreground"> / {total}</span>
+          <span className="ml-1 text-base font-medium text-muted-foreground">/ {total}</span>
         </Big>
       </Tile>
 
@@ -165,16 +176,11 @@ export function Overview({ nodes }: { nodes: Node[] }) {
           this page: measured in a system sans face it comes to 130px, exactly
           what the card has, and the columns are content-sized, so any face a
           shade wider spends the card's right padding rather than the page's. */}
-      <Tile
-        icon={ArrowDownUp}
-        label="流量"
-        hint="（实时/今日）"
-        // The note every other tile has: it names the second column's scope,
-        // which the header row used to do, and it keeps this tile's body the
-        // same shape as its neighbours' so the four centres line up.
-        note={<Note>今日从 0 点累计</Note>}
-      >
-        <div className="grid w-full grid-cols-[auto_1fr_1fr] items-baseline gap-x-1.5 gap-y-1">
+      <Tile icon={ArrowDownUp} label="流量" hint="（实时/今日）">
+        {/* No note: the two rows are the whole card, and the box is already a
+            fixed height, so there is nothing left to prop up. The rows get the
+            spare space as a wider gap instead of a footnote nobody needed. */}
+        <div className="grid w-full grid-cols-[auto_1fr_1fr] items-baseline gap-x-1.5 gap-y-1.5">
           <Glyph icon={ArrowDown} box="sm" className="self-center" />
           <Cell text={rate(now.rx)} />
           <Cell text={bytes(day.rx)} />
