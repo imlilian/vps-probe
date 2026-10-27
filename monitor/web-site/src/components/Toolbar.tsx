@@ -205,7 +205,7 @@ function SearchBox({ query, onQuery }: { query: string; onQuery: (query: string)
         variant="ghost"
         size="icon"
         className="size-8 shrink-0 rounded-lg border bg-card text-muted-foreground hover:text-foreground"
-        aria-label="搜索节点"
+        aria-label="搜索节点名称"
         title="搜索节点名称"
         onClick={() => setOpen(true)}
       >

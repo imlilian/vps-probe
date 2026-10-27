@@ -262,7 +262,9 @@ try {
   assert.ok(!controls.includes(">标准<"), "the density carries no words")
   // The search is a button until someone wants it: a field that is always open
   // spends 150px of a toolbar to do nothing.
-  assert.ok(controls.includes('aria-label="搜索节点"'))
+  // The same words as the field it becomes: a screen reader should not have to
+  // learn a second name for the thing it just opened.
+  assert.ok(controls.includes('aria-label="搜索节点名称"'))
   assert.ok(!controls.includes('type="search"'), "no field until the button is pressed")
   // The sample fleet has six groups, so the tabs are drawn; 全部 counts all eight.
   for (const want of ["全部", "香港", "日本", "美国", "新加坡", "欧洲", "国内", "未分组"]) {

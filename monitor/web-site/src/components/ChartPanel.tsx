@@ -68,13 +68,18 @@ export function ChartPanel({ icon: Icon, tone, title, subtitle, note, foot, clas
   children: React.ReactNode
 }) {
   return (
-    <Card className={cn("min-w-0 gap-0 p-4", className)}>
+    // `@container`: the subtitle is dropped on a narrow card, not clipped. A
+    // 360px phone leaves the head 284px, and "峰值 ↓ 41.5 MB/s · ↑ 60.6 MB/s"
+    // had been squeezed down to "峰…" -- an ellipsis that names nothing. The
+    // live figure on the right is what that reader came for; the window's peak
+    // appears once the card is wide enough to hold it (436px at a 500px page).
+    <Card className={cn("@container min-w-0 gap-0 p-4", className)}>
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <ToneIcon icon={Icon} tone={tone} size="md" />
           <h3 className="shrink-0 truncate text-xs font-medium text-muted-foreground" title={title}>{title}</h3>
           {subtitle != null && (
-            <span className="min-w-0 truncate text-2xs text-muted-foreground">{subtitle}</span>
+            <span className="hidden min-w-0 truncate text-2xs text-muted-foreground @[20rem]:block">{subtitle}</span>
           )}
         </div>
         {note != null && <span className="shrink-0 text-right text-xs">{note}</span>}

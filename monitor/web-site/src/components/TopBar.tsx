@@ -44,7 +44,12 @@ export function TopBar({ siteName, authed, error, closed, mode, onMode, onHome }
   const detail = closed ? "公开状态页已关闭" : error ?? "数据是实时的"
 
   return (
-    <header className="sticky top-0 z-30 border-b bg-background/75 backdrop-blur-xl">
+    // 85% rather than the reference theme's translucent 75%: this header is over
+    // a page of cards that scroll under it, and at 75% their text stayed legible
+    // through the bar -- `58%` and `内存 37%` sat right behind the site name and
+    // the two readings competed. The blur is still there for the page's dotted
+    // background; what it no longer does is let a figure through as a figure.
+    <header className="sticky top-0 z-30 border-b bg-background/85 backdrop-blur-xl">
       {/* Wraps below 416px: the name, the pill, three theme stops and the way
           out do not share 328px, and the row that loses is the name -- it was
           truncating to `VP…` so that four controls could fit beside it. Under

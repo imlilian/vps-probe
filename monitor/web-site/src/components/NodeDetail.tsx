@@ -627,7 +627,8 @@ function Metric({ icon, tone, label, value, sub }: {
   label: string
   /** Figure and unit as one string, split by `Figure` on the last space. */
   value: string
-  sub?: React.ReactNode
+  /** The reading's detail. A string, so the truncated tail keeps a tooltip. */
+  sub?: string
 }) {
   return (
     <div className="min-w-0 rounded-lg border border-border-soft bg-card-2 px-3 py-2">
@@ -638,7 +639,9 @@ function Metric({ icon, tone, label, value, sub }: {
       <div className="mt-1.5">
         <Figure text={value} size="lg" />
       </div>
-      {sub != null && <div className="mt-1 truncate text-2xs text-muted-foreground">{sub}</div>}
+      {/* `title` because the line truncates on a phone: `5 分钟 1.59 · 15 分钟…`
+          is not a reading, and the full pair is one hover away. */}
+      {sub != null && <div className="mt-1 truncate text-2xs text-muted-foreground" title={sub}>{sub}</div>}
     </div>
   )
 }
