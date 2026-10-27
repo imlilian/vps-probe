@@ -1,12 +1,13 @@
-import { lazy, Suspense, useCallback, useEffect, useState, useSyncExternalStore } from "react"
-import { Moon, Sun, Wrench } from "lucide-react"
+import { lazy, Suspense, useCallback, useEffect, useState } from "react"
 
 import { NodeCard } from "@/components/NodeCard"
 import { Summary } from "@/components/Summary"
+import { TopBar } from "@/components/TopBar"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api, groupsOf, useNodes, type Node } from "@/lib/api"
 import { loadConfig } from "@/lib/config"
+import { useTheme } from "@/lib/theme"
 
 // `history_days` is absent from hubs predating the hourly tier, which kept a
 // week for anonymous callers.
@@ -45,68 +46,8 @@ function useNodeRoute() {
   ] as const
 }
 
-const DARK_MEDIA = matchMedia("(prefers-color-scheme: dark)")
-
-/**
- * The visitor's own choice, or the system's while there is none. Only the toggle
- * writes the choice down: persisting the system's answer on load would pin it,
- * leaving a visitor who never touched the toggle in whichever mode their system
- * happened to be in that day. The panel at `/admin/` shares this key on one
- * origin, so it has to hold to the same rule -- one app writing on load pins the
- * others.
- *
- * The system's answer is subscribed to rather than copied into state: a flip
- * landing between the first render and the effect that would have attached the
- * listener is otherwise never heard, and the next one is a day away.
- */
-function useTheme() {
-  // Storage can be switched off for the site, and then even reading it throws.
-  const [saved, setSaved] = useState(() => {
-    try {
-      return localStorage.getItem("theme")
-    } catch {
-      return null
-    }
-  })
-  const system = useSyncExternalStore(
-    (notify) => {
-      DARK_MEDIA.addEventListener("change", notify)
-      return () => DARK_MEDIA.removeEventListener("change", notify)
-    },
-    () => DARK_MEDIA.matches,
-  )
-  const dark = saved ? saved === "dark" : system
-
-  // Switched with every transition held. Cards, buttons and badges fade their
-  // colours over 150 ms while everything else changes at once, so a meter bar
-  // already in the dark palette would vanish into a card still white.
-  useEffect(() => {
-    const hold = document.createElement("style")
-    hold.textContent = "*,*::before,*::after{transition:none!important}"
-    document.head.append(hold)
-    document.documentElement.classList.toggle("dark", dark)
-    // Resolves the new colours while transitions are off, so removing the
-    // hold starts none.
-    void document.body.offsetWidth
-    hold.remove()
-  }, [dark])
-
-  return [
-    dark,
-    () => {
-      const next = dark ? "light" : "dark"
-      try {
-        localStorage.setItem("theme", next)
-      } catch {
-        // The choice then lasts until the page is closed.
-      }
-      setSaved(next)
-    },
-  ] as const
-}
-
 export default function App() {
-  const [dark, toggleTheme] = useTheme()
+  const { mode, cycle: cycleTheme } = useTheme()
   const [me, setMe] = useState<Me | null>(null)
   const [meError, setMeError] = useState("")
   const [config, setConfig] = useState<Record<string, unknown> | null>(null)
@@ -158,8 +99,15 @@ export default function App() {
   // Only while there is nothing else to show. Once `me` has loaded, a later
   // failure belongs beside the page rather than over it.
   if (!me) return (
-    <div className="grid min-h-svh place-items-center p-6 text-sm text-muted-foreground">
-      {meError ? <div className="space-y-3 text-center"><p role="alert">加载失败：{meError}</p><Button onClick={loadMe}>重试</Button></div> : "加载中…"}
+    <div className="grid min-h-svh place-items-center p-6 text-sm">
+      {meError ? (
+        <div className="space-y-3 text-center">
+          <p role="alert" className="text-destructive">加载失败：{meError}</p>
+          <Button onClick={loadMe}>重试</Button>
+        </div>
+      ) : (
+        <p className="animate-pulse text-muted-foreground">加载中…</p>
+      )}
     </div>
   )
 
@@ -168,28 +116,19 @@ export default function App() {
 
   return (
     <div className="min-h-svh">
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur">
-        <div className="mx-auto flex max-w-[1400px] items-center gap-3 px-4 py-3 sm:px-6">
-          {/* The site name is the way back to the list, so a node page needs
-              no back button of its own. */}
-          <button className="font-semibold transition-opacity hover:opacity-70" onClick={() => go(null)}>
-            {me.site_name || "Monitor"}
-          </button>
-          <div className="flex-1" />
-          {/* The panel is a separate app built into the hub, not part of this
-              theme, so this is a navigation rather than a route. */}
-          <Button variant="ghost" size="sm" asChild>
-            <a href="/admin/">
-              <Wrench /> {me.authed ? "进入后台" : "登录"}
-            </a>
-          </Button>
-          <Button variant="ghost" size="icon" onClick={toggleTheme} title="切换主题">
-            {dark ? <Sun /> : <Moon />}
-          </Button>
-        </div>
-      </header>
+      <TopBar
+        siteName={me.site_name || "Monitor"}
+        authed={me.authed}
+        online={nodes?.filter((n) => n.online).length ?? 0}
+        total={nodes?.length ?? 0}
+        error={error}
+        closed={closed}
+        mode={mode}
+        onCycleTheme={cycleTheme}
+        onHome={() => go(null)}
+      />
 
-      <main className="mx-auto max-w-[1400px] space-y-5 px-4 py-4 sm:px-6">
+      <main className="mx-auto max-w-[1400px] space-y-5 px-4 py-5 pb-16 sm:px-6">
         {error && <p className="text-sm text-destructive">{error}</p>}
 
         {open !== null ? (

@@ -67,7 +67,10 @@ function useTheme() {
     },
     () => DARK_MEDIA.matches,
   )
-  const dark = saved ? saved === "dark" : system
+  // `system`, written by the public theme's three-state toggle, means the same
+  // as an absent key; anything unrecognised is treated the same way rather than
+  // pinned to light.
+  const dark = saved === "dark" || (saved !== "light" && system)
 
   // Switched with every transition held. Buttons, badges and table rows fade
   // their colours over 150 ms while everything else changes at once, leaving

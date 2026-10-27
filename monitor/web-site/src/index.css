@@ -11,72 +11,72 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* The palette is one block, not two. `light-dark()` picks its half from the
+   element's `color-scheme`, which :root leaves as `light dark` -- the system's
+   answer -- and `.light` / `.dark` pin. So the first paint, before any script
+   has run, already follows the system instead of flashing white at a visitor
+   whose desktop is dark; only someone who chose the opposite of their system
+   sees one repaint, when the stored choice is applied. Writing the dark half a
+   second time under a media query would spare that repaint and leave two
+   copies of thirty colours to keep in step.
+   `light-dark()` needs a 2024 browser; the `oklch()` this file used before
+   needed 2023 and none of it ran on anything older. */
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.18 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.18 0 0);
-  --primary: oklch(0.18 0 0);
-  --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.96 0 0);
-  --secondary-foreground: oklch(0.18 0 0);
-  --muted: oklch(0.955 0 0);
-  --muted-foreground: oklch(0.52 0 0);
-  --accent: oklch(0.955 0 0);
-  --accent-foreground: oklch(0.18 0 0);
-  --destructive: oklch(0.3 0 0);
-  --border: oklch(0.9 0 0);
-  --ring: oklch(0.62 0 0);
-  --chart-1: oklch(0.3 0 0);
-  --chart-2: oklch(0.45 0 0);
-  --chart-3: oklch(0.58 0 0);
-  --chart-4: oklch(0.7 0 0);
-  --chart-5: oklch(0.82 0 0);
-  /* Greyscale has no green or amber, so lightness carries both: --ok draws the
-     download line, lighter than the upload's --chart-1, and --warn an expiry
-     within a week, darker than the muted text beside it. */
-  --ok: oklch(0.62 0 0);
-  --warn: oklch(0.44 0 0);
-  /* The status dot. Each clears 3:1 against the card (3.7 and 5.5), and 1.5:1
-     against the other, the separation red-green colour blindness still
-     perceives. */
-  --online: oklch(0.6 0.16 150);
-  --offline: oklch(0.52 0 0);
+  color-scheme: light dark;
+  --radius: 0.75rem;
+
+  /* Page, surfaces and text. The card is translucent rather than opaque so the
+     dot grid underneath reads through it, which is what makes a full grid of
+     cards look like one pane of glass instead of a wall of boxes. */
+  --background: light-dark(#f3f6fa, #070b13);
+  --foreground: light-dark(#101a2b, #eaf1fb);
+  --card: light-dark(#ffffffd1, #101929d9);
+  --card-foreground: light-dark(#101a2b, #eaf1fb);
+  --primary: light-dark(#16233a, #eaf1fb);
+  --primary-foreground: light-dark(#f8fafc, #0b1420);
+  --secondary: light-dark(#e9eff8, #1a2437);
+  --secondary-foreground: light-dark(#22304a, #e6eefb);
+  --muted: light-dark(#edf2f8, #162034);
+  --muted-foreground: light-dark(#52647b, #99abc5);
+  --accent: light-dark(#e6eefa, #1c2942);
+  --accent-foreground: light-dark(#16233a, #e6eefb);
+  --destructive: light-dark(#d92d20, #f87171);
+  --border: light-dark(rgb(83 112 149 / 17%), rgb(113 148 194 / 17%));
+  --ring: light-dark(#467ee6, #6b9cff);
+
+  /* The one accent. Links, the brand mark, the trend lines: everything that is
+     meant to be looked at first. */
+  --brand: light-dark(#467ee6, #6b9cff);
+
+  /* Chart series, in the order a reader meets them. One blue for the primary
+     series, then a lighter step, then three hues far enough apart to tell at a
+     glance -- these never carry a threshold, so hue is free to be hue. */
+  --chart-1: light-dark(#467ee6, #6b9cff);
+  --chart-2: light-dark(#7c9ff0, #a9c2ff);
+  --chart-3: light-dark(#17a58c, #37d0b0);
+  --chart-4: light-dark(#a06be0, #c084fc);
+  --chart-5: light-dark(#e0689e, #f472b6);
+
+  /* Green, amber, red: the three states a reader acts on. Each clears 4.5:1
+     against the card on its own side of the scheme, so a figure tinted with one
+     stays legible. */
+  --ok: light-dark(#0f9f6e, #34d399);
+  --warn: light-dark(#b45309, #fbbf24);
+  --online: light-dark(#0f9f6e, #34d399);
+  --offline: light-dark(#8b9bb0, #64748b);
+
+  /* The page's texture. `--dot` is the 28px grid; `--glow` is the cold light
+     spilling from the top edge, which keeps a page of cards from looking flat
+     without being noticed as a gradient. */
+  --dot: light-dark(rgb(83 112 149 / 12%), rgb(113 148 194 / 10%));
+  --glow: light-dark(rgb(70 126 230 / 8%), rgb(107 156 255 / 10%));
 }
 
-/* `color-scheme` draws the browser's own controls -- the checkbox,
-   scrollbars -- in the dark palette as well. */
-.dark {
-  color-scheme: dark;
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.98 0 0);
-  --card: oklch(0.2 0 0);
-  --card-foreground: oklch(0.98 0 0);
-  --primary: oklch(0.92 0 0);
-  --primary-foreground: oklch(0.2 0 0);
-  --secondary: oklch(0.27 0 0);
-  --secondary-foreground: oklch(0.98 0 0);
-  --muted: oklch(0.27 0 0);
-  --muted-foreground: oklch(0.7 0 0);
-  --accent: oklch(0.27 0 0);
-  --accent-foreground: oklch(0.98 0 0);
-  --destructive: oklch(0.95 0 0);
-  --border: oklch(1 0 0 / 12%);
-  --ring: oklch(0.55 0 0);
-  --chart-1: oklch(0.95 0 0);
-  --chart-2: oklch(0.82 0 0);
-  --chart-3: oklch(0.68 0 0);
-  --chart-4: oklch(0.54 0 0);
-  --chart-5: oklch(0.42 0 0);
-  /* Inverted against the dark ground: --warn is brighter than the muted text. */
-  --ok: oklch(0.62 0 0);
-  --warn: oklch(0.79 0 0);
-  /* 7.8 and 3.7 against the card, 2.1 apart. The muted grey would sit 1.15 from
-     the green. */
-  --online: oklch(0.72 0.17 150);
-  --offline: oklch(0.55 0 0);
-}
+/* Pinned by `useTheme`. After the :root block so it wins on equal specificity;
+   `color-scheme` is then inherited, and every `light-dark()` below resolves
+   against it. */
+.light { color-scheme: light; }
+.dark { color-scheme: dark; }
 
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
@@ -98,6 +98,7 @@
   --color-destructive: var(--destructive);
   --color-border: var(--border);
   --color-ring: var(--ring);
+  --color-brand: var(--brand);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
@@ -107,6 +108,12 @@
   --color-warn: var(--warn);
   --color-online: var(--online);
   --color-offline: var(--offline);
+
+  /* Lifted, not darkened: a translucent card over a light page needs its edge
+     drawn rather than its shadow deepened, and the same blur reads on both
+     sides of the scheme. */
+  --shadow-card: 0 1px 2px light-dark(rgb(16 26 43 / 5%), rgb(0 0 0 / 35%)),
+    0 14px 34px -22px light-dark(rgb(16 26 43 / 22%), rgb(0 0 0 / 65%));
 }
 
 @layer base {
@@ -114,8 +121,25 @@
   /* Reserve the scrollbar's width on every page: without it, leaving a route
      whose content exceeds the fold widens the page. */
   html { scrollbar-gutter: stable; }
-  body { @apply bg-background text-foreground; }
+  body {
+    @apply bg-background text-foreground antialiased;
+    /* The grid is drawn behind the cards and never moves; the glow is a single
+       1000px ellipse hanging off the top edge, fixed to the viewport so a
+       scrolled page keeps its light. */
+    background-image:
+      radial-gradient(circle at 1px 1px, var(--dot) 1px, transparent 0),
+      radial-gradient(1000px 520px at 50% -12%, var(--glow), transparent 72%);
+    background-size: 28px 28px, 100% 100%;
+    background-repeat: repeat, no-repeat;
+    background-attachment: scroll, fixed;
+  }
+  ::selection { background: light-dark(rgb(70 126 230 / 18%), rgb(107 156 255 / 30%)); }
 }
 
 /* Tabular figures keep live numbers from shifting as they update. */
 .tnum { font-variant-numeric: tabular-nums; }
+
+/* A figure that updates every few seconds should not fade on every update; only
+   the colour transitions, so a value turning red is noticed and a value merely
+   changing is not. */
+.live { transition: color 150ms ease-out; }
