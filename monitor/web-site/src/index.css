@@ -121,6 +121,10 @@
    the bar above it have to agree on it. */
 @theme {
   --container-page: 1400px;
+  /* A step below `text-xs`, for the unit that trails a figure. It is not what the
+     eye should land on, but at 11px it is still legible, and 10px was not. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
 }
 
 @layer base {

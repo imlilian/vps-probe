@@ -141,40 +141,6 @@ export async function api<T>(path: string): Promise<T> {
   }
 }
 
-/**
- * Throughput, one sample per push, as a series for every node (null) and one per
- * group ("" for the ungrouped), so the summary above a group tab draws that
- * group's line rather than the fleet's. Held beside the stream that feeds it
- * rather than in the tile that draws it: the summary unmounts while a node page
- * is open, so a buffer held there would restart empty on every return. Two
- * minutes at the hub's push interval; a group no node carries any more is
- * dropped. Keyed null rather than by any string, since a group may be named
- * anything, "*" included.
- */
-const KEEP = 60
-export const speedHistory = new Map<string | null, { rx: number; tx: number }[]>()
-
-export function sample(nodes: Node[]) {
-  const totals = new Map<string | null, { rx: number; tx: number }>()
-  for (const n of nodes) {
-    for (const key of [null, n.group ?? ""]) {
-      const total = totals.get(key) ?? { rx: 0, tx: 0 }
-      if (n.online && n.metrics) {
-        total.rx += n.metrics.net_rx
-        total.tx += n.metrics.net_tx
-      }
-      totals.set(key, total)
-    }
-  }
-  for (const key of speedHistory.keys()) if (!totals.has(key)) speedHistory.delete(key)
-  for (const [key, total] of totals) {
-    const series = speedHistory.get(key) ?? []
-    series.push(total)
-    if (series.length > KEEP) series.shift()
-    speedHistory.set(key, series)
-  }
-}
-
 /** A malformed report must not remove every other node from the page. */
 export function safeNodes(nodes: Node[]): Node[] {
   const number = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0
@@ -218,17 +184,8 @@ export function useNodes() {
     let retry: ReturnType<typeof setTimeout> | null = null
     let silent: ReturnType<typeof setTimeout> | null = null
 
-    // Set by `resume`. The throughput line is drawn by position, one point per
-    // push, so the samples from before the page was hidden, or the stream went
-    // silent, would join the new ones as if no time had passed in between. They
-    // are dropped on the first arrival rather than at once, which would read as
-    // 0 B/s beside figures that are merely stale.
-    let gap = false
     const receive = (list: Node[]) => {
       const safe = safeNodes(list)
-      if (gap) speedHistory.clear()
-      gap = false
-      sample(safe)
       setNodes(safe)
       setError(null)
       setClosed(false)
@@ -331,7 +288,6 @@ export function useNodes() {
     }
     const resume = () => {
       pause()
-      gap = true
       fetchOnce()
       connect()
     }

@@ -210,7 +210,7 @@ function NodeList({ nodes, group, summary, onGroup, onOpen }: {
           ))}
         </div>
       )}
-      {summary && <Summary nodes={shown} group={current} />}
+      {summary && <Summary nodes={shown} />}
       {nodes.length === 0 ? (
         <p className="py-16 text-center text-sm text-muted-foreground">还没有节点</p>
       ) : (

@@ -62,6 +62,12 @@ try {
   for (const want of ["香港-CN2-02", "负载", "本月流量", "TCP", "进程", "¥59.9"]) {
     assert.ok(full.includes(want), `missing ${want}`)
   }
+  // The figure leads and the unit trails: `412` then a smaller `TCP`. A row of
+  // `TCP 412` makes the eye step over the word to reach the number.
+  const sockets = fleet[1]!.metrics!
+  for (const [value, label] of [[sockets.tcp, "TCP"], [sockets.udp, "UDP"], [sockets.procs, "进程"]] as const) {
+    assert.match(full, new RegExp(`>${value}</span><span class="text-2xs[^"]*">${label}<`), `${label} follows its figure`)
+  }
   // The latency panel mounts its own container, so its presence is what says a
   // card with a line behind it will draw one.
   assert.ok(full.includes("@container"))

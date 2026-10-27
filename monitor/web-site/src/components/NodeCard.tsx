@@ -159,6 +159,21 @@ function Expiry({ node }: { node: Node }) {
   )
 }
 
+/**
+ * A socket count: the figure leads, its unit trails in a lighter and smaller
+ * face. `412 TCP` is one glance; `TCP 412` makes the eye step over a word it
+ * already knows before reaching the number it came for. A node that has never
+ * reported keeps the dash, so the row holds its shape either way.
+ */
+function Count({ value, label }: { value: number | undefined; label: string }) {
+  return (
+    <span className="inline-flex items-baseline gap-1">
+      <span className="tnum text-sm font-medium">{value ?? "—"}</span>
+      <span className="text-2xs text-muted-foreground">{label}</span>
+    </span>
+  )
+}
+
 export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
   const m = node.metrics
   // Load against the core count it competes for, so one number says whether the
@@ -254,11 +269,13 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
 
           {/* The two things a card cannot show live: what the machine is doing
               at the socket level, and what it costs. */}
-          <div className="mt-3 flex items-baseline justify-between gap-2 text-xs text-muted-foreground">
-            <span className="tnum truncate">
-              TCP {m ? m.tcp : "—"} · UDP {m ? m.udp : "—"} · 进程 {m ? m.procs : "—"}
+          <div className="mt-3 flex items-baseline justify-between gap-2">
+            <span className="flex min-w-0 items-baseline gap-3">
+              <Count value={m?.tcp} label="TCP" />
+              <Count value={m?.udp} label="UDP" />
+              <Count value={m?.procs} label="进程" />
             </span>
-            {billing && <span className="tnum shrink-0">{billing}</span>}
+            {billing && <span className="tnum shrink-0 text-xs text-muted-foreground">{billing}</span>}
           </div>
 
           {/* An offline node has no line to measure, and its last hour would be

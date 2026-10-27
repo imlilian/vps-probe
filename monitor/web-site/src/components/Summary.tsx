@@ -1,7 +1,7 @@
 import { Activity, ArrowDown, ArrowDownUp, ArrowUp, Gauge, Server } from "lucide-react"
 
 import { Card } from "@/components/ui/card"
-import { speedHistory, type Node } from "@/lib/api"
+import type { Node } from "@/lib/api"
 import { bytes, rate } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
@@ -39,33 +39,7 @@ function Flow({ down, up, className }: { down: string; up: string; className?: s
   )
 }
 
-/**
- * A bare polyline with no axes or tooltips: at this size only the shape is
- * legible, and recharts would bring a full chart's machinery for it. Series share
- * one scale so the two throughput lines remain comparable.
- */
-function Spark({ series }: { series: { values: number[]; className: string }[] }) {
-  const top = Math.max(...series.flatMap((s) => s.values), 1)
-  const width = Math.max(...series.map((s) => s.values.length), 2) - 1
-  return (
-    <svg viewBox="0 0 100 24" preserveAspectRatio="none" className="h-7 w-full" aria-hidden>
-      {series.map((s, i) => (
-        <polyline
-          key={i}
-          className={s.className}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={1.25}
-          vectorEffect="non-scaling-stroke"
-          points={s.values.map((v, x) => `${(x / width) * 100},${23 - (v / top) * 22}`).join(" ")}
-        />
-      ))}
-    </svg>
-  )
-}
-
-/** `group` picks the throughput series: null for every node, else the tab's group. */
-export function Summary({ nodes, group }: { nodes: Node[]; group: string | null }) {
+export function Summary({ nodes }: { nodes: Node[] }) {
   const online = nodes.filter((n) => n.online)
   const sum = (pick: (n: Node) => number) => nodes.reduce((total, n) => total + pick(n), 0)
 
@@ -76,10 +50,8 @@ export function Summary({ nodes, group }: { nodes: Node[]; group: string | null 
     null,
   )
   const cpu = busiest?.metrics?.cpu ?? 0
-  // The same push produced `nodes` and this sample, so the figure above the line
-  // is that line's last point.
-  const history = speedHistory.get(group) ?? []
-  const now = history.at(-1) ?? { rx: 0, tx: 0 }
+  // This push's throughput, summed the same way the tiles above sum bytes.
+  const live = (pick: (n: Node) => number) => sum((n) => (n.online && n.metrics ? pick(n) : 0))
 
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -110,15 +82,7 @@ export function Summary({ nodes, group }: { nodes: Node[]; group: string | null 
       </Tile>
 
       <Tile icon={Gauge} label="实时网速">
-        <Flow down={rate(now.rx)} up={rate(now.tx)} className="mt-1 text-sm font-semibold" />
-        <div className="mt-auto pt-1">
-          <Spark
-            series={[
-              { values: history.map((s) => s.rx), className: "text-foreground" },
-              { values: history.map((s) => s.tx), className: "text-muted-foreground" },
-            ]}
-          />
-        </div>
+        <Flow down={rate(live((n) => n.metrics!.net_rx))} up={rate(live((n) => n.metrics!.net_tx))} className="mt-1 text-sm font-semibold" />
       </Tile>
     </div>
   )
