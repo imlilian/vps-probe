@@ -43,6 +43,28 @@ try {
   assert.ok(bar({ mode: "dark" }).includes("主题：深色"))
   console.log("the theme slider offers all three stops and marks one")
 
+  // The footer: who is reading, from what, and when. The address only appears
+  // when the hub sent one -- a hub predating the field draws four items, not
+  // five with a hole.
+  const { VisitorFooter } = await server.ssrLoadModule("/src/components/VisitorFooter.tsx")
+  const edge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0"
+  const footer = (props: Record<string, unknown>) =>
+    renderToString(createElement(VisitorFooter, {
+      authed: false, ua: edge, today: new Date(2026, 9, 28), ...props,
+    }))
+
+  const withIp = footer({ ip: "2605:52c0:2:3de2:be24:11ab" })
+  for (const want of ["访客", "感谢访问", "Windows", "Edge", "2605:52c0:2:3de2:be24:11ab", "2026年10月28日"]) {
+    assert.ok(withIp.includes(want), `missing ${want}`)
+  }
+  assert.ok(withIp.includes("<footer"), "it is a footer")
+  // Edge carries `Chrome/`; only the order in `ua.ts` keeps this line honest.
+  assert.ok(!withIp.includes("Chrome"), "Edge is not read as Chrome")
+  assert.ok(footer({}).includes("2026年10月28日"), "the date survives without an address")
+  assert.ok(!footer({}).includes("2605:"), "no address, no empty slot")
+  assert.ok(footer({ authed: true }).includes("管理员"), "a signed-in reader is named as one")
+  console.log("the footer names the reader, the system, the browser and the day")
+
   // A broken stream says so on the pill, which is the only thing in the bar a
   // visitor can look at before the figures below.
   const stale = bar({ error: "实时数据中断，正在重新连接" })

@@ -971,8 +971,12 @@ fn pins(node: &mut NodePatch) -> Option<&'static str> {
     None
 }
 
-pub async fn me(State(app): State<Shared>, headers: HeaderMap) -> Json<Value> {
-    Json(json!({
+pub async fn me(
+    State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    let mut answered = Json(json!({
         "authed": authed(&app, &headers),
         "github": app.db.get("github_client_id").is_some_and(|v| !v.is_empty()),
         "site_name": app.db.get("site_name").unwrap_or_else(|| "Monitor".into()),
@@ -980,6 +984,12 @@ pub async fn me(State(app): State<Shared>, headers: HeaderMap) -> Json<Value> {
         // How far back a chart may reach, so the page offers only windows the hub
         // answers in full; `metrics` narrows a wider one without saying so.
         "history_days": app.db.retention_days(),
+        // The caller's own address, for the footer line that says who is reading
+        // -- and nothing else: no lookup, no third party, no record. Behind a
+        // proxy this is the forwarded address, by the same rule the throttles
+        // use; canonicalised, so an IPv4-mapped IPv6 peer reads as the address
+        // that visitor actually has.
+        "ip": client_ip(&app, &headers, peer.ip()).to_string(),
         // Whether this browser may provision is not answered here: a GET carries
         // no `Origin`, so the panel applies `provisioning_allowed`'s rule itself.
         //
@@ -990,6 +1000,13 @@ pub async fn me(State(app): State<Shared>, headers: HeaderMap) -> Json<Value> {
         // and the panel falls back to its own origin.
         "site": app.site,
     }))
+    .into_response();
+    // It carries `authed` and now an address: a shared cache holding either one
+    // would hand them to the next visitor.
+    answered
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, header::HeaderValue::from_static("private, no-store"));
+    answered
 }
 
 pub async fn create_node(
@@ -2134,6 +2151,37 @@ mod tests {
         let mut state = app();
         state.site = site.into();
         state
+    }
+
+    /// The footer says who is reading. That address is the caller's own, and the
+    /// answer carrying it must never be stored by anything between the two of
+    /// them: `authed` was already reason enough, an address leaves no room.
+    #[tokio::test]
+    async fn me_names_the_caller_and_refuses_to_be_cached() {
+        let answered = me(State(std::sync::Arc::new(app())), peer(), HeaderMap::new()).await;
+        assert_eq!(
+            answered.headers()[header::CACHE_CONTROL],
+            "private, no-store",
+            "an answer carrying a visitor's address is not cacheable"
+        );
+        let body = axum::body::to_bytes(answered.into_body(), 64 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["ip"], "198.51.100.7", "the peer's own address");
+        assert_eq!(body["authed"], false, "and nothing else about the visitor");
+    }
+
+    /// A peer behind a proxy is the address the proxy forwarded, by the same
+    /// rule the throttles key on -- otherwise every visitor of a proxied hub
+    /// would read as `127.0.0.1` in the footer.
+    #[tokio::test]
+    async fn me_reads_the_forwarded_address_when_the_proxy_is_local() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
+        let local = ConnectInfo("127.0.0.1:5555".parse().unwrap());
+        let answered = me(State(std::sync::Arc::new(app())), local, headers).await;
+        let body = axum::body::to_bytes(answered.into_body(), 64 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["ip"], "203.0.113.9");
     }
 
     #[tokio::test]

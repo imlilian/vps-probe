@@ -122,6 +122,9 @@ export function demoHub(): Plugin {
             site_name: SITE_NAME,
             public_page: true,
             history_days: 7,
+            // A documentation address (RFC 5737): the demo shows the footer's
+            // fifth item without putting anyone's real address on a screen.
+            ip: "203.0.113.42",
           })
         }
         if (url.pathname === "/api/nodes") return sendJson(res, { nodes: nodeList() })

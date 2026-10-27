@@ -5,6 +5,7 @@ import { NodeRow } from "@/components/NodeRow"
 import { Overview } from "@/components/Overview"
 import { Toolbar } from "@/components/Toolbar"
 import { TopBar } from "@/components/TopBar"
+import { VisitorFooter } from "@/components/VisitorFooter"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api, groupsOf, useNodes, type Node } from "@/lib/api"
@@ -15,7 +16,7 @@ import { cn } from "@/lib/utils"
 
 // `history_days` is absent from hubs predating the hourly tier, which kept a
 // week for anonymous callers.
-type Me = { authed: boolean; github: boolean; site_name: string; public_page: boolean; history_days?: number }
+type Me = { authed: boolean; github: boolean; site_name: string; public_page: boolean; history_days?: number; ip?: string }
 
 // Split out because recharts is most of this bundle and the list page draws no
 // chart. The landing page is 288 kB rather than 678 kB (95 kB gzipped against
@@ -145,7 +146,7 @@ export default function App() {
   if (!me.public_page && !me.authed) return null
 
   return (
-    <div className="min-h-svh">
+    <div className="flex min-h-svh flex-col">
       <TopBar
         siteName={me.site_name || "Monitor"}
         authed={me.authed}
@@ -160,7 +161,7 @@ export default function App() {
           stream is announced, and a red sentence between the bar and the
           summary repeated it in the place a visitor looks for a warning about
           their own machine. */}
-      <main className="mx-auto max-w-page space-y-4 px-4 py-5 pb-16 sm:px-6">
+      <main className="mx-auto w-full max-w-page flex-1 space-y-4 px-4 py-5 pb-10 sm:px-6">
         {open !== null ? (
           !nodes ? (
             <Skeleton className="h-96" />
@@ -197,6 +198,11 @@ export default function App() {
           />
         )}
       </main>
+
+      {/* The address is the hub's answer, so it follows `me`: the footer draws
+          its four local facts on the first frame and gains the fifth when it
+          arrives, rather than holding the whole line back for it. */}
+      <VisitorFooter authed={me.authed} ip={me.ip} />
     </div>
   )
 }
