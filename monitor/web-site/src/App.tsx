@@ -1,13 +1,18 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react"
 
 import { NodeCard } from "@/components/NodeCard"
+import { NodeRow } from "@/components/NodeRow"
 import { Overview } from "@/components/Overview"
+import { Toolbar } from "@/components/Toolbar"
 import { TopBar } from "@/components/TopBar"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api, groupsOf, useNodes, type Node } from "@/lib/api"
 import { loadConfig } from "@/lib/config"
+import { readDensity, readOrder, writeDensity, writeOrder } from "@/lib/prefs"
+import { arrange, type Density, type Order } from "@/lib/sort"
 import { useTheme } from "@/lib/theme"
+import { cn } from "@/lib/utils"
 
 // `history_days` is absent from hubs predating the hourly tier, which kept a
 // week for anonymous callers.
@@ -55,6 +60,20 @@ export default function App() {
   const [open, go] = useNodeRoute()
   // The list's group tab, held here so it survives a visit to a node's page.
   const [group, setGroup] = useState<string | null>(null)
+  // The order and the density are the visitor's, kept across visits: read from
+  // `localStorage` on the first render, written when they change. Not in the URL
+  // -- nobody shares a link to "my nodes by CPU" -- and not in `theme.json`,
+  // which is the site operator's file rather than the reader's.
+  const [order, setOrder] = useState<Order>(readOrder)
+  const [density, setDensity] = useState<Density>(readDensity)
+  const chooseOrder = useCallback((next: Order) => {
+    setOrder(next)
+    writeOrder(next)
+  }, [])
+  const chooseDensity = useCallback((next: Density) => {
+    setDensity(next)
+    writeDensity(next)
+  }, [])
 
   const loadMe = useCallback(() => {
     return api<Me>("/me")
@@ -144,9 +163,9 @@ export default function App() {
             </p>
           )
         ) : !nodes || !config ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className={cn("grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4", density === "compact" ? "gap-2" : "gap-3")}>
             {[0, 1, 2].map((i) => (
-              <Skeleton key={i} className="h-72" />
+              <Skeleton key={i} className={density === "compact" ? "h-12" : "h-72"} />
             ))}
           </div>
         ) : (
@@ -154,7 +173,11 @@ export default function App() {
             nodes={sorted}
             group={group}
             summary={config.show_summary === true}
+            order={order}
+            density={density}
             onGroup={setGroup}
+            onOrder={chooseOrder}
+            onDensity={chooseDensity}
             onOpen={go}
           />
         )}
@@ -165,13 +188,21 @@ export default function App() {
 
 // Group tabs appear only once the operator has grouped something, so a hub
 // without groups keeps the page it always had. The summary follows the tab.
-function NodeList({ nodes, group, summary, onGroup, onOpen }: {
+//
+// Exported for `ui.test.ts`: the combination that has to be right -- a group, an
+// order and a density at once -- is this function's, and asserting it through a
+// string of markup is the closest this machine gets to opening a browser.
+export function NodeList({ nodes, group, summary, order, density, onGroup, onOrder, onDensity, onOpen }: {
   nodes: Node[]
   /** null is every node, "" the ungrouped. */
   group: string | null
   /** The operator's `show_summary` setting. */
   summary: boolean
+  order: Order
+  density: Density
   onGroup: (group: string | null) => void
+  onOrder: (order: Order) => void
+  onDensity: (density: Density) => void
   onOpen: (id: number) => void
 }) {
   const groups = groupsOf(nodes)
@@ -183,41 +214,35 @@ function NodeList({ nodes, group, summary, onGroup, onOpen }: {
   useEffect(() => {
     if (current !== group) onGroup(current)
   }, [current, group, onGroup])
-  const shown = current === null ? nodes : nodes.filter((n) => (n.group ?? "") === current)
-  const tabs = [
-    [null, "全部", nodes.length] as const,
-    ...groups.map((g) => [g, g, nodes.filter((n) => n.group === g).length] as const),
-    ...(ungrouped ? [["", "未分组", ungrouped] as const] : []),
-  ]
+  // Filter, then arrange: a group is a set and an order is a view of that set, so
+  // changing the tab keeps the order and changing the order keeps the tab.
+  const shown = arrange(current === null ? nodes : nodes.filter((n) => (n.group ?? "") === current), order)
+  const compact = density === "compact"
   return (
     <>
-      {groups.length > 0 && (
-        <div role="group" aria-label="分组" className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-1">
-          {tabs.map(([value, label, count]) => (
-            <Button
-              // Group names are free text, so they carry a prefix no key of
-              // the 全部 tab can share.
-              key={value === null ? "*" : `=${value}`}
-              aria-pressed={current === value}
-              size="sm"
-              variant={current === value ? "secondary" : "ghost"}
-              className="shrink-0"
-              onClick={() => onGroup(value)}
-            >
-              {label}
-              <span className="tnum text-muted-foreground">{count}</span>
-            </Button>
-          ))}
-        </div>
-      )}
+      <Toolbar
+        nodes={nodes}
+        shown={shown.length}
+        group={current}
+        onGroup={onGroup}
+        order={order}
+        onOrder={onOrder}
+        density={density}
+        onDensity={onDensity}
+      />
       {summary && <Overview nodes={shown} />}
       {nodes.length === 0 ? (
         <p className="py-16 text-center text-sm text-muted-foreground">还没有节点</p>
       ) : (
-        <div className="grid items-start gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {shown.map((n) => (
-            <NodeCard key={n.id} node={n} onOpen={() => onOpen(n.id)} />
-          ))}
+        // Rows stretch so a column of them keeps one line height, offline or not;
+        // cards start at the top, since their content is already ragged.
+        <div className={cn(
+          "grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
+          compact ? "items-stretch gap-2" : "items-start gap-3",
+        )}>
+          {shown.map((n) => compact
+            ? <NodeRow key={n.id} node={n} onOpen={() => onOpen(n.id)} />
+            : <NodeCard key={n.id} node={n} onOpen={() => onOpen(n.id)} />)}
         </div>
       )}
     </>

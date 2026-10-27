@@ -12,8 +12,14 @@ import type { Node } from "./api.ts"
 import { cycleMonths, daysUntil } from "./format.ts"
 import { toUSD } from "./rates.ts"
 
-/** Days left on a plan, on the hub's calendar when it sends one. */
-function daysLeft(node: Node): number | null {
+/**
+ * Days left on a plan, on the hub's calendar when it sends one.
+ *
+ * Exported because the list's expiry sort asks the same question of the same
+ * field, and the answer has to be identical: hub days where the hub sent them,
+ * the browser's count only for a hub from before `expires_in`.
+ */
+export function daysLeft(node: Node): number | null {
   return node.expires_in !== undefined ? node.expires_in : daysUntil(node.expires_at)
 }
 

@@ -4,7 +4,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import type { Node } from "@/lib/api"
 import { clockFor } from "@/lib/format"
 import {
-  cardProbes, fmtLoss, fmtMs, HOURS, lossSignal, probeLatencySignal, slotSignal,
+  cardProbes, fmtLoss, fmtMs, HOURS, lossSignal, mergedSignals, probeLatencySignal, SLOTS, slotSignal,
   useNodePing, type ProbeStats, type Slot,
 } from "@/lib/ping"
 import { cn } from "@/lib/utils"
@@ -100,14 +100,15 @@ function Probe({ probe, hours }: { probe: ProbeStats; hours: number }) {
 }
 
 /**
- * The bottom of a node card: one row per probe, the newest latency and the
- * hour's loss beside a strip of the hour itself.
+ * A node's probe history, once its element is nearly in view.
  *
- * A card below the fold asks nothing until it is nearly in view. A hundred nodes
- * would otherwise queue a hundred history queries on load, two at a time, and the
- * three cards someone is looking at would wait behind all of them.
+ * A page below the fold asks nothing until it is nearly on screen. A hundred
+ * nodes would otherwise queue a hundred history queries on load, two at a time,
+ * and the three cards someone is looking at would wait behind all of them. The
+ * compact row needs the same guard as the full card, so it is one hook used by
+ * both rather than a copy in each.
  */
-export function PingPanel({ node, hours = HOURS }: { node: Node; hours?: number }) {
+function useLazyPing(node: Node, hours: number) {
   const ref = useRef<HTMLDivElement>(null)
   const [seen, setSeen] = useState(false)
 
@@ -126,7 +127,15 @@ export function PingPanel({ node, hours = HOURS }: { node: Node; hours?: number 
     return () => observer.disconnect()
   }, [seen])
 
-  const entry = useNodePing(node.id, hours, seen)
+  return [ref, useNodePing(node.id, hours, seen)] as const
+}
+
+/**
+ * The bottom of a node card: one row per probe, the newest latency and the
+ * hour's loss beside a strip of the hour itself.
+ */
+export function PingPanel({ node, hours = HOURS }: { node: Node; hours?: number }) {
+  const [ref, entry] = useLazyPing(node, hours)
   // Recomputed on each render rather than memoised: the strip is twenty blocks
   // off at most sixty rows, and the window is aligned to the block grid, so a
   // push every two seconds produces the same blocks until a block rolls over.
@@ -153,6 +162,33 @@ export function PingPanel({ node, hours = HOURS }: { node: Node; hours?: number 
           ))}
         </div>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * The same hour for the compact list: one full-width band of twenty blocks
+ * instead of a row per probe.
+ *
+ * Full width rather than wedged between the figures: at the 300-odd pixels a
+ * column gives it, an inline band would be three pixels a block, which shows a
+ * colour but no run of them. Below the figures it gets the whole row, so the
+ * blocks are as wide as the card's are. The height is held from the first frame
+ * so a row does not grow when the history lands.
+ */
+export function CompactStrip({ node, hours = HOURS }: { node: Node; hours?: number }) {
+  const [ref, entry] = useLazyPing(node, hours)
+  const signals = entry?.data ? mergedSignals(cardProbes(entry.data)) : null
+
+  return (
+    <div ref={ref} title={signals ? `近 ${hours} 小时的延迟与丢包，取最差的一条线` : undefined} className="mt-1.5">
+      {/* Twenty unlabelled boxes say nothing to a screen reader; the row's name
+          and its page carry the reading. */}
+      <div className="grid h-1 grid-cols-20 gap-0.5" aria-hidden>
+        {(signals ?? Array.from({ length: SLOTS }, () => -1)).map((signal, i) => (
+          <span key={i} className={cn("h-1 rounded-xs", signal < 0 ? "bg-transparent" : FILL[signal])} />
+        ))}
+      </div>
     </div>
   )
 }

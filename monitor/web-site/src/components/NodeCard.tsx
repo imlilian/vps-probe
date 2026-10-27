@@ -61,7 +61,7 @@ function monthUsage(node: Node): number {
 // A node that has reported once has told the hub its shape -- cores, memory,
 // disk -- and the hub retains its traffic totals whether connected or not. A node
 // that never connected is the only case with nothing to show.
-function deployed(node: Node) {
+export function deployed(node: Node) {
   return node.cpu_cores > 0 || node.mem_total > 0
 }
 
@@ -69,27 +69,33 @@ function deployed(node: Node) {
  * The dot plus how long the machine has been up, or once it is gone, how long it
  * has been absent -- the first question asked of an offline node. Both are
  * durations, so the badge keeps its shape either way.
+ *
+ * Exported with [statusDot] below: the compact row draws the same state as a
+ * bare dot, and the two must not disagree about which of the three it is.
  */
-export function Status({ node }: { node: Node }) {
+export function statusLabel(node: Node): string {
   const down = sinceSeen(node)
-  const label = node.online
-    ? `在线 ${node.metrics ? uptime(node.metrics.uptime) : ""}`
+  return node.online
+    ? `在线 ${node.metrics ? uptime(node.metrics.uptime) : ""}`.trim()
     : deployed(node)
-      ? `离线 ${down >= 60 ? uptime(down) : ""}`
+      ? `离线 ${down >= 60 ? uptime(down) : ""}`.trim()
       : "未接入"
+}
+
+/** Reporting, gone but known, or never connected. */
+export function statusDot(node: Node): string {
+  return node.online ? "bg-online" : deployed(node) ? "bg-offline" : "bg-muted-foreground/40"
+}
+
+export function Status({ node }: { node: Node }) {
   return (
     // Muted once it stops reporting: the figures on the page are genuine, merely
     // no longer current.
     <Badge
       className={cn("tnum shrink-0 gap-1.5 font-normal", !node.online && "text-muted-foreground")}
     >
-      <span
-        className={cn(
-          "size-1.5 rounded-full",
-          node.online ? "bg-online" : deployed(node) ? "bg-offline" : "bg-muted-foreground/40",
-        )}
-      />
-      {label.trim()}
+      <span className={cn("size-1.5 rounded-full", statusDot(node))} />
+      {statusLabel(node)}
     </Badge>
   )
 }

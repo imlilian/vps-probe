@@ -169,6 +169,25 @@ export function probeLatencySignal(probe: ProbeStats): number {
   return probe.timedOut ? 5 : latencySignal(probe.latest, probe.typical)
 }
 
+/**
+ * One row of blocks for the compact list: per block, the worst step any of the
+ * drawn probes reached.
+ *
+ * A 4px band across a 48px row cannot show three lines apart -- at that height
+ * two blocks of congestion are two dots -- and it does not need to: the question
+ * a compact row answers is "was this machine's way out unwell in the last hour".
+ * Which line, and by how much, is one press away on the node's own page. Taking
+ * the worst rather than the average is the same rule the single strip already
+ * follows (D15): trouble is what the colour is for, and an average would hide
+ * one bad probe behind two good ones.
+ */
+export function mergedSignals(probes: ProbeStats[]): number[] {
+  const width = probes[0]?.slots.length ?? 0
+  return Array.from({ length: width }, (_, i) =>
+    probes.reduce((worst, probe) => Math.max(worst, slotSignal(probe.slots[i] ?? null, probe.typical)), 0),
+  )
+}
+
 export const fmtMs = (ms: number) => (ms < 10 ? ms.toFixed(1) : Math.round(ms).toString())
 export const fmtLoss = (pct: number) =>
   pct === 0 ? "0" : pct < 0.1 ? "<0.1" : pct < 10 ? pct.toFixed(1) : Math.round(pct).toString()

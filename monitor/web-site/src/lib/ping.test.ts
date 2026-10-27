@@ -6,7 +6,7 @@
 import assert from "node:assert/strict"
 
 import {
-  BLOCK, buildSlots, cardProbes, fmtLoss, fmtMs, latencySignal, lossSignal, probeStats, slotSignal,
+  BLOCK, buildSlots, cardProbes, fmtLoss, fmtMs, latencySignal, lossSignal, mergedSignals, probeStats, slotSignal,
   type PingData, type PingRow,
 } from "./ping.ts"
 
@@ -131,6 +131,28 @@ assert.equal(slotSignal({ ts: 0, latency: 40, loss: 7 }, 40), 4)
 assert.equal(slotSignal({ ts: 0, latency: null, loss: 100 }, 40), 5)
 assert.equal(slotSignal(null, 40), 0)
 console.log("a block is coloured by the worse of latency and loss")
+
+// The compact row folds the drawn probes into one band, and takes the worst of
+// them: one congested line must not disappear behind two healthy ones.
+{
+  const band = (latency: number | null, loss = 0) =>
+    Array.from({ length: 20 }, (_, i) => ({ ts: i * BLOCK, latency, loss }))
+  const probe = (id: number, latency: number | null, loss = 0) => ({
+    id, name: `p${id}`, latest: latency, timedOut: latency === null, typical: 40,
+    loss: latency === null ? 100 : loss, slots: band(latency, loss),
+  })
+
+  const merged = mergedSignals([probe(1, 40), probe(2, 400)])
+  assert.equal(merged.length, 20)
+  assert.ok(merged.every((s) => s === 5), "a stalled line colours the whole band")
+  assert.ok(mergedSignals([probe(1, 40)]).every((s) => s === 1), "one healthy line stays at step 1")
+  // A probe with no samples contributes nothing rather than a hole.
+  const empty = { ...probe(3, null), slots: Array.from({ length: 20 }, () => null), loss: null }
+  assert.equal(mergedSignals([probe(1, 40), empty])[0], 1)
+  assert.equal(mergedSignals([probe(1, 40), probe(3, null)]).at(0), 5, "a timeout outranks a healthy line")
+  assert.deepEqual(mergedSignals([]), [])
+}
+console.log("the compact band takes the worst probe in each block")
 
 assert.equal(fmtMs(3.44), "3.4")
 assert.equal(fmtMs(34.6), "35")

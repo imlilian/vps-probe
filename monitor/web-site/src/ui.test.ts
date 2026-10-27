@@ -138,6 +138,74 @@ try {
   assert.equal(overview.match(/min-h-27/g)?.length, 4)
   assert.ok(!overview.includes("0 点累计"), "the traffic tile needs no footnote")
   console.log("the overview counts the fleet, the peak, the traffic and the bill")
+
+  // The toolbar: one control per question, each of them a real control. Ten keys
+  // plus 默认, both densities drawn, and the pressed state on exactly one of each
+  // -- the chips' and the density pair's -- so nothing is a `<div onClick>`.
+  const { Toolbar } = await server.ssrLoadModule("/src/components/Toolbar.tsx")
+  const { SORTS } = await server.ssrLoadModule("/src/lib/sort.ts")
+  const toolbar = (props: Record<string, unknown> = {}) =>
+    renderToString(createElement(Toolbar, {
+      nodes: fleet, shown: fleet.length, group: null, onGroup() {},
+      order: { key: "operator", dir: "asc" }, onOrder() {}, density: "standard", onDensity() {}, ...props,
+    }))
+
+  const controls = toolbar()
+  assert.equal(controls.match(/<option/g)?.length, SORTS.length)
+  assert.match(controls, /<select[^>]*aria-label="排序"/, "the order is a native select")
+  assert.match(controls, /aria-label="[^"]*升序；按下改为降序"/, "the arrow says which way it points")
+  assert.equal(controls.match(/aria-pressed="true"/g)?.length, 2, "one chip and one density, pressed")
+  // The sample fleet has six groups, so the tabs are drawn; 全部 counts all eight.
+  for (const want of ["全部", "香港", "日本", "美国", "新加坡", "欧洲", "国内", "未分组", "标准", "紧凑"]) {
+    assert.ok(controls.includes(want), `missing ${want}`)
+  }
+  assert.ok(controls.includes("8 / 共 8 台"), "the count says nothing is hidden")
+  // Compact pressed: still one of each, and the count follows the filter.
+  const compactChips = toolbar({ density: "compact", group: "香港", shown: 2 })
+  assert.equal(compactChips.match(/aria-pressed="true"/g)?.length, 2)
+  assert.ok(compactChips.includes("2 / 共 8 台"))
+  console.log("the toolbar offers groups, ten orders and two densities")
+
+  // Group and order together: the tab narrows the list, the order decides what
+  // is left, and neither undoes the other.
+  const { NodeList } = await server.ssrLoadModule("/src/App.tsx")
+  const list = (props: Record<string, unknown> = {}) =>
+    renderToString(createElement(NodeList, {
+      nodes: fleet, group: null, summary: false,
+      order: { key: "operator", dir: "asc" }, density: "standard",
+      onGroup() {}, onOrder() {}, onDensity() {}, onOpen() {}, ...props,
+    }))
+
+  const hongKong = list({ group: "香港", order: { key: "cpu", dir: "desc" } })
+  const first = hongKong.indexOf("香港-CN2-02") // 47% on four cores
+  const second = hongKong.indexOf("香港-CN2-01") // 18% on two
+  assert.ok(first >= 0 && second > first, "the busier of the two Hong Kong nodes leads")
+  assert.ok(!hongKong.includes("东京-BGP-01"), "the tab keeps the rest of the fleet out")
+  const reversed = list({ group: "香港", order: { key: "cpu", dir: "asc" } })
+  assert.ok(reversed.indexOf("香港-CN2-01") < reversed.indexOf("香港-CN2-02"), "the arrow reverses it")
+  // Ordering by name reaches across the whole fleet when no tab is chosen.
+  const byName = list({ order: { key: "name", dir: "asc" } })
+  assert.ok(byName.indexOf("东京-BGP-01") < byName.indexOf("香港-CN2-01"))
+  console.log("a group narrows the list and the order arranges what is left")
+
+  // The compact list: the same nodes, a tenth of the card. It keeps what a scan
+  // asks -- name, state, CPU, memory, the line's hour -- and drops the rest.
+  const compactRows = list({ density: "compact" })
+  assert.ok(compactRows.includes("items-stretch gap-2"), "rows sit closer together")
+  assert.ok(compactRows.includes("香港-CN2-02"), "a row still names the node")
+  assert.ok(compactRows.includes("¥59.9"), "and still shows what it costs")
+  // Out of a row: the card's traffic block, its socket counts and its older
+  // meters. (硬盘 is also a sort option, so it is matched as a meter's label.)
+  for (const dropped of ["本月流量", ">TCP<", ">硬盘</span>", ">负载</span>"]) {
+    assert.ok(!compactRows.includes(dropped), `a row leaves out ${dropped}`)
+  }
+  // Twenty blocks of the worst drawn line, filled from the history the strip
+  // above already fetched -- the effects behind them never run under SSR. The
+  // seven rows that are up reserve the band; only node 2 has a history here, and
+  // its band is where the red of its congested probe has to show.
+  assert.equal(compactRows.match(/h-1 rounded-xs/g)?.length, 20 * 7, "seven online rows of twenty")
+  assert.match(compactRows, /bg-(emerald|amber|orange|red)/, "the band is coloured by the data")
+  console.log("the compact list keeps the line's hour and drops the rest")
 } finally {
   await server.close()
 }
