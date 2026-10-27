@@ -29,15 +29,21 @@
   /* 8px base: rounded-xl is the 12px card, rounded-md the 6px button. */
   --radius: 0.5rem;
 
-  /* Page, surfaces, text. The card is white at 80% rather than opaque so the
+  /* Page, surfaces, text. The card is white at 82% rather than opaque so the
      dot grid reads through it, which is what makes a grid of cards look like one
-     pane of glass instead of a wall of boxes. */
+     pane of glass instead of a wall of boxes. Two surfaces, not one: the card is
+     the plane a node sits on, and `--card-2` is the well a block inside it sits
+     in, so a card can group its facts without drawing another border of the same
+     weight as its own edge. */
   --background: light-dark(oklch(0.968 0.007 247.896), oklch(0.129 0.042 264.695)); /* slate-100 / slate-950 */
   --foreground: light-dark(oklch(0.208 0.042 265.755), oklch(0.968 0.007 247.896)); /* slate-900 / slate-100 */
-  --card: light-dark(oklch(1 0 0 / 80%), oklch(0.208 0.042 265.755 / 80%)); /* white/80 / slate-900/80 */
+  --card: light-dark(oklch(1 0 0 / 82%), oklch(0.208 0.042 265.755 / 80%)); /* white/80 / slate-900/80 */
+  --card-2: light-dark(oklch(0.968 0.007 247.896 / 65%), oklch(0.279 0.041 260.031 / 45%)); /* slate-100/65 / slate-800/45 */
   --card-foreground: light-dark(oklch(0.208 0.042 265.755), oklch(0.968 0.007 247.896));
-  --primary: light-dark(oklch(0.208 0.042 265.755), oklch(0.968 0.007 247.896));
-  --primary-foreground: light-dark(oklch(0.984 0.003 247.858), oklch(0.208 0.042 265.755));
+  /* The accent: links, the brand mark, the live figures, and every control that
+     is on. blue-600 clears 4.79:1 on this page; blue-500 would not as text. */
+  --primary: light-dark(oklch(0.546 0.245 262.881), oklch(0.623 0.214 259.815)); /* blue-600 / blue-500 */
+  --primary-foreground: light-dark(oklch(0.984 0.003 247.858), oklch(0.984 0.003 247.858));
   --secondary: light-dark(oklch(0.929 0.013 255.508), oklch(0.279 0.041 260.031)); /* slate-200 / slate-800 */
   --secondary-foreground: light-dark(oklch(0.372 0.044 257.287), oklch(0.968 0.007 247.896));
   --muted: light-dark(oklch(0.929 0.013 255.508), oklch(0.279 0.041 260.031));
@@ -47,11 +53,13 @@
   --accent: light-dark(oklch(0.929 0.013 255.508), oklch(0.279 0.041 260.031));
   --accent-foreground: light-dark(oklch(0.208 0.042 265.755), oklch(0.968 0.007 247.896));
   --destructive: light-dark(oklch(0.505 0.213 27.518), oklch(0.704 0.191 22.216)); /* red-700 / red-400 */
-  --border: light-dark(oklch(0.554 0.046 257.417 / 18%), oklch(0.704 0.04 256.788 / 18%)); /* slate-500/400 @ 18% */
+  --border: light-dark(oklch(0.554 0.046 257.417 / 20%), oklch(0.704 0.04 256.788 / 18%)); /* slate-500/400 @ 20% */
+  /* The hairline a block uses inside a card. Half the card's own edge: a nested
+     box whose border weighs the same as the card's is one box too many. */
+  --border-soft: light-dark(oklch(0.554 0.046 257.417 / 12%), oklch(0.704 0.04 256.788 / 12%));
   --ring: light-dark(oklch(0.623 0.214 259.815), oklch(0.707 0.165 254.624)); /* blue-500 / blue-400 */
 
-  /* The one accent: links, the brand mark, the trend lines. blue-600 clears
-     4.79:1 on this page; blue-500 would not. */
+  /* The one accent, spelled once more under the name the page reads it by. */
   --brand: light-dark(oklch(0.546 0.245 262.881), oklch(0.707 0.165 254.624)); /* blue-600 / blue-400 */
 
   /* Chart series in reading order: one blue, a lighter step of it, then three
@@ -72,10 +80,49 @@
   --online: light-dark(oklch(0.508 0.118 165.612), oklch(0.765 0.177 163.223));
   --offline: light-dark(oklch(0.554 0.046 257.417), oklch(0.704 0.04 256.788)); /* slate-500 / slate-400 */
 
-  /* The page's texture: a 28px dot grid, and cold light spilling from the top
-     edge so a page of cards is not flat. Both are the palette at low alpha. */
+  /* Five latency steps, worst last, and the same five for a block of a strip.
+     Steps of Tailwind's palette again, chosen so the ramp climbs monotonically
+     in both lightness and hue rather than jumping from green to red: emerald at
+     the bottom, then green, lime and yellow for the three bands where a line is
+     merely slow, and rose only where it is losing traffic. The dark half lifts
+     the two ends (emerald-500, rose-400), which is what keeps them apart on a
+     card at 20% lightness.
+     These are fills: a 6px block needs 3:1 against the card and nothing more. */
+  --signal-1: light-dark(oklch(0.596 0.145 163.225), oklch(0.696 0.17 162.48)); /* emerald-600 / emerald-500 */
+  --signal-2: light-dark(oklch(0.792 0.209 151.711), oklch(0.792 0.209 151.711)); /* green-400 */
+  --signal-3: light-dark(oklch(0.841 0.238 128.85), oklch(0.841 0.238 128.85)); /* lime-400 */
+  --signal-4: light-dark(oklch(0.852 0.199 91.936), oklch(0.852 0.199 91.936)); /* yellow-400 */
+  --signal-5: light-dark(oklch(0.645 0.246 16.439), oklch(0.712 0.194 13.428)); /* rose-500 / rose-400 */
+
+  /* The trough a meter bar is cut into. */
+  --rail: light-dark(oklch(0.554 0.046 257.417 / 16%), oklch(0.704 0.04 256.788 / 16%));
+
+  /* Two lifts rather than one. A card is `card` at rest and `raise` under the
+     pointer, and each is two shadows: a 1px contact shadow, then a wide, weak
+     one that stands the card off the page. One shadow deep enough to read does
+     the work of a border and makes a grid of eight cards look punched out. */
+  --elev-card: light-dark(
+    0 1px 2px oklch(0.208 0.042 265.755 / 5%),
+    0 6px 20px -12px oklch(0.208 0.042 265.755 / 14%)
+  ), light-dark(
+    0 1px 2px oklch(0 0 0 / 35%),
+    0 8px 24px -14px oklch(0 0 0 / 65%)
+  );
+  --elev-raise: light-dark(
+    0 2px 6px oklch(0.208 0.042 265.755 / 6%),
+    0 16px 34px -16px oklch(0.208 0.042 265.755 / 20%)
+  ), light-dark(
+    0 2px 6px oklch(0 0 0 / 40%),
+    0 18px 38px -16px oklch(0 0 0 / 75%)
+  );
+
+  /* The page's texture: a 28px dot grid, and two cold washes spilling from the
+     top corners so a page of cards is not flat. The washes are the reason the
+     cards can be translucent at all -- without something behind them, `bg-white`
+     at 82% is just a greyer white. */
   --dot: light-dark(oklch(0.554 0.046 257.417 / 12%), oklch(0.704 0.04 256.788 / 10%));
-  --glow: light-dark(oklch(0.623 0.214 259.815 / 8%), oklch(0.707 0.165 254.624 / 10%));
+  --glow-a: light-dark(oklch(0.623 0.214 259.815 / 7%), oklch(0.623 0.214 259.815 / 10%));
+  --glow-b: light-dark(oklch(0.704 0.14 182.503 / 5%), oklch(0.704 0.14 182.503 / 7%));
 }
 
 /* Pinned by `useTheme`. After the :root block so it wins on equal specificity;
@@ -92,6 +139,7 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
+  --color-card-2: var(--card-2);
   --color-card-foreground: var(--card-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
@@ -103,8 +151,10 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-border: var(--border);
+  --color-border-soft: var(--border-soft);
   --color-ring: var(--ring);
   --color-brand: var(--brand);
+  --color-rail: var(--rail);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
@@ -114,6 +164,15 @@
   --color-warn: var(--warn);
   --color-online: var(--online);
   --color-offline: var(--offline);
+  --color-signal-1: var(--signal-1);
+  --color-signal-2: var(--signal-2);
+  --color-signal-3: var(--signal-3);
+  --color-signal-4: var(--signal-4);
+  --color-signal-5: var(--signal-5);
+  /* `shadow-card` / `shadow-raise` on a card, so the lift is a token and not a
+     number copied into eight components. */
+  --shadow-card: var(--elev-card);
+  --shadow-raise: var(--elev-raise);
 }
 
 /* The page column, named rather than repeated as an arbitrary value: 1400px
@@ -125,6 +184,10 @@
      eye should land on, but at 11px it is still legible, and 10px was not. */
   --text-2xs: 0.6875rem;
   --text-2xs--line-height: 1rem;
+  /* 416px: the width below which the header's four groups no longer share a
+     line with the site name. Tailwind's next stop down is `sm` at 640px, and a
+     bar that loses a row at 640 wastes 200px of the range where it fits. */
+  --breakpoint-xs: 26rem;
 }
 
 @layer base {
@@ -134,15 +197,17 @@
   html { scrollbar-gutter: stable; }
   body {
     @apply bg-background text-foreground antialiased;
-    /* The grid is drawn behind the cards and never moves; the glow is one
-       1000px ellipse hanging off the top edge, fixed to the viewport so a
-       scrolled page keeps its light. */
+    /* The grid is drawn behind the cards and never moves; the two washes are
+       wide ellipses hanging off the top corners, sized in viewport units so a
+       tall page does not repeat them, and fixed so a scrolled page keeps its
+       light. */
     background-image:
-      radial-gradient(circle at 1px 1px, var(--dot) 1px, transparent 0),
-      radial-gradient(1000px 520px at 50% -12%, var(--glow), transparent 72%);
-    background-size: 28px 28px, 100% 100%;
-    background-repeat: repeat, no-repeat;
-    background-attachment: scroll, fixed;
+      radial-gradient(ellipse 70% 42% at 6% -4%, var(--glow-a), transparent 62%),
+      radial-gradient(ellipse 55% 38% at 96% 14%, var(--glow-b), transparent 58%),
+      radial-gradient(circle at 1px 1px, var(--dot) 1px, transparent 0);
+    background-size: 100% 900px, 100% 1100px, 28px 28px;
+    background-repeat: no-repeat, no-repeat, repeat;
+    background-attachment: scroll, scroll, fixed;
   }
   ::selection { @apply bg-brand/20; }
 }
@@ -152,7 +217,7 @@
 .tnum { font-variant-numeric: tabular-nums; }
 
 /* Everything that moves on this page moves in CSS: the meter's width, a card's
-   border under the pointer, the skeleton's pulse. (The charts are the one
+   shadow under the pointer, the skeleton's pulse. (The charts are the one
    exception, and they turn animation off at the series, in the markup.)
    A block rather than `motion-reduce:` on each of those six classes -- it is the
    same three properties every time, and a list of utilities is what gets

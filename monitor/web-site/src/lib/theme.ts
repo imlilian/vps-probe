@@ -98,6 +98,15 @@ export function useTheme() {
   // means the same thing. A visitor who never chose starts on `system`; their
   // first press pins light, which on a dark desktop repaints the page and on a
   // bright one only changes the icon -- the icon is the receipt either way.
+  //
+  // `cycle` is kept for the one-button toggle the panel still draws; the status
+  // page's slider picks a mode outright, because three states behind one press
+  // is a control nobody can aim at.
+  const choose = useCallback((next: ThemeMode) => {
+    setMode(next)
+    writePref(KEY, next)
+  }, [])
+
   const cycle = useCallback(() => {
     setMode((current) => {
       const next = MODES[(MODES.indexOf(current) + 1) % MODES.length]
@@ -106,5 +115,5 @@ export function useTheme() {
     })
   }, [])
 
-  return { mode, dark, cycle }
+  return { mode, dark, cycle, choose }
 }

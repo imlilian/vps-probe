@@ -4,50 +4,44 @@ import { Skeleton } from "@/components/ui/skeleton"
 import type { Node } from "@/lib/api"
 import { clockFor } from "@/lib/format"
 import {
-  cardProbes, fmtLoss, fmtMs, HOURS, lossSignal, mergedSignals, probeLatencySignal, SLOTS, slotSignal,
+  cardProbes, fmtLoss, fmtMs, HOURS, lossSignal, probeLatencySignal, slotSignal,
   useNodePing, type ProbeStats, type Slot,
 } from "@/lib/ping"
 import { cn } from "@/lib/utils"
 
 /**
- * Five steps as Tailwind palette steps rather than literal colours: the block is
- * a fill, so it needs 3:1 against the card and nothing more, while the figure
- * beside it is text and takes a darker step of the same hue elsewhere.
+ * Six fills: no data, then the five steps. Tailwind palette steps rather than
+ * literal colours -- the block is a fill, so it needs 3:1 against the card and
+ * nothing more, while the figure beside it is text and takes a darker step of the
+ * same hue (see [INK]).
  *
- * Colour is kept for trouble. Steps 1 and 2 are the faintest green the palette
- * has, so a glance down a page of cards lands on the few amber and red blocks
- * instead of on hundreds of green ones.
+ * The ramp is emerald, green, lime, yellow, rose, and it climbs in hue as well as
+ * in lightness so that a run of slow blocks is visibly a run rather than a
+ * slightly different green. Only the last step is red: it means the line lost
+ * most of a block, which is the one thing worth stopping on.
  */
 const FILL = [
-  "bg-muted", // 0: no samples
-  "bg-emerald-200 dark:bg-emerald-500/30",
-  "bg-emerald-300 dark:bg-emerald-500/55",
-  "bg-amber-400",
-  "bg-orange-500",
-  "bg-red-500",
+  "bg-muted",
+  "bg-signal-1",
+  "bg-signal-2",
+  "bg-signal-3",
+  "bg-signal-4",
+  "bg-signal-5",
 ]
 
-/** The figure's ink: a step's colour, dark enough to read as text. */
+/**
+ * The figure's ink. The two greens share a step of ink -- lime at 11px is a
+ * highlight, not text -- so the words beside a strip read as a value and not as a
+ * palette sample.
+ */
 const INK = [
   "text-muted-foreground",
-  "text-foreground",
-  "text-foreground",
+  "text-emerald-700 dark:text-emerald-400",
+  "text-emerald-700 dark:text-emerald-400",
   "text-amber-700 dark:text-amber-400",
   "text-orange-700 dark:text-orange-400",
   "text-red-700 dark:text-red-400",
 ]
-
-/**
- * Three probes side by side where the card is wide enough for twenty blocks
- * each, and stacked otherwise. At the 300-odd pixels a four-column grid gives a
- * card, a third of the width is 6 px a block: too fine to see a two-block run of
- * congestion in, which is the whole point. So the usual case is three rows.
- */
-const COLUMNS: Record<number, string> = {
-  1: "grid-cols-1",
-  2: "grid-cols-1 @[340px]:grid-cols-2",
-  3: "grid-cols-1 @[480px]:grid-cols-3",
-}
 
 function slotTitle(slot: Slot, clock: (ms: number) => string) {
   if (!slot) return "无采样"
@@ -57,44 +51,45 @@ function slotTitle(slot: Slot, clock: (ms: number) => string) {
 }
 
 /** Twenty blocks, one per three minutes of the last hour. */
-function Strip({ slots, typical, clock, className }: {
-  slots: Slot[]
-  typical: number | null
-  clock: (ms: number) => string
-  className?: string
-}) {
+function Strip({ slots, clock, className }: { slots: Slot[]; clock: (ms: number) => string; className?: string }) {
   return (
     // The figures above carry the reading; the strip is the same data drawn, so
-    // a screen reader is spared twenty unlabelled boxes.
+    // a screen reader is spared twenty unlabelled boxes. The title on each block
+    // is still there for a pointer, which is the only way to ask a block what it
+    // was.
     <div className={cn("grid grid-cols-20 gap-0.5", className)} aria-hidden>
       {slots.map((slot, i) => (
-        <span
-          key={i}
-          title={slotTitle(slot, clock)}
-          className={cn("h-2.5 rounded-xs", FILL[slotSignal(slot, typical)])}
-        />
+        <span key={i} title={slotTitle(slot, clock)} className={cn("h-1.5 rounded-xs", FILL[slotSignal(slot)])} />
       ))}
     </div>
   )
 }
 
+/**
+ * One probe: the name, the newest reading, the hour's loss, and the hour drawn
+ * under them.
+ *
+ * Three columns of these was the alternative -- the reference theme draws them
+ * side by side -- and it does not survive this card's width: a third of 300px is
+ * ten pixels a block, which shows a colour but never a run of them. Stacked, each
+ * strip is as wide as the card and a bad quarter of an hour is a shape.
+ */
 function Probe({ probe, hours }: { probe: ProbeStats; hours: number }) {
   const clock = clockFor(hours)
+  const latency = probe.timedOut ? "超时" : probe.latest !== null ? `${fmtMs(probe.latest)} ms` : "—"
   return (
-    <div className="min-w-0" title={`${probe.name} · 近 ${hours} 小时的延迟与丢包`}>
-      <div className="flex items-baseline justify-between gap-2 text-xs">
+    <div className="py-1.5 first:pt-0 last:pb-0" title={`${probe.name} · 近 ${hours} 小时的延迟与丢包`}>
+      <div className="flex items-baseline justify-between gap-2 text-2xs">
         <span className="truncate text-muted-foreground">{probe.name}</span>
-        <span className="tnum flex shrink-0 items-baseline gap-1">
-          <span className={cn("font-medium", INK[probeLatencySignal(probe)])}>
-            {probe.latest !== null ? `${fmtMs(probe.latest)} ms` : probe.timedOut ? "超时" : "—"}
-          </span>
-          <span className="text-muted-foreground/50">·</span>
+        <span className="tnum flex shrink-0 items-baseline gap-1.5">
+          <span className={cn("font-semibold", INK[probeLatencySignal(probe)])}>{latency}</span>
+          <span aria-hidden className="text-border">·</span>
           <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>
             {probe.loss === null ? "—" : `${fmtLoss(probe.loss)}%`}
           </span>
         </span>
       </div>
-      <Strip slots={probe.slots} typical={probe.typical} clock={clock} className="mt-1.5" />
+      <Strip slots={probe.slots} clock={clock} className="mt-1" />
     </div>
   )
 }
@@ -104,9 +99,7 @@ function Probe({ probe, hours }: { probe: ProbeStats; hours: number }) {
  *
  * A page below the fold asks nothing until it is nearly on screen. A hundred
  * nodes would otherwise queue a hundred history queries on load, two at a time,
- * and the three cards someone is looking at would wait behind all of them. The
- * compact row needs the same guard as the full card, so it is one hook used by
- * both rather than a copy in each.
+ * and the three cards someone is looking at would wait behind all of them.
  */
 function useLazyPing(node: Node, hours: number) {
   const ref = useRef<HTMLDivElement>(null)
@@ -131,8 +124,44 @@ function useLazyPing(node: Node, hours: number) {
 }
 
 /**
- * The bottom of a node card: one row per probe, the newest latency and the
- * hour's loss beside a strip of the hour itself.
+ * The same hour for the compact card, as figures.
+ *
+ * No strip: at the 60-odd pixels a fourth of a compact card gives it, twenty
+ * blocks are six pixels each, which shows a colour but never a run -- and a run
+ * is the only thing a strip is better at than a number. Which probe and how bad
+ * is one press away on the node's own page.
+ */
+export function ProbeLines({ node, hours = HOURS }: { node: Node; hours?: number }) {
+  const [ref, entry] = useLazyPing(node, hours)
+  const probes = entry?.data ? cardProbes(entry.data) : []
+  if (entry && !probes.length) return null
+
+  return (
+    <div ref={ref} className="mt-1.5 space-y-0.5">
+      {probes.length ? (
+        probes.map((probe) => (
+          <div key={probe.id} className="flex items-baseline justify-between gap-2 text-2xs" title={probe.name}>
+            <span className="truncate text-muted-foreground">{probe.name}</span>
+            <span className="tnum flex shrink-0 items-baseline gap-1.5">
+              <span className={cn("font-semibold", INK[probeLatencySignal(probe)])}>
+                {probe.timedOut ? "超时" : probe.latest !== null ? `${fmtMs(probe.latest)} ms` : "—"}
+              </span>
+              <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>
+                {probe.loss === null ? "—" : `${fmtLoss(probe.loss)}%`}
+              </span>
+            </span>
+          </div>
+        ))
+      ) : (
+        <Skeleton aria-hidden className="h-3 w-full" />
+      )}
+    </div>
+  )
+}
+
+/**
+ * The bottom of a node card: the probes, one row each, inside the second of the
+ * card's two wells.
  */
 export function PingPanel({ node, hours = HOURS }: { node: Node; hours?: number }) {
   const [ref, entry] = useLazyPing(node, hours)
@@ -142,16 +171,15 @@ export function PingPanel({ node, hours = HOURS }: { node: Node; hours?: number 
   const probes = entry?.data ? cardProbes(entry.data) : []
 
   // Answered, and there is nothing to draw: the node has no probe configured.
-  // The frame goes with it -- `mt-3 border-t pt-3` over an empty child is a
-  // divider with 24px of nothing under it, which on a fresh install was the
-  // bottom of every card. The rule belongs to the strips inside, not to the
-  // absence of them.
+  // The well goes with it -- a bordered box with 20px of nothing under it was the
+  // bottom of every card on a fresh install. The frame belongs to the strips
+  // inside, not to the absence of them.
   if (entry && !probes.length) return null
 
   return (
-    <div ref={ref} className="@container mt-3 border-t pt-3">
+    <div ref={ref} className="mt-2.5 rounded-lg border border-border-soft bg-card-2 px-2.5 py-2">
       {probes.length ? (
-        <div className={cn("grid gap-x-4 gap-y-3", COLUMNS[probes.length])}>
+        <div className="divide-y divide-border-soft">
           {probes.map((probe) => <Probe key={probe.id} probe={probe} hours={hours} />)}
         </div>
       ) : (
@@ -164,41 +192,9 @@ export function PingPanel({ node, hours = HOURS }: { node: Node; hours?: number 
             <Skeleton className="h-3 w-16" />
             <Skeleton className="h-3 w-20" />
           </div>
-          <Skeleton className="mt-1.5 h-2.5 w-full" />
+          <Skeleton className="mt-1.5 h-1.5 w-full" />
         </div>
       )}
-    </div>
-  )
-}
-
-/**
- * The same hour for the compact list: one full-width band of twenty blocks
- * instead of a row per probe.
- *
- * Full width rather than wedged between the figures: at the 300-odd pixels a
- * column gives it, an inline band would be three pixels a block, which shows a
- * colour but no run of them. Below the figures it gets the whole row, so the
- * blocks are as wide as the card's are. The height is held from the first frame
- * so a row does not grow when the history lands.
- */
-export function CompactStrip({ node, hours = HOURS }: { node: Node; hours?: number }) {
-  const [ref, entry] = useLazyPing(node, hours)
-  const probes = entry?.data ? cardProbes(entry.data) : []
-  // Answered, and there is no probe to colour: a fresh install. The band stays
-  // anyway. `mergedSignals([])` is an empty array, and an empty array is not
-  // `null`, so the placeholder below never ran -- the row drew nothing at all
-  // and the column of rows lost its line exactly where nothing was configured.
-  const signals = probes.length ? mergedSignals(probes) : null
-
-  return (
-    <div ref={ref} title={signals ? `近 ${hours} 小时的延迟与丢包，取最差的一条线` : undefined} className="mt-1.5">
-      {/* Twenty unlabelled boxes say nothing to a screen reader; the row's name
-          and its page carry the reading. */}
-      <div className="grid h-1 grid-cols-20 gap-0.5" aria-hidden>
-        {(signals ?? Array.from({ length: SLOTS }, () => -1)).map((signal, i) => (
-          <span key={i} className={cn("h-1 rounded-xs", signal < 0 ? "bg-transparent" : FILL[signal])} />
-        ))}
-      </div>
     </div>
   )
 }

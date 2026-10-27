@@ -134,65 +134,59 @@ export function cardProbes(data: PingData, now = Date.now() / 1000, count = SLOT
 }
 
 /**
- * Five steps, 1 the best and 5 the worst, 0 for no data at all. Loss is judged
- * by the figure itself. Latency is judged against the line's own usual: 270 ms
- * is normal to the other side of the world and a fault to the next city, so what
- * colours a figure is how far above its line's median it sits, as a share of
- * that median, with a 30 ms floor so a line that normally answers in 3 ms is not
- * alarming at 6.
+ * Five steps, 1 the best and 5 the worst, 0 for no data at all.
+ *
+ * A block is judged against fixed numbers rather than against the line's own
+ * median, which is what this used to do. The relative reading had one virtue --
+ * 270 ms is normal to the other side of the world -- and one fault that a card
+ * shows every day: a single spike above a very steady line lit up as the worst
+ * colour there is, so a healthy hour looked like an outage. Fixed bands make a
+ * colour mean the same thing on every card, so a glance down the page compares
+ * machines instead of each machine against itself.
+ *
+ * The edges are the round trip of a packet, not a service level: under 80 ms is
+ * a neighbouring city, 150 still answers on the same continent, 250 is an ocean,
+ * and past 400 ms the connection is usable only for bulk transfer.
  */
-const LOSS_STEPS = [1, 3, 6, 9]
-const LATENCY_STEPS = [0.25, 0.6, 1.2, 2]
-const LATENCY_FLOOR = 30
+const LATENCY_BANDS = [80, 150, 250, 400]
 
-export function lossSignal(loss: number | null): number {
-  if (loss === null) return 0
-  const i = LOSS_STEPS.findIndex((t) => loss <= t)
+/** Loss bands, for the figure printed beside a strip. */
+const LOSS_BANDS = [1, 5, 15, 40]
+
+export function latencySignal(ms: number | null): number {
+  if (ms === null) return 0
+  const i = LATENCY_BANDS.findIndex((edge) => ms <= edge)
   return i < 0 ? 5 : i + 1
 }
 
-export function latencySignal(ms: number | null, typical: number | null): number {
-  if (ms === null) return 0
-  if (typical === null) return 1
-  const excess = (ms - typical) / Math.max(typical, LATENCY_FLOOR)
-  const i = LATENCY_STEPS.findIndex((t) => excess <= t)
+export function lossSignal(loss: number | null): number {
+  if (loss === null) return 0
+  const i = LOSS_BANDS.findIndex((edge) => loss <= edge)
   return i < 0 ? 5 : i + 1
 }
 
 /**
- * A block is coloured by whichever of its two readings is worse. One strip
- * rather than two: with three probes on a card, two strips each is six rows of
- * colour for one question -- is this line well -- and the loss is already the
- * faster of the two to notice.
+ * A block is coloured by its latency, and by its loss only once the loss is
+ * worth a colour of its own.
+ *
+ * The first version took the worse of the two readings at every block, with the
+ * loss ladder starting at one per cent. Every line loses a packet now and then,
+ * so an hour at 99% delivery -- which nobody would call a fault -- came out
+ * speckled with amber, and the strip read as far worse than the percentage
+ * printed above it. Ten per cent is a run of blocks that actually went missing:
+ * that costs a step, thirty costs two, and half the block gone is the last step
+ * whatever the latency says.
  */
-export function slotSignal(slot: Slot, typical: number | null): number {
+export function slotSignal(slot: Slot): number {
   if (!slot) return 0
   if (slot.latency === null) return 5
-  return Math.max(latencySignal(slot.latency, typical), lossSignal(slot.loss))
+  const bump = slot.loss >= 50 ? 5 : slot.loss >= 30 ? 2 : slot.loss >= 10 ? 1 : 0
+  return Math.min(5, latencySignal(slot.latency) + bump)
 }
 
 /** A figure's step: a timeout is the worst latency there is. */
 export function probeLatencySignal(probe: ProbeStats): number {
-  return probe.timedOut ? 5 : latencySignal(probe.latest, probe.typical)
-}
-
-/**
- * One row of blocks for the compact list: per block, the worst step any of the
- * drawn probes reached.
- *
- * A 4px band across a 48px row cannot show three lines apart -- at that height
- * two blocks of congestion are two dots -- and it does not need to: the question
- * a compact row answers is "was this machine's way out unwell in the last hour".
- * Which line, and by how much, is one press away on the node's own page. Taking
- * the worst rather than the average is the same rule the single strip already
- * follows (D15): trouble is what the colour is for, and an average would hide
- * one bad probe behind two good ones.
- */
-export function mergedSignals(probes: ProbeStats[]): number[] {
-  const width = probes[0]?.slots.length ?? 0
-  return Array.from({ length: width }, (_, i) =>
-    probes.reduce((worst, probe) => Math.max(worst, slotSignal(probe.slots[i] ?? null, probe.typical)), 0),
-  )
+  return probe.timedOut ? 5 : latencySignal(probe.latest)
 }
 
 export const fmtMs = (ms: number) => (ms < 10 ? ms.toFixed(1) : Math.round(ms).toString())

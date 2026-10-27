@@ -63,6 +63,23 @@ export function uptime(seconds: number): string {
   return d > 0 ? `${d} 天 ${h} 小时` : h > 0 ? `${h} 小时 ${m} 分` : `${m} 分`
 }
 
+/**
+ * The same duration as a badge has room for: `92d 4h`, `3h 12m`, `5m`.
+ *
+ * Two units and no words, so the figure is the same width in every language and
+ * a column of cards keeps one rhythm -- `在线 92 天 0 小时` was three times as
+ * wide, and the zero it carried was noise. Latin letters rather than 天/小时 for
+ * the same reason: at 11px they hold their shape beside the `ms` and `GB` the
+ * rest of the card already speaks.
+ */
+export function uptimeShort(seconds: number): string {
+  if (!seconds || seconds < 0) return "—"
+  const d = Math.floor(seconds / 86400)
+  const h = Math.floor((seconds % 86400) / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
 /** Whole days until a date, negative once it has passed. */
 export function daysUntil(date?: string | null): number | null {
   if (!date) return null
@@ -151,6 +168,27 @@ export function moneyParts(amount: number, currency: string, digits?: number): {
 export function splitUnit(text: string): [string, string] {
   const at = text.lastIndexOf(" ")
   return at < 0 ? [text, ""] : [text.slice(0, at), text.slice(at + 1)]
+}
+
+/**
+ * The mark alone: `$`, `¥`, `€`, or the three letters of a currency the locale
+ * has no symbol for.
+ *
+ * zh-CN spells the dollar `US$` and the yen `JP¥`, which is precise and is two
+ * characters more than a column has room for. Inside a card whose every other
+ * figure is already bare, `US$6.75` reads as a label plus an amount; `$6.75`
+ * reads as a price. Only the two- or three-letter prefix a locale puts in front
+ * of a symbol is dropped -- `R$` is one letter and a symbol, and stripping it
+ * would turn a real into a dollar.
+ */
+const PREFIXED_MARK = /^[A-Z]{2,3}([$¥€£₩₹])$/
+
+export function moneyMark(currency: string): string {
+  const { symbol } = moneyParts(0, currency, 0)
+  const mark = PREFIXED_MARK.exec(symbol)?.[1]
+  // An unparseable code leaves `symbol` empty, and the letters of the code are
+  // then the only thing that says what the number is.
+  return mark ?? (symbol || currency)
 }
 
 // Hub 1.3.0 and earlier store only these names; later hubs store any other

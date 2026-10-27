@@ -1,11 +1,11 @@
 import type { ReactNode } from "react"
-import { Activity, ArrowDown, ArrowDownUp, ArrowUp, Server, Wallet, type LucideIcon } from "lucide-react"
+import { Activity, ArrowDown, ArrowUp, CalendarClock, Gauge, Server, Wallet, type LucideIcon } from "lucide-react"
 
 import { Card } from "@/components/ui/card"
 import { Glyph } from "@/components/ui/glyph"
 import { percentText } from "@/components/Meter"
 import type { Node } from "@/lib/api"
-import { bytes, moneyParts, rate, splitUnit } from "@/lib/format"
+import { bytes, moneyMark, moneyParts, rate, splitUnit } from "@/lib/format"
 import { RATES_AS_OF } from "@/lib/rates"
 import { busiest, due, fleet, live, residual, today, type Due } from "@/lib/stats"
 import { cn } from "@/lib/utils"
@@ -13,34 +13,28 @@ import { cn } from "@/lib/utils"
 /** Every figure on this row is drawn in it: see lib/rates.ts. */
 const VALUED_IN = "USD"
 
-function Tile({ icon, label, hint, note, children }: {
+function Tile({ icon, label, meta, note, className, children }: {
   icon: LucideIcon
   label: string
-  /**
-   * A qualifier that belongs to the label rather than to a line of its own:
-   * `流量（实时/今日）` names the two columns without spending a row on them.
-   * Measured in a system face the whole head is 116px against the 130px a card
-   * has on a 360px screen -- the narrowest phone still shipping -- so it does
-   * not need a fallback for a smaller one.
-   */
-  hint?: ReactNode
-  /** The line under the figure, pinned to the bottom. */
+  /** What the label does not need to say because a short figure can: `合计`. */
+  meta?: ReactNode
+  /** The line under the body, pinned to the bottom. */
   note?: ReactNode
+  /** Where the tile sits in the grid; five into two columns leaves one cell over. */
+  className?: string
   children: ReactNode
 }) {
   return (
-    // One height for all four: 14 + 16 (label) + 8 + 32 (figure) + 8 + 16
+    // One height for all five: 14 + 16 (label) + 8 + 32 (figure) + 8 + 16
     // (note) + 14. Auto-height made every tile shrink to its own content, so a
-    // two-line traffic table and a single percentage sat in boxes of different
+    // two-row traffic table and a single percentage sat in boxes of different
     // shapes and the shortest one read as crowded; the fixed box is what lets
     // the same figure breathe in all of them.
-    <Card className="@container flex min-h-27 flex-col gap-0 p-3.5">
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+    <Card className={cn("@container flex min-h-27 flex-col gap-0 p-3.5", className)}>
+      <div className="flex items-center gap-1.5 text-2xs text-muted-foreground">
         <Glyph icon={icon} />
-        <span className="min-w-0 truncate">
-          {label}
-          {hint && <span className="text-2xs opacity-70">{hint}</span>}
-        </span>
+        <span className="min-w-0 truncate">{label}</span>
+        {meta && <span className="ml-auto shrink-0 text-2xs opacity-80">{meta}</span>}
       </div>
       <div className="mt-2">{children}</div>
       {note}
@@ -54,55 +48,67 @@ function Tile({ icon, label, hint, note, children }: {
  * own line, which is what keeps it from touching the label and the note.
  */
 function Big({ children }: { children: ReactNode }) {
-  return <div className="tnum text-2xl font-semibold leading-8 tracking-tight">{children}</div>
+  return <div className="tnum text-2xl font-bold leading-8 tracking-tight">{children}</div>
 }
 
 /**
  * The line under it: what the figure is made of, or what to do about it. `mt-auto`
- * pins it to the bottom of the fixed box, so four cards of unequal content line
+ * pins it to the bottom of the fixed box, so five cards of unequal content line
  * up along it.
  */
 function Note({ children, tone, title }: { children: ReactNode; tone?: string; title?: string }) {
   return (
-    <div title={title} className={cn("mt-auto truncate text-xs", tone ?? "text-muted-foreground")}>
+    <div title={title} className={cn("mt-auto truncate text-2xs", tone ?? "text-muted-foreground")}>
       {children}
     </div>
   )
 }
 
 /**
- * The estimate, split: the mark as a unit, the amount as the figure. Set as one
- * string, `US$795` makes the symbol as loud and as wide as the number it belongs
- * to, which is the mistake `TCP 412` makes in the other direction; the gap
- * between them is what keeps the pair from reading as three digits and a stray
- * character.
+ * The estimate, split: the mark as a unit, the amount as the figure. The mark is
+ * the symbol alone -- `US$795` spends two characters of a narrow card saying what
+ * `$795` says, and the currency of an estimate is already in the tooltip.
  */
 function Money({ amount, currency }: { amount: number; currency: string }) {
-  const { symbol, value } = moneyParts(amount, currency, 0)
+  const { value } = moneyParts(amount, currency, 0)
   return (
     <Big>
-      <span className="mr-1.5 text-base font-medium text-muted-foreground">{symbol}</span>
+      <span className="mr-1 text-base font-medium text-muted-foreground">{moneyMark(currency)}</span>
       {value}
     </Big>
   )
 }
 
 /**
- * One figure of the traffic table: the number leads, its unit trails a step
- * smaller, as in the socket counts.
+ * One direction of a flow card: the arrow and its two letters, then the figure
+ * with its unit a step down.
  *
- * The value steps down a size on a narrow card because four of these have to
- * share a phone's 130px of card. `whitespace-nowrap` is the part that matters:
- * the space in "39.6 MB/s" is a line-break opportunity, and a 158px card took
- * it, leaving the figure on one line and `MB/s` on the next.
+ * RX/TX rather than 入站/出站. Two letters are the same width in every language,
+ * they are what the labels on a switch port already say, and the arrow in front
+ * of them carries the meaning for anyone who has never met the abbreviation --
+ * which is the trade this page makes everywhere: an icon is free, a word is not.
+ * The colours are the ones the rest of the page uses for the same two
+ * directions, emerald down and blue up.
  */
-function Cell({ text }: { text: string }) {
+function Flow({ dir, text }: { dir: "rx" | "tx"; text: string }) {
   const [value, unit] = splitUnit(text)
+  const down = dir === "rx"
   return (
-    <span className="tnum whitespace-nowrap text-right">
-      <span className="text-xs font-medium text-foreground @[220px]:text-sm">{value}</span>
-      {unit && <span className="ml-1 text-2xs text-muted-foreground">{unit}</span>}
-    </span>
+    <>
+      <span
+        className={cn(
+          "flex items-center gap-1 text-2xs font-semibold tracking-wide",
+          down ? "text-emerald-600 dark:text-emerald-400" : "text-blue-600 dark:text-blue-400",
+        )}
+      >
+        <Glyph icon={down ? ArrowDown : ArrowUp} box="sm" />
+        {down ? "RX" : "TX"}
+      </span>
+      <span className="tnum whitespace-nowrap text-right text-sm font-semibold">
+        {value}
+        {unit && <span className="ml-1 text-2xs font-normal text-muted-foreground">{unit}</span>}
+      </span>
+    </>
   )
 }
 
@@ -127,11 +133,18 @@ function expiry(due: Due): { text: string; tone?: string; title?: string } {
 }
 
 /**
- * Four tiles, not seven: what is running, what is busiest, what it moved, and
- * what the remaining time is worth. CPU and memory aggregates were dropped --
- * one busy machine is the signal, and a fleet average hides it -- and so was the
- * cumulative byte total, which every node resets on its own billing date and so
- * grows without ever describing a period.
+ * Five tiles, not seven: what is running, what is busiest, what the line is
+ * doing now, what it has moved since midnight, and what the remaining time is
+ * worth. CPU and memory aggregates were dropped -- one busy machine is the
+ * signal, and a fleet average hides it -- and so was the cumulative byte total,
+ * which every node resets on its own billing date and so grows without ever
+ * describing a period.
+ *
+ * Two flow tiles rather than one table of four figures. The table was the
+ * densest thing on the page -- four figures and two units inside a phone's
+ * 130px -- and it made the reader hold two time scopes in their head to compare
+ * one column. Split, each tile answers one question, and the same pair of rows
+ * in both keeps them comparable at a glance.
  */
 export function Overview({ nodes }: { nodes: Node[] }) {
   const { total, online, offline } = fleet(nodes)
@@ -142,7 +155,7 @@ export function Overview({ nodes }: { nodes: Node[] }) {
   const ending = expiry(due(nodes))
 
   return (
-    <div className="grid grid-cols-2 items-stretch gap-3 lg:grid-cols-4">
+    <div className="grid grid-cols-2 items-stretch gap-3 sm:grid-cols-3 lg:grid-cols-5">
       <Tile
         icon={Server}
         label="节点"
@@ -172,35 +185,29 @@ export function Overview({ nodes }: { nodes: Node[] }) {
         <Big>{top ? percentText(top.cpu) : "—"}</Big>
       </Tile>
 
-      {/* Two directions read across two time scopes: what the line is doing now,
-          and what it has moved since midnight. The scopes are named in the title
-          rather than over the columns -- `MB/s` already says which column is the
-          live one, and a header row of 实时／今日 was a line of words the eye
-          skipped on its way to the figures. The arrows keep the rows, because a
-          direction is a symbol in every language while its name is not.
+      <Tile icon={Gauge} label="实时速率">
+        {/* No note: two rows are the whole card, and the box is already a fixed
+            height, so there is nothing left to prop up. The rows get the spare
+            space as a wider gap instead of a footnote nobody needed. */}
+        <div className="grid w-full grid-cols-[auto_1fr] items-baseline gap-x-2 gap-y-2">
+          <Flow dir="rx" text={rate(now.rx)} />
+          <Flow dir="tx" text={rate(now.tx)} />
+        </div>
+      </Tile>
 
-          Four figures and two units in a phone's 130px is the tightest thing on
-          this page: measured in a system sans face it comes to 130px, exactly
-          what the card has, and the columns are content-sized, so any face a
-          shade wider spends the card's right padding rather than the page's. */}
-      <Tile icon={ArrowDownUp} label="流量" hint="（实时/今日）">
-        {/* No note: the two rows are the whole card, and the box is already a
-            fixed height, so there is nothing left to prop up. The rows get the
-            spare space as a wider gap instead of a footnote nobody needed. */}
-        <div className="grid w-full grid-cols-[auto_1fr_1fr] items-baseline gap-x-1.5 gap-y-1.5">
-          <Glyph icon={ArrowDown} box="sm" className="self-center" />
-          <Cell text={rate(now.rx)} />
-          <Cell text={bytes(day.rx)} />
-
-          <Glyph icon={ArrowUp} box="sm" className="self-center" />
-          <Cell text={rate(now.tx)} />
-          <Cell text={bytes(day.tx)} />
+      <Tile icon={CalendarClock} label="今日流量" meta="0 点起">
+        <div className="grid w-full grid-cols-[auto_1fr] items-baseline gap-x-2 gap-y-2">
+          <Flow dir="rx" text={bytes(day.rx)} />
+          <Flow dir="tx" text={bytes(day.tx)} />
         </div>
       </Tile>
 
       <Tile
         icon={Wallet}
         label="剩余价值"
+        // The odd one of five: at two columns it takes the whole row rather than
+        // leaving half a card of paper beside it.
+        className="col-span-2 sm:col-span-1"
         note={
           <Note
             tone={ending.tone}

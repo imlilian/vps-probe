@@ -6,7 +6,7 @@
 import assert from "node:assert/strict"
 
 import {
-  BLOCK, buildSlots, cardProbes, fmtLoss, fmtMs, latencySignal, lossSignal, mergedSignals, probeStats, slotSignal,
+  BLOCK, buildSlots, cardProbes, fmtLoss, fmtMs, latencySignal, lossSignal, probeStats, slotSignal,
   type PingData, type PingRow,
 } from "./ping.ts"
 
@@ -106,53 +106,40 @@ const data: PingData = {
   console.log("the strip is always twenty blocks")
 }
 
-// Loss is judged by its own figure: 1, 3, 6 and 9 per cent are the steps up.
-assert.deepEqual([null, 0, 1, 2, 3, 5, 6, 8, 9, 9.1, 40].map(lossSignal), [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5])
+// Loss is judged by its own figure: 1, 5, 15 and 40 per cent are the steps up.
+assert.deepEqual(
+  [null, 0, 1, 2, 5, 6, 15, 16, 40, 41].map(lossSignal),
+  [0, 1, 1, 2, 2, 3, 3, 4, 4, 5],
+)
 console.log("loss reads five steps off absolute thresholds")
 
-// Latency is judged against the line's own median, with a 30 ms floor: 270 ms is
-// normal to another continent and a fault to the next city.
-assert.equal(latencySignal(40, 40), 1)
-assert.equal(latencySignal(50, 40), 1)
-assert.equal(latencySignal(60, 40), 2)
-assert.equal(latencySignal(80, 40), 3)
-assert.equal(latencySignal(100, 40), 4)
-assert.equal(latencySignal(150, 40), 5)
-assert.equal(latencySignal(40, null), 1)
-// 45 ms would be fifteen times a 3 ms line; the floor keeps it at step 4.
-assert.equal(latencySignal(45, 3), 4)
-assert.equal(latencySignal(260, 250), 1)
-console.log("latency reads against the line's own norm, not against a fixed number")
+// Latency is judged against fixed bands rather than against the line's own
+// median: a colour has to mean the same thing on every card, or a page of them
+// cannot be compared with itself.
+assert.equal(latencySignal(null), 0)
+assert.equal(latencySignal(12), 1)
+assert.equal(latencySignal(80), 1)
+assert.equal(latencySignal(81), 2)
+assert.equal(latencySignal(150), 2)
+assert.equal(latencySignal(200), 3)
+assert.equal(latencySignal(400), 4)
+assert.equal(latencySignal(401), 5)
+console.log("latency reads five bands at 80, 150, 250 and 400 ms")
 
-// One strip per probe: a block takes the worse of its two readings, and a block
-// nothing answered is the worst there is.
-assert.equal(slotSignal({ ts: 0, latency: 40, loss: 0 }, 40), 1)
-assert.equal(slotSignal({ ts: 0, latency: 40, loss: 7 }, 40), 4)
-assert.equal(slotSignal({ ts: 0, latency: null, loss: 100 }, 40), 5)
-assert.equal(slotSignal(null, 40), 0)
-console.log("a block is coloured by the worse of latency and loss")
-
-// The compact row folds the drawn probes into one band, and takes the worst of
-// them: one congested line must not disappear behind two healthy ones.
-{
-  const band = (latency: number | null, loss = 0) =>
-    Array.from({ length: 20 }, (_, i) => ({ ts: i * BLOCK, latency, loss }))
-  const probe = (id: number, latency: number | null, loss = 0) => ({
-    id, name: `p${id}`, latest: latency, timedOut: latency === null, typical: 40,
-    loss: latency === null ? 100 : loss, slots: band(latency, loss),
-  })
-
-  const merged = mergedSignals([probe(1, 40), probe(2, 400)])
-  assert.equal(merged.length, 20)
-  assert.ok(merged.every((s) => s === 5), "a stalled line colours the whole band")
-  assert.ok(mergedSignals([probe(1, 40)]).every((s) => s === 1), "one healthy line stays at step 1")
-  // A probe with no samples contributes nothing rather than a hole.
-  const empty = { ...probe(3, null), slots: Array.from({ length: 20 }, () => null), loss: null }
-  assert.equal(mergedSignals([probe(1, 40), empty])[0], 1)
-  assert.equal(mergedSignals([probe(1, 40), probe(3, null)]).at(0), 5, "a timeout outranks a healthy line")
-  assert.deepEqual(mergedSignals([]), [])
-}
-console.log("the compact band takes the worst probe in each block")
+// A block is coloured by its latency, and by its loss only once the loss is a
+// run of missing packets: 2% of an hour is not a fault and must not paint one.
+assert.equal(slotSignal({ ts: 0, latency: 40, loss: 0 }), 1)
+assert.equal(slotSignal({ ts: 0, latency: 40, loss: 2 }), 1)
+assert.equal(slotSignal({ ts: 0, latency: 40, loss: 9 }), 1)
+assert.equal(slotSignal({ ts: 0, latency: 40, loss: 12 }), 2)
+assert.equal(slotSignal({ ts: 0, latency: 40, loss: 31 }), 3)
+assert.equal(slotSignal({ ts: 0, latency: 40, loss: 60 }), 5)
+// A slow block climbs with it, and the scale stops at five.
+assert.equal(slotSignal({ ts: 0, latency: 300, loss: 0 }), 4)
+assert.equal(slotSignal({ ts: 0, latency: 300, loss: 12 }), 5)
+assert.equal(slotSignal({ ts: 0, latency: null, loss: 100 }), 5)
+assert.equal(slotSignal(null), 0)
+console.log("a block is coloured by its latency, escalated only by real loss")
 
 assert.equal(fmtMs(3.44), "3.4")
 assert.equal(fmtMs(34.6), "35")

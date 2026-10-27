@@ -12,7 +12,7 @@ import { Chip, Segmented } from "@/components/ui/chip"
 import { Glyph } from "@/components/ui/glyph"
 import { Skeleton } from "@/components/ui/skeleton"
 import { percentText } from "@/components/Meter"
-import { Country, Status } from "@/components/NodeCard"
+import { Country, Status, Uptime } from "@/components/NodeCard"
 import { api, type Metrics, type Node } from "@/lib/api"
 import {
   axisBytes, axisTop, bytes, clockFor, cpuName, cycle, despike, money, osName,
@@ -534,9 +534,11 @@ const glued = (text: string) => text.replace(/(\d) (?=[A-Za-z%])/g, "$1\u00a0")
 function Fact({ label, value }: { label: string; value?: string | number | null }) {
   if (value === null || value === undefined || value === "") return null
   return (
-    <div className="min-w-0 bg-card px-3 py-2.5">
+    <div className="min-w-0 bg-card-2 px-3 py-2.5">
       <dt className="text-2xs text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 line-clamp-2 text-sm leading-snug font-medium" title={String(value)}>
+      {/* `break-keep` keeps a CJK word whole: at six columns the renewal cell had
+          room for two lines, and it spent them on `到` and `期`. */}
+      <dd className="mt-0.5 line-clamp-2 text-sm leading-snug font-medium break-keep" title={String(value)}>
         {typeof value === "string" ? glued(value) : value}
       </dd>
     </div>
@@ -734,6 +736,9 @@ export function NodeDetail({ node, historyDays, onBack }: {
           <Country node={node} />
           <h2 className="min-w-0 truncate text-xl font-semibold tracking-tight" title={node.name}>{node.name}</h2>
           <Status node={node} />
+          {/* The same capsule the card in the list carried to get here, so the
+              page someone landed on is visibly the machine they pressed. */}
+          {node.online && <Uptime node={node} />}
           {node.agent_version && (
             <Badge className="font-normal text-muted-foreground">agent {node.agent_version}</Badge>
           )}
@@ -742,7 +747,7 @@ export function NodeDetail({ node, historyDays, onBack }: {
         {/* Hairline cells rather than a grid of whitespace: a spec sheet reads as
             a table, and the lines are what let a phone wrap it to two columns
             without the pairs drifting apart. */}
-        <dl className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border sm:grid-cols-3 xl:grid-cols-6">
+        <dl className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border-soft bg-border-soft sm:grid-cols-3 xl:grid-cols-6">
           {facts.map((fact) => <Fact key={fact.label} {...fact} />)}
         </dl>
 
@@ -752,7 +757,7 @@ export function NodeDetail({ node, historyDays, onBack }: {
             at all, and a signed-in one saw a note written for themselves. The
             public one wins; `remark` is the fallback for a hub that predates it. */}
         {(node.public_remark || node.remark) && (
-          <p className="mt-3 rounded-md bg-muted px-3 py-2 text-sm whitespace-pre-wrap">{node.public_remark || node.remark}</p>
+          <p className="mt-3 rounded-lg border border-border-soft bg-card-2 px-3 py-2 text-sm whitespace-pre-wrap">{node.public_remark || node.remark}</p>
         )}
       </Card>
 

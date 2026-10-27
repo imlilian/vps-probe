@@ -22,31 +22,34 @@ try {
   const { TopBar } = await server.ssrLoadModule("/src/components/TopBar.tsx")
   const bar = (props: Record<string, unknown>) =>
     renderToString(createElement(TopBar, {
-      siteName: "测试站点", authed: false, online: 7, total: 9, error: null, closed: false,
-      mode: "system", onCycleTheme() {}, onHome() {}, ...props,
+      siteName: "测试站点", authed: false, error: null, closed: false,
+      mode: "system", onMode() {}, onHome() {}, ...props,
     }))
 
   const live = bar({})
-  for (const want of ["测试站点", "MONITOR", "7/9", "在线", "主题：跟随系统", "/admin/", "登录"]) {
+  for (const want of ["测试站点", "MONITOR", "实时连接", "主题：跟随系统", "主题：明亮", "主题：深色", "/admin/", "登录"]) {
     assert.ok(live.includes(want), `missing ${want}`)
   }
-  console.log("bar names the site, counts the fleet and links the panel")
+  // The count of online nodes left the header for the summary: `7/9` in the
+  // corner and `7 / 9` in a card forty pixels below are one fact twice.
+  assert.ok(!live.includes("7/9"), "the header no longer counts the fleet")
+  console.log("bar names the site, says the stream is live and links the panel")
 
-  // A pending count reads as a dash rather than 0/0 over a page still loading.
-  assert.ok(bar({ total: 0, online: 0 }).includes("—"))
-  console.log("an unarrived fleet is not counted as zero")
-
-  // The icon is the state: one glyph per mode, so the toggle never lies.
-  assert.ok(bar({ mode: "light" }).includes("lucide-sun"))
-  assert.ok(bar({ mode: "dark" }).includes("lucide-moon"))
-  assert.ok(bar({ mode: "system" }).includes("lucide-monitor"))
-  console.log("the theme button shows its mode")
+  // The slider is three stops, each its own button, and exactly one of them is
+  // pressed: a single cycling button has to be aimed at a state it does not show.
+  assert.equal(live.match(/aria-pressed="true"/g)?.length, 1)
+  assert.equal(live.match(/aria-pressed="false"/g)?.length, 2)
+  assert.ok(bar({ mode: "light" }).includes('aria-pressed="true"') && bar({ mode: "light" }).includes("主题：明亮"))
+  assert.ok(bar({ mode: "dark" }).includes("主题：深色"))
+  console.log("the theme slider offers all three stops and marks one")
 
   // A broken stream says so on the pill, which is the only thing in the bar a
   // visitor can look at before the figures below.
   const stale = bar({ error: "实时数据中断，正在重新连接" })
-  assert.ok(stale.includes("bg-warn"), "a stale stream should amber the dot")
+  assert.ok(stale.includes("重新连接"), "a stale stream says it is reconnecting")
+  assert.ok(stale.includes("bg-warn"), "and ambers its dot")
   assert.ok(stale.includes("实时数据中断"), "the reason belongs in the tooltip")
+  assert.ok(bar({ closed: true }).includes("已断开"))
   assert.ok(bar({ closed: true }).includes("bg-offline"))
   console.log("a broken stream is visible without reading the page")
 
@@ -59,21 +62,32 @@ try {
     renderToString(createElement(NodeCard, { node: fleet[i], onOpen() {} }))
 
   const full = card(1)
-  for (const want of ["香港-CN2-02", "负载", "本月流量", "TCP", "进程", "¥59.9"]) {
+  for (const want of ["香港-CN2-02", "负载", "周期流量", "TCP", "进程", "59.90"]) {
     assert.ok(full.includes(want), `missing ${want}`)
   }
-  // The figure leads and the unit trails: `412` then a smaller `TCP`. A row of
-  // `TCP 412` makes the eye step over the word to reach the number.
-  const sockets = fleet[1]!.metrics!
-  for (const [value, label] of [[sockets.tcp, "TCP"], [sockets.udp, "UDP"], [sockets.procs, "进程"]] as const) {
-    assert.match(full, new RegExp(`>${value}</span><span class="text-2xs[^"]*">${label}<`), `${label} follows its figure`)
-  }
-  // The latency panel mounts its own container, so its presence is what says a
-  // card with a line behind it will draw one.
-  assert.ok(full.includes("@container"))
-  // Throughput follows the same rule, so the row above the counts is not a
-  // different kind of thing: the figure at full weight, the unit a step down.
-  assert.match(full, /text-sm font-medium">[\d.]+<\/span><span class="text-2xs[^"]*">(?:B|KB|MB|GB)\/s</)
+  // `US$` and `JP¥`: the locale's two extra characters are what a card column
+  // cannot spare, and the mark alone is the price.
+  assert.ok(!full.includes("US$"), "the currency is its symbol alone")
+  assert.match(full, /text-muted-foreground">¥<\/span>/, "the mark is set as a unit")
+  // The billed usage leads the quota it is a share of, tagged with the plan's
+  // own counting rule rather than a sentence about it.
+  assert.match(full, />SUM</)
+  // Uptime is a capsule of two units and no verb: `在线 92 天 0 小时` was three
+  // times the width and carried a zero nobody reads.
+  assert.match(full, /\d+d \d+h|\d+h \d+m|\d+m/, "uptime reads 1d 3h")
+  // The verb survives in the title and the accessible name, where it is read
+  // rather than seen; on screen the capsule is two units and nothing else.
+  assert.ok(!full.includes(">在线 "), "no verb beside the uptime")
+  assert.ok(full.includes('title="在线 '), "but the reading keeps its words for a screen reader")
+  // The latency panel mounts its own well and asks for history only once it is
+  // near the viewport, so what the server can show is the placeholder -- which is
+  // exactly the point: a card with a line behind it reserves the row.
+  assert.ok(full.includes("rounded-lg border border-border-soft bg-card-2 px-2.5 py-2"), "the probe well is drawn")
+  assert.ok(full.includes("mt-1.5 h-1.5 w-full"), "and its strip is reserved before the answer")
+  // Throughput follows the socket rule: the figure at full weight, the unit a
+  // step down, and the two directions in the colours they carry everywhere.
+  assert.match(full, /text-sm font-semibold">[\d.]+<\/span><span class="shrink-0 text-2xs/)
+  assert.match(full, /text-emerald-600 dark:text-emerald-400/)
   // A card is a div carrying role="button", so the focus ring the browser would
   // draw for a real button is ours to draw: without it, tabbing through the list
   // moves nothing on screen.
@@ -82,7 +96,7 @@ try {
 
   // An offline node has no live line, and the hour it last reported would read
   // as current if the strip were drawn from it.
-  assert.ok(!card(7).includes("@container"))
+  assert.ok(!card(7).includes("grid-cols-20"))
   // And no renewal date is drawn as no mark at all. It used to be a lone `∞`
   // whose meaning lived in a tooltip, in the column that squeezed the OS line.
   // Node 7 (上海-家宽) is the undated one; node 8 is also undated but has no
@@ -104,21 +118,21 @@ try {
     fetchPing(2)
     await new Promise((resolve) => setTimeout(resolve, 100))
     const strip = card(1)
-    const blocks = strip.match(/h-2\.5 rounded-xs/g)?.length ?? 0
+    const blocks = strip.match(/h-1\.5 rounded-xs/g)?.length ?? 0
     assert.equal(blocks, 60, `three probes of twenty blocks, got ${blocks}`)
     for (const want of ["上海电信", "上海联通", "上海移动", "ms"]) {
       assert.ok(strip.includes(want), `missing ${want}`)
     }
-    // Colour is data: something in the fleet's worst line is not the healthiest
-    // step, and the block classes are the palette's, not literals.
-    assert.ok(/bg-(emerald|amber|orange|red|muted)/.test(strip))
+    // Colour is data, and it is now one of five tokens rather than a palette
+    // step picked per line: a block means the same thing on every card.
+    assert.ok(/bg-signal-[1-5]/.test(strip), "the blocks are the signal scale")
   } finally {
     globalThis.fetch = asked
   }
   console.log("a card with a history draws three strips of twenty blocks")
 
   // A node with no probe configured answers with an empty `probes`, and the panel
-  // kept its rule and its 24px of padding under nothing: a divider across the
+  // keeps its frame and its padding under nothing: a bordered well across the
   // bottom of every card, on a fresh install, with no way to see it in the demo
   // (all eight sample nodes carry probes).
   globalThis.fetch = async () =>
@@ -126,28 +140,24 @@ try {
   try {
     fetchPing(3)
     await new Promise((resolve) => setTimeout(resolve, 100))
-    assert.ok(!card(2).includes("@container"), "no probes leaves no frame")
-    assert.ok(card(2).includes("本月流量"), "and the rest of the card is untouched")
-    // The compact row is the other half of the same answer, and it went the
-    // other way: `mergedSignals([])` is an empty array, and the placeholder
-    // behind it only fills in for `null`, so the row drew no band at all and
-    // broke the column of rows exactly where nothing was configured.
-    const { CompactStrip } = await server.ssrLoadModule("/src/components/PingPanel.tsx")
-    const row = renderToString(createElement(CompactStrip, { node: fleet[2] }))
-    assert.equal(row.match(/h-1 rounded-xs/g)?.length, 20, "the row keeps its twenty blocks")
+    assert.ok(!card(2).includes("grid-cols-20"), "no probes leaves no frame")
+    assert.ok(card(2).includes("周期流量"), "and the rest of the card is untouched")
+    // The compact card is the other half of the same answer.
+    const { ProbeLines } = await server.ssrLoadModule("/src/components/PingPanel.tsx")
+    assert.ok(!renderToString(createElement(ProbeLines, { node: fleet[2] })).includes("ms"))
   } finally {
     globalThis.fetch = asked
-    // Put node 3's real history back: the empty answer above was for one card,
-    // and the list below counts every online row's band.
+    // Put node 3's real history back: the empty answer above was for one card.
     fetchPing(3)
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   console.log("a node without probes keeps no empty frame at the bottom")
 
-  // The overview row: four tiles, and the bill to schedule in the last one.
+  // The overview row: five tiles, one question each, and the bill to schedule in
+  // the last one.
   const { Overview } = await server.ssrLoadModule("/src/components/Overview.tsx")
   const overview = renderToString(createElement(Overview, { nodes: fleet }))
-  for (const want of ["节点", "最忙节点", "流量", "剩余价值", "今日", "实时"]) {
+  for (const want of ["节点", "最忙节点", "实时速率", "今日流量", "剩余价值", "0 点起"]) {
     assert.ok(overview.includes(want), `missing ${want}`)
   }
   // Seven of the eight sample nodes are up. React separates two text children
@@ -160,39 +170,42 @@ try {
   assert.ok(!overview.includes("无近期到期"))
   // The peak is drawn at the same precision as the meter it came from: `46.2%`
   // here against the card's `46%`, one screen apart, reads as two machines.
-  assert.match(overview, /text-2xl font-semibold leading-8 tracking-tight">\d+%/, "the peak has no decimal")
+  assert.match(overview, /text-2xl font-bold leading-8 tracking-tight">\d+%/, "the peak has no decimal")
   // An expired machine is not one "due within 30 days" -- it is already dark --
   // and adding the two counts makes a third fact that is false.
   const overdue = fleet.map((n, i) => (i === 1 ? { ...n, expires_in: -3, expires_at: "2026-10-20T00:00:00Z" } : n))
   const withExpired = renderToString(createElement(Overview, { nodes: overdue }))
   assert.ok(withExpired.includes("1 台已过期"), "the expired node is counted on its own")
   assert.ok(!withExpired.includes("2 台 30 天内到期"), "and not folded into the 30-day count")
-  // Traffic is a table now: the arrows head the rows and the two time scopes
-  // are named once, in the title, in the order the columns are drawn.
-  assert.match(overview, /流量<span[^>]*>（实时\/今日）</, "the scopes are named in the title")
-  assert.ok(overview.indexOf("实时") < overview.indexOf("今日"), "实时 heads the first column")
-  // Every unit in that table is set a step down from its figure, which is what
+  // Two flow tiles, four rows: the arrow and its two letters, then the figure.
+  assert.equal(overview.match(/>RX</g)?.length, 2, "one RX row per flow tile")
+  assert.equal(overview.match(/>TX</g)?.length, 2, "and one TX")
+  // Every unit in those rows is set a step down from its figure, which is what
   // keeps "39.6 MB/s" from reading as one word.
-  assert.match(overview, /text-2xs[^"]*">MB\/s</)
-  assert.match(overview, /text-2xs[^"]*">GB</)
+  assert.match(overview, /text-2xs font-normal text-muted-foreground">MB\/s</)
   // The estimate is drawn in dollars whatever the machines are billed in, and
-  // the mark is a unit: a size down, and separated from the figure by a gap.
-  assert.match(overview, /text-base[^"]*">US\$</)
+  // the mark is the symbol, not the locale's `US$`.
+  assert.match(overview, /text-muted-foreground">\$<\/span>/)
+  assert.ok(!overview.includes("US$"))
   // One height for every tile, whatever it holds: the box is what gives the
   // figure its air, and a traffic card with no note must not be shorter.
-  assert.equal(overview.match(/min-h-27/g)?.length, 4)
-  assert.ok(!overview.includes("0 点累计"), "the traffic tile needs no footnote")
-  console.log("the overview counts the fleet, the peak, the traffic and the bill")
+  assert.equal(overview.match(/min-h-27/g)?.length, 5)
+  // Five into two columns is one cell over, so the last tile takes the row rather
+  // than leaving half a card of paper beside it.
+  assert.match(overview, /col-span-2 sm:col-span-1[^>]*>[\s\S]*剩余价值/)
+  console.log("the overview counts the fleet, the peak, the two flows and the bill")
 
   // The toolbar: one control per question, each of them a real control. Ten keys
-  // plus 默认, both densities drawn, and the pressed state on exactly one of each
-  // -- the chips' and the density pair's -- so nothing is a `<div onClick>`.
+  // plus 默认, both densities drawn as icons, and the pressed state on exactly
+  // one of each -- the chips' and the density pair's -- so nothing is a
+  // `<div onClick>`.
   const { Toolbar } = await server.ssrLoadModule("/src/components/Toolbar.tsx")
   const { SORTS } = await server.ssrLoadModule("/src/lib/sort.ts")
   const toolbar = (props: Record<string, unknown> = {}) =>
     renderToString(createElement(Toolbar, {
-      nodes: fleet, shown: fleet.length, group: null, onGroup() {},
-      order: { key: "operator", dir: "asc" }, onOrder() {}, density: "standard", onDensity() {}, ...props,
+      nodes: fleet, found: fleet, shown: fleet.length, group: null, onGroup() {},
+      order: { key: "operator", dir: "asc" }, onOrder() {}, density: "standard", onDensity() {},
+      query: "", onQuery() {}, ...props,
     }))
 
   const controls = toolbar()
@@ -200,25 +213,40 @@ try {
   assert.match(controls, /<select[^>]*aria-label="排序"/, "the order is a native select")
   assert.match(controls, /aria-label="[^"]*升序；按下改为降序"/, "the arrow says which way it points")
   assert.equal(controls.match(/aria-pressed="true"/g)?.length, 2, "one chip and one density, pressed")
+  // The density is two icons: `标准` and `紧凑` were the widest labels in the
+  // row and the least informative.
+  assert.ok(controls.includes('aria-label="标准卡片"') && controls.includes('aria-label="紧凑卡片"'))
+  assert.ok(!controls.includes(">标准<"), "the density carries no words")
+  // The search is a button until someone wants it: a field that is always open
+  // spends 150px of a toolbar to do nothing.
+  assert.ok(controls.includes('aria-label="搜索节点"'))
+  assert.ok(!controls.includes('type="search"'), "no field until the button is pressed")
   // The sample fleet has six groups, so the tabs are drawn; 全部 counts all eight.
-  for (const want of ["全部", "香港", "日本", "美国", "新加坡", "欧洲", "国内", "未分组", "标准", "紧凑"]) {
+  for (const want of ["全部", "香港", "日本", "美国", "新加坡", "欧洲", "国内", "未分组"]) {
     assert.ok(controls.includes(want), `missing ${want}`)
   }
-  assert.ok(controls.includes("8 / 共 8 台"), "the count says nothing is hidden")
-  // Compact pressed: still one of each, and the count follows the filter.
-  const compactChips = toolbar({ density: "compact", group: "香港", shown: 2 })
-  assert.equal(compactChips.match(/aria-pressed="true"/g)?.length, 2)
-  assert.ok(compactChips.includes("2 / 共 8 台"))
-  console.log("the toolbar offers groups, ten orders and two densities")
+  assert.ok(controls.includes("8 台"), "nothing is hidden, so the count is the fleet")
+  // Narrowed: the count says so, and the order does too.
+  const narrowed = toolbar({ group: "香港", shown: 2 })
+  assert.equal(narrowed.match(/aria-pressed="true"/g)?.length, 2)
+  assert.ok(narrowed.includes("2 / 8 台"))
+  // The chips count what the search left, not the fleet: with `香港` typed the
+  // Tokyo tab says nothing and stops taking presses, so no chip opens on an
+  // empty page.
+  const hkOnly = fleet.filter((n) => n.group === "香港")
+  const searching = toolbar({ found: hkOnly, query: "香港", shown: 2 })
+  assert.match(searching, /<button[^>]*disabled=""[^>]*>日本<span[^>]*>0<\/span>/, "an emptied tab is inert")
+  assert.match(searching, /<button(?![^>]*disabled="")[^>]*>香港<span[^>]*>2<\/span>/, "the matching one still opens")
+  console.log("the toolbar offers groups, ten orders, two densities and a search")
 
-  // Group and order together: the tab narrows the list, the order decides what
-  // is left, and neither undoes the other.
+  // Group, search and order together: the tab narrows the list, the search
+  // narrows the tab, the order decides what is left, and none undoes another.
   const { NodeList } = await server.ssrLoadModule("/src/App.tsx")
   const list = (props: Record<string, unknown> = {}) =>
     renderToString(createElement(NodeList, {
-      nodes: fleet, group: null,
+      nodes: fleet, group: null, query: "",
       order: { key: "operator", dir: "asc" }, density: "standard",
-      onGroup() {}, onOrder() {}, onDensity() {}, onOpen() {}, ...props,
+      onGroup() {}, onQuery() {}, onOrder() {}, onDensity() {}, onOpen() {}, ...props,
     }))
 
   // Read from the grid down: the summary above the list names the busiest node,
@@ -236,39 +264,33 @@ try {
   const whole = list({ order: { key: "name", dir: "asc" } })
   const byName = cards(whole)
   assert.ok(byName.indexOf("东京-BGP-01") < byName.indexOf("香港-CN2-01"))
-  // The summary is part of the page, not a setting: the theme's config API went
-  // with the theme market, and this read its default forever anyway.
-  assert.ok(whole.includes("最忙节点"), "the four tiles are always drawn")
-  console.log("a group narrows the list and the order arranges what is left")
+  // The search narrows within the tab and leaves the rest of the tab alone.
+  const searched = cards(list({ query: "香港" }))
+  assert.ok(searched.includes("香港-CN2-01") && searched.includes("香港-CN2-02"))
+  assert.ok(!searched.includes("东京-BGP-01"), "the search keeps the rest of the fleet out")
+  assert.ok(!cards(list({ query: "不存在的机器" })).includes("香港"), "nothing matches, nothing is drawn")
+  // The summary comes first and follows the filters; the controls sit between it
+  // and the cards.
+  assert.ok(whole.indexOf("最忙节点") < whole.indexOf('aria-label="排序"'), "the summary leads the controls")
+  assert.ok(whole.indexOf('aria-label="排序"') < whole.indexOf("sm:grid-cols-2 lg:grid-cols-3"))
+  assert.ok(whole.includes("最忙节点"), "the five tiles are always drawn")
+  console.log("a group narrows the list, a search narrows the group, the order arranges what is left")
 
-  // The compact list: the same nodes, a tenth of the card. It keeps what a scan
-  // asks -- name, state, CPU, memory, the line's hour -- and drops the rest.
-  const compactRows = list({ density: "compact" })
-  assert.ok(compactRows.includes("items-stretch gap-2"), "rows sit closer together")
-  assert.ok(compactRows.includes("香港-CN2-02"), "a row still names the node")
-  assert.ok(compactRows.includes("¥59.9"), "and still shows what it costs")
-  // Out of a row: the card's traffic block, its socket counts and its older
-  // meters. (硬盘 is also a sort option, so it is matched as a meter's label.)
-  for (const dropped of ["本月流量", ">TCP<", ">硬盘</span>", ">负载</span>"]) {
-    assert.ok(!compactRows.includes(dropped), `a row leaves out ${dropped}`)
+  // The compact card: the same node in a quarter of the height. It keeps the four
+  // readings the standard card has -- so a scan does not depend on the sort -- and
+  // drops the two wells.
+  const compactCards = cards(list({ density: "compact" }))
+  assert.ok(compactCards.includes("items-stretch gap-2"), "compact cards sit closer together")
+  assert.ok(compactCards.includes("香港-CN2-02"), "a compact card still names the node")
+  assert.ok(compactCards.includes("59.90"), "and still shows what it costs")
+  for (const want of ["CPU", "内存", "硬盘", "负载"]) {
+    assert.ok(compactCards.includes(`>${want}<`), `a compact card keeps ${want}`)
   }
-  // Twenty blocks of the worst drawn line, filled from the history the strip
-  // above already fetched -- the effects behind them never run under SSR. The
-  // seven rows that are up reserve the band; only node 2 has a history here, and
-  // its band is where the red of its congested probe has to show.
-  assert.equal(compactRows.match(/h-1 rounded-xs/g)?.length, 20 * 7, "seven online rows of twenty")
-  assert.match(compactRows, /bg-(emerald|amber|orange|red)/, "the band is coloured by the data")
-  // Eleven orders above the list, and a row that showed CPU and memory whatever
-  // was picked: ordering by 速率 rearranged the page with nothing on it to say
-  // why. The figure the order is made of is now on the line -- and only that one,
-  // since a row has 48px. Read below the toolbar, which lists every key by name.
-  const byRate = cards(list({ density: "compact", order: { key: "rate", dir: "desc" } }))
-  assert.match(byRate, />速率</, "a row ordered by rate shows the rate")
-  const byExpiry = cards(list({ density: "compact", order: { key: "expiry", dir: "asc" } }))
-  assert.match(byExpiry, />到期</, "and one ordered by expiry shows the date")
-  const byCpu = cards(list({ density: "compact", order: { key: "cpu", dir: "desc" } }))
-  assert.ok(!/>速率</.test(byCpu), "the keys the row already shows add no cell")
-  console.log("the compact list keeps the line's hour and drops the rest")
+  // Out of a compact card: the cycle-traffic well, the sockets and the strips.
+  for (const dropped of ["周期流量", "连接", "grid-cols-20"]) {
+    assert.ok(!compactCards.includes(dropped), `a compact card leaves out ${dropped}`)
+  }
+  console.log("the compact card keeps four readings and drops the wells")
 
   // The detail page's shell: who the machine is, what it is, and which views it
   // offers. Its charts need effects and a viewport, so what is asserted here is
@@ -289,9 +311,14 @@ try {
   }
   // React separates a text child from an expression with a comment.
   assert.match(page, /agent <!-- -->1\.4\.2/)
+  // The heading says the state in one word and puts the number in the capsule
+  // the list uses: `在线 92d 0h` was a sentence where a state belongs.
+  assert.ok(page.includes(">在线<"), "the state is one word")
+  assert.ok(!page.includes(">在线 9"), "and the uptime is not glued to it")
+  assert.match(page, /<\/svg>\d+d \d+h<\/span>/, "the capsule follows it")
   // Six cells of the spec sheet, so the hairline grid divides into rows of two,
   // three and six.
-  assert.equal(page.match(/bg-card px-3 py-2\.5/g)?.length, 6)
+  assert.equal(page.match(/bg-card-2 px-3 py-2\.5/g)?.length, 6)
   // Two views, one of them on, and every window the hub keeps history for.
   assert.ok(page.includes('aria-label="视图"'))
   assert.equal(page.match(/aria-pressed="true"/g)?.length, 1 + 1, "one view and one range")

@@ -51,7 +51,7 @@ function useNodeRoute() {
 }
 
 export default function App() {
-  const { mode, cycle: cycleTheme } = useTheme()
+  const { mode, choose: chooseTheme } = useTheme()
   const [me, setMe] = useState<Me | null>(null)
   const [meError, setMeError] = useState("")
   const { nodes, error, closed } = useNodes()
@@ -70,8 +70,10 @@ export default function App() {
     document.querySelector<HTMLElement>(`[data-node="${lastOpened.current}"]`)?.focus()
     lastOpened.current = null
   }, [open])
-  // The list's group tab, held here so it survives a visit to a node's page.
+  // The list's group tab and its search, held here so they survive a visit to a
+  // node's page.
   const [group, setGroup] = useState<string | null>(null)
+  const [query, setQuery] = useState("")
   // The order and the density are the visitor's, kept across visits: read from
   // `localStorage` on the first render, written when they change. Not in the URL
   // -- nobody shares a link to "my nodes by CPU" -- and not in a settings file
@@ -147,18 +149,18 @@ export default function App() {
       <TopBar
         siteName={me.site_name || "Monitor"}
         authed={me.authed}
-        online={nodes?.filter((n) => n.online).length ?? 0}
-        total={nodes?.length ?? 0}
         error={error}
         closed={closed}
         mode={mode}
-        onCycleTheme={cycleTheme}
+        onMode={chooseTheme}
         onHome={() => go(null)}
       />
 
-      <main className="mx-auto max-w-page space-y-5 px-4 py-5 pb-16 sm:px-6">
-        {error && <p className="text-sm text-destructive">{error}</p>}
-
+      {/* No error line above the page: the header's pill is where a broken
+          stream is announced, and a red sentence between the bar and the
+          summary repeated it in the place a visitor looks for a warning about
+          their own machine. */}
+      <main className="mx-auto max-w-page space-y-4 px-4 py-5 pb-16 sm:px-6">
         {open !== null ? (
           !nodes ? (
             <Skeleton className="h-96" />
@@ -175,18 +177,20 @@ export default function App() {
             </p>
           )
         ) : !nodes ? (
-          <div className={cn("grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4", density === "compact" ? "gap-2" : "gap-3")}>
-            {[0, 1, 2].map((i) => (
-              <Skeleton key={i} className={density === "compact" ? "h-12" : "h-72"} />
+          <div className="grid items-start gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {[0, 1, 2, 3].map((i) => (
+              <Skeleton key={i} className={density === "compact" ? "h-40" : "h-80"} />
             ))}
           </div>
         ) : (
           <NodeList
             nodes={sorted}
             group={group}
+            query={query}
             order={order}
             density={density}
             onGroup={setGroup}
+            onQuery={setQuery}
             onOrder={chooseOrder}
             onDensity={chooseDensity}
             onOpen={openNode}
@@ -202,16 +206,19 @@ export default function App() {
 // is no longer a switch: it was the operator's `show_summary` from the theme
 // config API, which the hub does not have, so it always read its own default.
 //
-// Exported for `ui.test.ts`: the combination that has to be right -- a group, an
-// order and a density at once -- is this function's, and asserting it through a
-// string of markup is the closest this machine gets to opening a browser.
-export function NodeList({ nodes, group, order, density, onGroup, onOrder, onDensity, onOpen }: {
+// Exported for `ui.test.ts`: the combination that has to be right -- a group, a
+// search, an order and a density at once -- is this function's, and asserting it
+// through a string of markup is the closest this machine gets to opening a
+// browser.
+export function NodeList({ nodes, group, query, order, density, onGroup, onQuery, onOrder, onDensity, onOpen }: {
   nodes: Node[]
   /** null is every node, "" the ungrouped. */
   group: string | null
+  query: string
   order: Order
   density: Density
   onGroup: (group: string | null) => void
+  onQuery: (query: string) => void
   onOrder: (order: Order) => void
   onDensity: (density: Density) => void
   onOpen: (id: number) => void
@@ -226,13 +233,24 @@ export function NodeList({ nodes, group, order, density, onGroup, onOrder, onDen
     if (current !== group) onGroup(current)
   }, [current, group, onGroup])
   // Filter, then arrange: a group is a set and an order is a view of that set, so
-  // changing the tab keeps the order and changing the order keeps the tab.
-  const shown = arrange(current === null ? nodes : nodes.filter((n) => (n.group ?? "") === current), order)
+  // changing the tab keeps the order and changing the order keeps the tab. The
+  // search is a third set -- it narrows within the tab, and clearing it brings
+  // the tab back rather than the whole fleet.
+  const inGroup = current === null ? nodes : nodes.filter((n) => (n.group ?? "") === current)
+  const needle = query.trim().toLowerCase()
+  const matched = needle ? nodes.filter((n) => n.name.toLowerCase().includes(needle)) : nodes
+  const searched = needle ? inGroup.filter((n) => n.name.toLowerCase().includes(needle)) : inGroup
+  const shown = arrange(searched, order)
   const compact = density === "compact"
   return (
     <>
+      {/* The summary first, the controls second: the row of five answers what the
+          page is before it offers to change it, and the summary follows the
+          filters below it rather than the fleet. */}
+      <Overview nodes={shown} />
       <Toolbar
         nodes={nodes}
+        found={matched}
         shown={shown.length}
         group={current}
         onGroup={onGroup}
@@ -240,19 +258,24 @@ export function NodeList({ nodes, group, order, density, onGroup, onOrder, onDen
         onOrder={onOrder}
         density={density}
         onDensity={onDensity}
+        query={query}
+        onQuery={onQuery}
       />
-      <Overview nodes={shown} />
       {nodes.length === 0 ? (
         <p className="py-16 text-center text-sm text-muted-foreground">还没有节点</p>
+      ) : shown.length === 0 ? (
+        <p className="py-16 text-center text-sm text-muted-foreground">{needle ? "没有匹配的节点" : "这个分组里没有节点"}</p>
       ) : (
-        // Rows stretch so a column of them keeps one line height, offline or not;
-        // cards start at the top, since their content is already ragged.
+        // Cards of one density keep one height per row: a compact card is a
+        // fixed list of four figures and two lines, so stretching it costs
+        // nothing and lines the grid up; a standard card's content is already
+        // ragged, so those start at the top.
         <div className={cn(
           "grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
           compact ? "items-stretch gap-2" : "items-start gap-3",
         )}>
           {shown.map((n) => compact
-            ? <NodeRow key={n.id} node={n} order={order.key} onOpen={() => onOpen(n.id)} />
+            ? <NodeRow key={n.id} node={n} onOpen={() => onOpen(n.id)} />
             : <NodeCard key={n.id} node={n} onOpen={() => onOpen(n.id)} />)}
         </div>
       )}

@@ -1,82 +1,80 @@
 import type { ReactNode } from "react"
 
 import { Card } from "@/components/ui/card"
+import { Glyph } from "@/components/ui/glyph"
 import { percentText } from "@/components/Meter"
-import { CompactStrip } from "@/components/PingPanel"
-import { Country, statusDot, statusLabel } from "@/components/NodeCard"
+import { Country, deployed, monthUsage, statusDot, statusLabel } from "@/components/NodeCard"
+import { ProbeLines } from "@/components/PingPanel"
 import type { Node } from "@/lib/api"
-import { bytes, daysUntil, money, percent, rate, uptime } from "@/lib/format"
-import type { SortKey } from "@/lib/sort"
+import { bytes, cycle, daysUntil, moneyMark, moneyParts, percent, rate, splitUnit, uptimeShort } from "@/lib/format"
+import { ArrowDown, ArrowUp, Clock, WifiOff } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-/**
- * A name and a figure on one line, the way a meter labels itself: the word first
- * because it is a name rather than a unit, and muted because the figure is what
- * the eye came for.
- */
-function Figure({ label, pct }: { label: string; pct: number | null }) {
+/** One of the four readings across the top: a name, a figure, a 4px bar. */
+function Mini({ label, value, pct, tone, title }: {
+  label: string
+  value: ReactNode
+  pct: number | null
+  tone: string
+  title?: string
+}) {
+  const filled = pct === null ? 0 : Math.min(100, Math.max(0, pct))
   return (
-    <span className="tnum inline-flex shrink-0 items-baseline gap-1">
-      <span className="text-2xs text-muted-foreground">{label}</span>
-      <span className="text-xs font-medium">{percentText(pct)}</span>
+    <div className="min-w-0" title={title}>
+      <div className="flex items-baseline justify-between gap-1">
+        <span className="truncate text-[0.625rem] leading-3 font-medium tracking-wide text-muted-foreground uppercase">{label}</span>
+        <span className="tnum shrink-0 text-2xs font-semibold">{value}</span>
+      </div>
+      <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-rail">
+        <div
+          className={cn("h-full rounded-full bg-linear-to-r transition-[width] duration-500", tone)}
+          style={{ width: `${filled}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+
+function Speed({ dir, value }: { dir: "rx" | "tx"; value: string }) {
+  const [figure, unit] = splitUnit(value)
+  const down = dir === "rx"
+  return (
+    <span className="inline-flex items-baseline gap-0.5">
+      <Glyph
+        icon={down ? ArrowDown : ArrowUp}
+        box="sm"
+        className={down ? "text-emerald-600 dark:text-emerald-400" : "text-blue-600 dark:text-blue-400"}
+      />
+      <span className="tnum text-2xs font-semibold">{figure}</span>
+      {unit && <span className="text-2xs text-muted-foreground">{unit}</span>}
     </span>
   )
 }
 
 /**
- * The reading the list is currently ordered by, for the keys the row does not
- * already show.
+ * The compact card: the same node at a quarter of the height, for a visitor who
+ * wants the fleet in one screen rather than one machine in one glance.
  *
- * Eleven chips above the list, and a row that shows only CPU and memory: sorting
- * by 速率 or 到期 reordered the page with nothing on screen to explain why. So
- * the one figure the order is made of is on the line -- and only that one,
- * because a row has 48px and its name still has to fit.
- *
- * CPU, memory and price carry their own columns already, and the name, region and
- * operator keys are visible as the row's own identity.
- */
-function orderedBy(node: Node, key: SortKey): { label: string; text: ReactNode } | null {
-  const m = node.online ? node.metrics : null
-  switch (key) {
-    case "rate":
-      return m ? { label: "速率", text: rate(m.net_rx + m.net_tx) } : null
-    case "today":
-      return { label: "今日", text: bytes(node.day_rx + node.day_tx) }
-    case "disk":
-      return m ? { label: "硬盘", text: percentText(percent(m.disk_used, m.disk_total)) } : null
-    case "uptime":
-      return m ? { label: "在线", text: uptime(m.uptime) } : null
-    case "expiry": {
-      const days = node.expires_in !== undefined ? node.expires_in : daysUntil(node.expires_at)
-      if (days === null) return { label: "到期", text: "不限期" }
-      return { label: "到期", text: days < 0 ? "已过期" : `${days} 天` }
-    }
-    default:
-      return null
-  }
-}
-
-/**
- * The compact list's row: the same node as [NodeCard], forty-eight pixels tall
- * and about a tenth of the information.
- *
- * A row of its own rather than a dense variant of the card. The two share no
- * structure -- a card is a four-cell grid above two blocks above a footnote, a
- * row is one line above one band -- so a `dense` prop would have grown a branch
+ * A component of its own rather than a `dense` prop on [NodeCard]. The two share
+ * no structure -- a card is a head above a 2x2 grid above two wells, this is a
+ * head above one row of four and two lines -- so a flag would have grown a branch
  * around every element inside it. What they do share is imported: the flag, the
- * state dot, the latency history behind it.
+ * dot, the state, the probe history.
  *
- * What a row keeps is what a scan answers: which machine, is it up, how busy,
- * and was its line well this hour. Memory is kept beside CPU because the two are
- * the pair that says whether a box has room. Everything the row drops -- disk,
- * load, sockets, expiry, the per-probe figures -- is on the node's own page, one
- * press away.
+ * It keeps four resources instead of the two the old row had, because four 60px
+ * meters in one row are cheaper than the line they replaced: the row it grew out
+ * of showed CPU and memory and then, for the sort key it happened to be ordered
+ * by, one more figure -- which meant the same card said different things
+ * depending on a control two hundred pixels above it. Disk and load are always
+ * there now, so a scan does not depend on the sort.
  */
-export function NodeRow({ node, order, onOpen }: { node: Node; order?: SortKey; onOpen: () => void }) {
+export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
   const m = node.online ? node.metrics : null
-  const billing = node.price > 0 ? money(node.price, node.currency) : ""
+  const loadPct = node.cpu_cores > 0 && m ? (m.load[0] / node.cpu_cores) * 100 : null
+  const days = node.expires_in !== undefined ? node.expires_in : daysUntil(node.expires_at)
+  const { value: price } = moneyParts(node.price, node.currency, 2)
   const status = statusLabel(node)
-  const extra = order ? orderedBy(node, order) : null
+  const tone = days !== null && days < 0 ? "text-destructive" : days !== null && days <= 7 ? "text-warn" : "text-muted-foreground"
 
   return (
     <Card
@@ -87,38 +85,86 @@ export function NodeRow({ node, order, onOpen }: { node: Node; order?: SortKey; 
       title={`${node.name} · ${status}`}
       aria-label={`${node.name}，${status}`}
       data-node={node.id}
-      // Muted when it stops reporting: the figures are the last ones it sent,
-      // and the whole row says so rather than the dot alone. Focus is drawn as
-      // the same border the pointer gets on hover, plus the button's ring.
-      className={cn(
-        "min-w-0 cursor-pointer gap-0 px-3 py-2.5 outline-none transition-colors hover:border-ring focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
-        !node.online && "text-muted-foreground",
-      )}
+      // Focus is drawn as the same border the pointer gets on hover, plus the
+      // button's ring.
+      className="min-w-0 cursor-pointer gap-0 p-3 outline-none transition-[box-shadow,border-color] duration-200 hover:border-ring/50 hover:shadow-raise focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
     >
-      <div className="flex min-w-0 items-center gap-1.5">
-        {/* The dot takes the place the state badge has on a card: in a column of
-            rows the dots line up, and one that is not green is the thing to find. */}
-        <span className={cn("size-1.5 shrink-0 rounded-full", statusDot(node))} title={status} />
+      <div className="flex items-center gap-1.5">
         <Country node={node} />
-        <h3 className="min-w-0 flex-1 truncate text-sm font-medium" title={node.name}>{node.name}</h3>
-        <Figure label="CPU" pct={m ? m.cpu : null} />
-        <Figure label="内存" pct={m ? percent(m.mem_used, m.mem_total) : null} />
-        {/* Whichever figure the list is ordered by, when it is not one of the
-            two above: see [orderedBy]. */}
-        {extra && (
-          <span className="tnum inline-flex shrink-0 items-baseline gap-1">
-            <span className="text-2xs text-muted-foreground">{extra.label}</span>
-            <span className="text-xs font-medium">{extra.text}</span>
+        {/* The dot takes the place the state badge has on a card: in a column of
+            compact cards the dots line up, and one that is not green is the thing
+            to find. */}
+        <span className={cn("size-1.5 shrink-0 rounded-full", statusDot(node))} title={status} />
+        <h3 className="min-w-0 flex-1 truncate text-xs font-semibold" title={node.name}>{node.name}</h3>
+        {node.online ? (
+          <span className="tnum inline-flex shrink-0 items-center gap-0.5 rounded-md border bg-card-2 px-1 py-0.5 text-[0.625rem] leading-3 text-muted-foreground">
+            <Glyph icon={Clock} box="sm" className="size-3" />
+            {m ? uptimeShort(m.uptime) : "—"}
           </span>
-        )}
-        {/* The same string the card shows, a step muted: at the end of a row it
-            is the least urgent thing on the line, but it is what the 价格 sort
-            sorts by, so it has to be on the line. */}
-        {billing && <span className="tnum shrink-0 text-xs text-muted-foreground">{billing}</span>}
+        ) : deployed(node) ? (
+          <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[0.625rem] leading-3 font-semibold text-destructive">
+            <Glyph icon={WifiOff} box="sm" className="size-3" />
+            离线
+          </span>
+        ) : null}
       </div>
-      {/* No line, no strip: an offline machine's last hour would read as a live
-          one (D16). */}
-      {node.online && <CompactStrip node={node} />}
+
+      {deployed(node) ? (
+        <>
+          <div className="mt-2 grid grid-cols-4 gap-2">
+            <Mini label="CPU" value={percentText(m ? m.cpu : null)} pct={m ? m.cpu : null} tone="from-blue-500 to-indigo-500" />
+            <Mini
+              label="内存"
+              value={m ? percentText(percent(m.mem_used, m.mem_total)) : "—"}
+              pct={m ? percent(m.mem_used, m.mem_total) : null}
+              tone="from-violet-500 to-purple-500"
+              title={m ? `${bytes(m.mem_used)} / ${bytes(m.mem_total)}` : undefined}
+            />
+            <Mini
+              label="硬盘"
+              value={m ? percentText(percent(m.disk_used, m.disk_total)) : "—"}
+              pct={m ? percent(m.disk_used, m.disk_total) : null}
+              tone="from-amber-500 to-orange-500"
+              title={m ? `${bytes(m.disk_used)} / ${bytes(m.disk_total)}` : undefined}
+            />
+            <Mini
+              label="负载"
+              value={m ? m.load[0].toFixed(2) : "—"}
+              pct={loadPct}
+              tone="from-pink-500 to-rose-400"
+              title={m ? `5m ${m.load[1].toFixed(2)} · 15m ${m.load[2].toFixed(2)}` : undefined}
+            />
+          </div>
+
+          {/* The hour, as figures: a strip 60px wide is ten blocks of six pixels
+              and shows no run at all, so the compact card says the same thing in
+              the two numbers that coloured it. */}
+          {node.online && <ProbeLines node={node} />}
+
+          <div className="mt-2 flex items-baseline justify-between gap-2">
+            <span className="flex items-baseline gap-2">
+              <Speed dir="rx" value={m ? rate(m.net_rx) : "—"} />
+              <Speed dir="tx" value={m ? rate(m.net_tx) : "—"} />
+            </span>
+            <span className="tnum shrink-0 text-2xs text-muted-foreground" title="本周期已用流量">
+              {bytes(monthUsage(node))}
+            </span>
+          </div>
+
+          <div className="mt-2 flex items-baseline justify-between gap-2 border-t border-border-soft pt-1.5 text-2xs">
+            <span className="truncate text-muted-foreground">{node.price > 0 ? cycle(node.billing_cycle) : "—"}</span>
+            <span className="tnum flex shrink-0 items-baseline gap-1">
+              {node.price > 0 && (
+                <span className="font-semibold text-foreground">{moneyMark(node.currency)}{price}</span>
+              )}
+              {node.price > 0 && days !== null && <span aria-hidden className="text-border">·</span>}
+              {days !== null && <span className={tone}>{days < 0 ? `已过期 ${-days} 天` : `剩 ${days} 天`}</span>}
+            </span>
+          </div>
+        </>
+      ) : (
+        <p className="mt-2 text-2xs text-muted-foreground">还没有接入</p>
+      )}
     </Card>
   )
 }
