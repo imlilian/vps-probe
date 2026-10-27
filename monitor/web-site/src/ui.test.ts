@@ -206,6 +206,78 @@ try {
   assert.equal(compactRows.match(/h-1 rounded-xs/g)?.length, 20 * 7, "seven online rows of twenty")
   assert.match(compactRows, /bg-(emerald|amber|orange|red)/, "the band is coloured by the data")
   console.log("the compact list keeps the line's hour and drops the rest")
+
+  // The detail page's shell: who the machine is, what it is, and which views it
+  // offers. Its charts need effects and a viewport, so what is asserted here is
+  // everything above them -- and the one field that must not be here at all.
+  const { NodeDetail, Connections } = await server.ssrLoadModule("/src/components/NodeDetail.tsx")
+  const { windows } = await server.ssrLoadModule("/src/lib/format.ts")
+  const detail = (props: Record<string, unknown> = {}) =>
+    renderToString(createElement(NodeDetail, {
+      node: fleet[1], historyDays: 7, onBack() {}, ...props,
+    }))
+
+  const page = detail()
+  for (const want of ["香港-CN2-02", "全部节点", "系统", "CPU", "内存 / 硬盘", "架构", "今日流量", "续费"]) {
+    assert.ok(page.includes(want), `missing ${want}`)
+  }
+  // React separates a text child from an expression with a comment.
+  assert.match(page, /agent <!-- -->1\.4\.2/)
+  // Six cells of the spec sheet, so the hairline grid divides into rows of two,
+  // three and six.
+  assert.equal(page.match(/bg-card px-3 py-2\.5/g)?.length, 6)
+  // Two views, one of them on, and every window the hub keeps history for.
+  assert.ok(page.includes('aria-label="视图"'))
+  assert.equal(page.match(/aria-pressed="true"/g)?.length, 1 + 1, "one view and one range")
+  assert.equal(page.match(/aria-pressed="false"/g)?.length, 1 + (windows(7).length - 1))
+  // A public page never shows where the machine is: an operator's `ip` and
+  // `hostname` are the panel's.
+  const hidden = detail({ node: { ...fleet[1], ip: "203.0.113.7", hostname: "hk-02" } })
+  assert.ok(!hidden.includes("203.0.113.7"), "the address stays in the panel")
+  assert.ok(!hidden.includes("hk-02"), "and so does the hostname")
+  // The flag is the node's identity here, as on the card.
+  assert.match(page, /alt="HK"/)
+  console.log("the detail page names the machine, hides its address and offers both views")
+
+  // The connection panel on its own, fed the hub's own answer: the legend is the
+  // readout, so each chip carries the count the machine is at now -- the live
+  // sample where the hub pushed one, the newest bucket otherwise.
+  const sample = fleet[1]!.metrics
+  const metricsRows = history(2, "metrics", 6, 60, 1_790_000_000_000).metrics as
+    { ts: number; tcp: number; udp: number; procs: number }[]
+  const conns = renderToString(createElement(Connections, {
+    rows: metricsRows.map((r) => ({ ...r, ts: r.ts * 1_000 })),
+    hours: 6,
+    live: sample,
+  }))
+  for (const want of ["连接数", "TCP", "UDP", "进程"]) {
+    assert.ok(conns.includes(want), `missing ${want}`)
+  }
+  for (const [label, value] of [["TCP", sample!.tcp], ["UDP", sample!.udp], ["进程", sample!.procs]] as const) {
+    assert.ok(conns.includes(`>${value}</span>`), `${label} shows its live count`)
+  }
+  assert.equal(conns.match(/aria-pressed="true"/g)?.length, 3, "three series, all drawn")
+  console.log("the connection panel counts sockets and processes, and names them")
+
+  // The resource grid: five panels, one of them spanning both columns, each
+  // heading carrying the figure the node is at right now -- the node prop
+  // updates every two seconds, the history behind the line does not.
+  const { Resources } = await server.ssrLoadModule("/src/components/NodeDetail.tsx")
+  const resources = renderToString(createElement(Resources, {
+    node: fleet[1], points: history(2, "metrics", 6, 60, 1_790_000_000_000).metrics, hours: 6, live: sample,
+  }))
+  for (const want of ["CPU · 4 核", "内存 ·", "硬盘 ·", "连接数", "网络速率"]) {
+    assert.ok(resources.includes(want), `missing ${want}`)
+  }
+  assert.equal(resources.match(/data-slot="card"/g)?.length, 5, "four resources and the sockets")
+  assert.equal(resources.match(/lg:col-span-2/g)?.length, 1, "the network takes the whole row")
+  // The heading figure is the live one, not the window's mean. `percentText`
+  // keeps a decimal below ten and drops it above, so the same rule is applied
+  // here rather than reading a round number off the sample.
+  const cpu = sample!.cpu
+  assert.ok(resources.includes(`${cpu < 10 ? cpu.toFixed(1) : cpu.toFixed(0)}%`), "CPU reads its live figure")
+  assert.ok(resources.includes(`负载 ${sample!.load[0].toFixed(2)}`))
+  console.log("the resource grid heads each chart with its live figure")
 } finally {
   await server.close()
 }

@@ -1,6 +1,7 @@
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronDown } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { Chip, Segmented } from "@/components/ui/chip"
 import { Glyph } from "@/components/ui/glyph"
 import { groupsOf, type Node } from "@/lib/api"
 import { nextOrder, SORTS, sortFor, type Density, type Order, type SortKey } from "@/lib/sort"
@@ -19,7 +20,10 @@ type Props = {
   onDensity: (density: Density) => void
 }
 
-const DENSITIES: [Density, string][] = [["standard", "标准"], ["compact", "紧凑"]]
+const DENSITIES: { value: Density; label: string }[] = [
+  { value: "standard", label: "标准" },
+  { value: "compact", label: "紧凑" },
+]
 
 /**
  * The controls over the list: which group, in what order, at what size.
@@ -56,17 +60,14 @@ export function Toolbar({ nodes, shown, group, onGroup, order, onOrder, density,
       {groups.length > 0 && (
         <div role="group" aria-label="分组" className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-0.5">
           {tabs.map(([value, label, count]) => (
-            <Button
+            <Chip
               key={value === null ? "*" : `=${value}`}
-              aria-pressed={group === value}
-              size="sm"
-              variant={group === value ? "secondary" : "ghost"}
-              className="h-7 shrink-0 rounded-full px-2.5 text-xs"
+              pressed={group === value}
               onClick={() => onGroup(value)}
             >
               {label}
               <span className="tnum text-muted-foreground">{count}</span>
-            </Button>
+            </Chip>
           ))}
         </div>
       )}
@@ -104,20 +105,12 @@ export function Toolbar({ nodes, shown, group, onGroup, order, onOrder, density,
           </Button>
         </div>
 
-        <div role="group" aria-label="卡片密度" className="flex h-8 items-center rounded-md border bg-card p-0.5">
-          {DENSITIES.map(([value, label]) => (
-            <Button
-              key={value}
-              aria-pressed={density === value}
-              size="sm"
-              variant={density === value ? "secondary" : "ghost"}
-              className="h-7 rounded-sm px-2 text-xs"
-              onClick={() => onDensity(value)}
-            >
-              {label}
-            </Button>
-          ))}
-        </div>
+        <Segmented
+          label="卡片密度"
+          value={density}
+          items={DENSITIES}
+          onChange={onDensity}
+        />
 
         <span className="tnum ml-auto shrink-0 text-xs text-muted-foreground">{`${shown} / 共 ${nodes.length} 台`}</span>
       </div>
