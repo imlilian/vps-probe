@@ -4,7 +4,7 @@
 //
 // Nothing imports it, so the bundle never includes it.
 import {
-  axisBytes, axisTop, bytes, cpuName, cycle, daysUntil, despike, money, moneyParts, osName, pair, percent,
+  axisBytes, axisTop, bytes, cpuName, cycle, cycleSuffix, daysUntil, despike, money, moneyParts, osName, pair, percent,
   quarters, RATE_FLOOR, rateAxis, sinceSeen, splitUnit, tickClock, timeTicks, uptime, windows, withGaps,
 } from "./format.ts"
 
@@ -177,6 +177,13 @@ eq(uptime(2 * 86400 + 5 * 3600), "2 天 5 小时", "超过一天不再写分钟"
 
 // 旧 hub 存名称，新 hub 把其余长度存成 `<n>m`；两种写法同一个长度读法一致。
 eq(["yearly", "12m", "60m", "18m", "once", "weekly"].map(cycle), ["年付", "年付", "5 年付", "18 个月付", "一次性", "weekly"], "付款周期")
+
+// 价格后缀：贴在金额后面的那个周期，`$168/3年` 里的 `3年`。一次性买断没有周期。
+eq(
+  ["monthly", "quarterly", "semiannual", "yearly", "biennial", "triennial", "60m", "18m", "once", "weekly"].map(cycleSuffix),
+  ["月", "季", "半年", "年", "2年", "3年", "5年", "18个月", null, null],
+  "价格后面的周期",
+)
 
 // money: zh-CN whatever the browser's language, so US$ stands apart from HK$
 // and JP¥ from ¥; a code Intl refuses is shown rather than thrown.

@@ -97,6 +97,17 @@
   /* The trough a meter bar is cut into. */
   --rail: light-dark(oklch(0.554 0.046 257.417 / 16%), oklch(0.704 0.04 256.788 / 16%));
 
+  /* The stop someone has chosen inside a track -- the theme slider, the density
+     pair, the detail page's two views.
+     It cannot be `--card`. On the light side the card is white on a slate-100
+     track and rises; on the dark side the card is slate-900 and the track is
+     slate-800, so the same token draws the chosen stop *below* the track and it
+     reads as a hole that is slightly brighter than its neighbours rather than as
+     a control that is pressed. Hence a third surface: white, and slate-700 in the
+     dark -- lighter than both the card and the track, which is what the reference
+     theme's `--monitor-selected: #33445e` is doing. */
+  --selected: light-dark(oklch(1 0 0), oklch(0.372 0.044 257.287)); /* white / slate-700 */
+
   /* Two lifts rather than one. A card is `card` at rest and `raise` under the
      pointer, and each is two shadows: a 1px contact shadow, then a wide, weak
      one that stands the card off the page. One shadow deep enough to read does
@@ -155,6 +166,7 @@
   --color-ring: var(--ring);
   --color-brand: var(--brand);
   --color-rail: var(--rail);
+  --color-selected: var(--selected);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);

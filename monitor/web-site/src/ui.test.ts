@@ -68,7 +68,11 @@ try {
   // `US$` and `JP¥`: the locale's two extra characters are what a card column
   // cannot spare, and the mark alone is the price.
   assert.ok(!full.includes("US$"), "the currency is its symbol alone")
-  assert.match(full, /text-muted-foreground">¥<\/span>/, "the mark is set as a unit")
+  // The foot is a price tag: the period rides on the amount as a suffix, and the
+  // count is the only other thing on the line.
+  assert.match(full, />¥(?:<!-- -->)?59\.90<span[^>]*>\/(?:<!-- -->)?月<\/span>/, "the period hangs off the price")
+  assert.match(full, /剩 \d+ 天/)
+  assert.ok(!full.includes("月付<"), "no billing word in front of the amount")
   // The billed usage leads the quota it is a share of, tagged with the plan's
   // own counting rule rather than a sentence about it.
   assert.match(full, />SUM</)
@@ -88,6 +92,23 @@ try {
   // step down, and the two directions in the colours they carry everywhere.
   assert.match(full, /text-sm font-semibold">[\d.]+<\/span><span class="shrink-0 text-2xs/)
   assert.match(full, /text-emerald-600 dark:text-emerald-400/)
+  // A label is not half of its figure. `33 TCP · 6 UDP · 86 进程` set flat was
+  // four numbers and four words in one grey run; the number keeps the ink and a
+  // size, the word steps down and mutes.
+  assert.match(full, /font-semibold text-foreground text-xs">\d+<\/span><span class="ml-1 text-2xs font-normal text-muted-foreground">TCP/, "the socket count leads")
+  assert.match(full, /text-2xs font-normal text-muted-foreground">进程/, "and the process label follows its number")
+  // Same rule on the traffic figure and on the amount: a bare `48.0 GB` at one
+  // weight reads as a word, not a quantity.
+  assert.match(full, /font-semibold text-foreground text-xs">[\d.]+<\/span><span class="ml-1 text-2xs font-normal text-muted-foreground">GB/)
+  // The three edges of the foot: free, no end date, and a term longer than a year.
+  const free = renderToString(createElement(NodeCard, {
+    node: { ...fleet[1], price: 0, expires_at: null, expires_in: undefined }, onOpen() {},
+  }))
+  assert.match(free, />免费<\/span><span[^>]*>·<\/span><span[^>]*>永久</, "免费 · 永久")
+  const tri = renderToString(createElement(NodeCard, {
+    node: { ...fleet[1], price: 168, currency: "USD", billing_cycle: "triennial" }, onOpen() {},
+  }))
+  assert.match(tri, />\$(?:<!-- -->)?168<span[^>]*>\/(?:<!-- -->)?3年<\/span>/, "$168/3年")
   // A card is a div carrying role="button", so the focus ring the browser would
   // draw for a real button is ours to draw: without it, tabbing through the list
   // moves nothing on screen.

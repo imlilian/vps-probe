@@ -6,13 +6,14 @@ import {
 } from "simple-icons"
 
 import { Badge } from "@/components/ui/badge"
+import { Billing } from "@/components/Billing"
 import { Card } from "@/components/ui/card"
 import { Glyph } from "@/components/ui/glyph"
 import { percentText } from "@/components/Meter"
 import { PingPanel } from "@/components/PingPanel"
 import type { Node } from "@/lib/api"
 import {
-  bytes, cpuName, cycle, daysUntil, FOREVER, moneyMark, moneyParts, osName, pair, percent, rate, sinceSeen,
+  bytes, cpuName, FOREVER, osName, pair, percent, rate, sinceSeen,
   splitUnit, uptimeShort,
 } from "@/lib/format"
 import { cn } from "@/lib/utils"
@@ -228,6 +229,34 @@ function Resource({ icon, label, value, sub, pct, tone, title }: {
 }
 
 /**
+ * A figure and the label that names it: `48.0` at full weight, `GB` a size down
+ * and in the muted ink.
+ *
+ * The unit is not part of the number. Set at the same weight and colour it made
+ * `33 TCP · 6 UDP · 86 进程` a run of grey text where four of the six tokens are
+ * labels, and `48.0 GB` a word rather than a quantity -- the eye has nothing to
+ * land on. Half a size and one step of ink is enough to separate them, and it
+ * keeps the rows their present height.
+ *
+ * `size` picks the figure's step; the unit is always `text-2xs`, which is the
+ * smallest text this page has.
+ */
+export function Figure({ text, size = "sm", className, title }: {
+  text: string
+  size?: "sm" | "xs"
+  className?: string
+  title?: string
+}) {
+  const [figure, unit] = splitUnit(text)
+  return (
+    <span className={cn("tnum whitespace-nowrap", className)} title={title}>
+      <span className={cn("font-semibold text-foreground", size === "sm" ? "text-sm" : "text-xs")}>{figure}</span>
+      {unit && <span className="ml-1 text-2xs font-normal text-muted-foreground">{unit}</span>}
+    </span>
+  )
+}
+
+/**
  * Throughput in one direction: the arrow and its two letters, then the figure
  * with the unit a step down.
  *
@@ -303,9 +332,9 @@ function Traffic({ node }: { node: Node }) {
         {/* What the plan counts, and how much: `MAX 710 MB` is the figure the
             quota below is a share of, so it leads the bar rather than trailing
             it under a word. */}
-        <span className="tnum flex items-baseline gap-1 text-2xs font-semibold">
+        <span className="flex items-baseline gap-1">
           <span className="rounded-xs bg-brand/10 px-1 text-[0.625rem] font-semibold tracking-wide text-brand">{mode}</span>
-          {bytes(used)}
+          <Figure text={bytes(used)} size="xs" />
         </span>
       </div>
 
@@ -328,54 +357,23 @@ function Traffic({ node }: { node: Node }) {
 
       <div className="mt-2 flex items-baseline justify-between gap-2 border-t border-border-soft pt-1.5">
         <span className="text-2xs text-muted-foreground">连接</span>
-        <span className="tnum shrink-0 text-2xs">
-          {m ? `${m.tcp} TCP · ${m.udp} UDP · ${m.procs} 进程` : "—"}
+        <span className="flex shrink-0 items-baseline gap-1.5">
+          {m ? (
+            <>
+              <Figure text={`${m.tcp} TCP`} size="xs" />
+              <span aria-hidden className="text-2xs text-border">·</span>
+              <Figure text={`${m.udp} UDP`} size="xs" />
+              <span aria-hidden className="text-2xs text-border">·</span>
+              <Figure text={`${m.procs} 进程`} size="xs" />
+            </>
+          ) : (
+            <span className="text-2xs">—</span>
+          )}
         </span>
       </div>
       {/* The quota as a sentence for anyone who wants one: the bar is the same
           fact drawn, and a screen reader has nothing to look at. */}
       <span className="sr-only">{trafficFoot(node)}</span>
-    </div>
-  )
-}
-
-/** Whole days left, or null where nothing expires. */
-function expiryDays(node: Node): number | null {
-  return node.expires_in !== undefined ? node.expires_in : daysUntil(node.expires_at)
-}
-
-/**
- * The foot of the card: what it costs, and how long that buys.
- *
- * One line, because they are one thought -- `年付 $6.75 · 剩 141 天` is a price
- * and its term, and a card that put them at opposite corners made the reader
- * join them. The currency is its symbol alone; zh-CN writes `US$`, which inside
- * a line of bare figures is two characters of noise. The count is the hub's,
- * which renews an online node by its own calendar.
- */
-function Billing({ node }: { node: Node }) {
-  const days = expiryDays(node)
-  const { value } = moneyParts(node.price, node.currency, 2)
-  const priced = node.price > 0
-  const tone = days !== null && days < 0 ? "text-destructive" : days !== null && days <= 7 ? "text-warn" : "text-muted-foreground"
-  if (!priced && days === null) return null
-
-  return (
-    <div className="mt-3 flex items-baseline justify-between gap-2 border-t border-border-soft pt-2.5 text-2xs">
-      <span className="truncate text-muted-foreground">{priced ? cycle(node.billing_cycle) : "—"}</span>
-      <span className="tnum flex shrink-0 items-baseline gap-1.5">
-        {priced && (
-          <span className="font-semibold text-foreground">
-            <span className="font-medium text-muted-foreground">{moneyMark(node.currency)}</span>{value}
-          </span>
-        )}
-        {priced && days !== null && <span aria-hidden className="text-border">·</span>}
-        {days !== null && (
-          <span className={tone} title={node.expires_at ?? undefined}>
-            {days < 0 ? `已过期 ${-days} 天` : `剩 ${days} 天`}
-          </span>
-        )}
-      </span>
     </div>
   )
 }
@@ -476,7 +474,7 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
               read as a live one. */}
           {node.online && <PingPanel node={node} />}
 
-          <Billing node={node} />
+          <Billing node={node} className="mt-2.5 text-2xs" />
         </>
       ) : (
         /* Never connected: nothing to plot, so the card stays short rather than

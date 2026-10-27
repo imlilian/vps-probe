@@ -92,7 +92,7 @@ export function Toolbar({
               className={cn(
                 "grid size-7 place-items-center rounded-md outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50",
                 density === value
-                  ? "bg-card text-foreground shadow-sm"
+                  ? "bg-selected text-foreground shadow-sm ring-1 ring-black/5 dark:ring-white/10"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >

@@ -59,7 +59,7 @@ function Segmented<T extends string>({ label, value, onChange, items, className 
           className={cn(
             "h-7 rounded-md px-2.5 text-2xs",
             value === item.value
-              ? "bg-card text-foreground shadow-sm"
+              ? "bg-selected text-foreground shadow-sm ring-1 ring-black/5 dark:ring-white/10"
               : "text-muted-foreground hover:text-foreground",
           )}
           onClick={() => onChange(item.value)}

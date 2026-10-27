@@ -214,6 +214,24 @@ export function cycle(billing: string): string {
   return CYCLE_WORDS[months] ?? (months % 12 ? `${months} 个月付` : `${months / 12} 年付`)
 }
 
+/**
+ * The same cycle as it hangs off a price: `$168/3年`, `$9/年`, `$3/月`.
+ *
+ * A footer has one line for money, and `月付 $29.90` spends the front of it on
+ * a word the price can carry as a suffix. Null where the price is not a
+ * subscription -- a one-off purchase has a date, not a period.
+ */
+export function cycleSuffix(billing: string): string | null {
+  if (billing === "once") return null
+  const months = cycleMonths(billing)
+  if (!months) return null
+  if (months === 1) return "月"
+  if (months === 3) return "季"
+  if (months === 6) return "半年"
+  if (months % 12 === 0) return months === 12 ? "年" : `${months / 12}年`
+  return `${months}个月`
+}
+
 // Built once: recharts calls a tickFormatter for every sample when laying out an
 // axis rather than once per tick drawn, and an Intl formatter constructed per call
 // would be the largest single cost on the detail page -- 348 ms of a 1531 ms

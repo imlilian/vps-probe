@@ -132,7 +132,8 @@ const SPECS: Spec[] = [
     id: 6, name: "法兰克福-01", country: "DE", group: "欧洲",
     os: "Debian 12", kernel: "6.1.0-28-cloud-amd64", arch: "x86_64", virt: "KVM",
     cpuName: "Intel Xeon Silver 4314", cores: 8, mem: 16 * GiB, disk: 320 * GiB,
-    price: 129, currency: "EUR", cycle: "yearly", expiresIn: 298, trafficLimit: 8000 * GiB, trafficMode: "sum",
+    // 三年一付: the footer has to carry `€387/3年`, not `年付 €387`.
+    price: 387, currency: "EUR", cycle: "triennial", expiresIn: 298, trafficLimit: 8000 * GiB, trafficMode: "sum",
     monthUsed: 0.24, rxBase: 14.6 * MiB, txBase: 21.3 * MiB,
     cpuBase: 22, cpuAmp: 8, memPct: 0.41, diskPct: 0.35,
     tcp: 271, udp: 33, procs: 402, uptime: 231 * 86400,

@@ -3,10 +3,11 @@ import type { ReactNode } from "react"
 import { Card } from "@/components/ui/card"
 import { Glyph } from "@/components/ui/glyph"
 import { percentText } from "@/components/Meter"
-import { Country, deployed, monthUsage, statusDot, statusLabel } from "@/components/NodeCard"
+import { Billing } from "@/components/Billing"
+import { Country, deployed, Figure, monthUsage, statusDot, statusLabel } from "@/components/NodeCard"
 import { ProbeLines } from "@/components/PingPanel"
 import type { Node } from "@/lib/api"
-import { bytes, cycle, daysUntil, moneyMark, moneyParts, percent, rate, splitUnit, uptimeShort } from "@/lib/format"
+import { bytes, percent, rate, splitUnit, uptimeShort } from "@/lib/format"
 import { ArrowDown, ArrowUp, Clock, WifiOff } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -71,10 +72,7 @@ function Speed({ dir, value }: { dir: "rx" | "tx"; value: string }) {
 export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
   const m = node.online ? node.metrics : null
   const loadPct = node.cpu_cores > 0 && m ? (m.load[0] / node.cpu_cores) * 100 : null
-  const days = node.expires_in !== undefined ? node.expires_in : daysUntil(node.expires_at)
-  const { value: price } = moneyParts(node.price, node.currency, 2)
   const status = statusLabel(node)
-  const tone = days !== null && days < 0 ? "text-destructive" : days !== null && days <= 7 ? "text-warn" : "text-muted-foreground"
 
   return (
     <Card
@@ -146,21 +144,10 @@ export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
               <Speed dir="rx" value={m ? rate(m.net_rx) : "—"} />
               <Speed dir="tx" value={m ? rate(m.net_tx) : "—"} />
             </span>
-            <span className="tnum shrink-0 text-2xs text-muted-foreground" title="本周期已用流量">
-              {bytes(monthUsage(node))}
-            </span>
+            <Figure text={bytes(monthUsage(node))} size="xs" className="shrink-0" title="本周期已用流量" />
           </div>
 
-          <div className="mt-2 flex items-baseline justify-between gap-2 border-t border-border-soft pt-1.5 text-2xs">
-            <span className="truncate text-muted-foreground">{node.price > 0 ? cycle(node.billing_cycle) : "—"}</span>
-            <span className="tnum flex shrink-0 items-baseline gap-1">
-              {node.price > 0 && (
-                <span className="font-semibold text-foreground">{moneyMark(node.currency)}{price}</span>
-              )}
-              {node.price > 0 && days !== null && <span aria-hidden className="text-border">·</span>}
-              {days !== null && <span className={tone}>{days < 0 ? `已过期 ${-days} 天` : `剩 ${days} 天`}</span>}
-            </span>
-          </div>
+          <Billing node={node} className="mt-2 text-2xs" />
         </>
       ) : (
         <p className="mt-2 text-2xs text-muted-foreground">还没有接入</p>
