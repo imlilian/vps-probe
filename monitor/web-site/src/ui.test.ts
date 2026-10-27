@@ -128,8 +128,19 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 100))
     assert.ok(!card(2).includes("@container"), "no probes leaves no frame")
     assert.ok(card(2).includes("本月流量"), "and the rest of the card is untouched")
+    // The compact row is the other half of the same answer, and it went the
+    // other way: `mergedSignals([])` is an empty array, and the placeholder
+    // behind it only fills in for `null`, so the row drew no band at all and
+    // broke the column of rows exactly where nothing was configured.
+    const { CompactStrip } = await server.ssrLoadModule("/src/components/PingPanel.tsx")
+    const row = renderToString(createElement(CompactStrip, { node: fleet[2] }))
+    assert.equal(row.match(/h-1 rounded-xs/g)?.length, 20, "the row keeps its twenty blocks")
   } finally {
     globalThis.fetch = asked
+    // Put node 3's real history back: the empty answer above was for one card,
+    // and the list below counts every online row's band.
+    fetchPing(3)
+    await new Promise((resolve) => setTimeout(resolve, 100))
   }
   console.log("a node without probes keeps no empty frame at the bottom")
 

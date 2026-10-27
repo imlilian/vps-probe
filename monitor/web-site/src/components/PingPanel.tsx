@@ -183,7 +183,12 @@ export function PingPanel({ node, hours = HOURS }: { node: Node; hours?: number 
  */
 export function CompactStrip({ node, hours = HOURS }: { node: Node; hours?: number }) {
   const [ref, entry] = useLazyPing(node, hours)
-  const signals = entry?.data ? mergedSignals(cardProbes(entry.data)) : null
+  const probes = entry?.data ? cardProbes(entry.data) : []
+  // Answered, and there is no probe to colour: a fresh install. The band stays
+  // anyway. `mergedSignals([])` is an empty array, and an empty array is not
+  // `null`, so the placeholder below never ran -- the row drew nothing at all
+  // and the column of rows lost its line exactly where nothing was configured.
+  const signals = probes.length ? mergedSignals(probes) : null
 
   return (
     <div ref={ref} title={signals ? `近 ${hours} 小时的延迟与丢包，取最差的一条线` : undefined} className="mt-1.5">
