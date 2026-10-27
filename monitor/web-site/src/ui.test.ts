@@ -340,6 +340,20 @@ try {
   // Six cells of the spec sheet, so the hairline grid divides into rows of two,
   // three and six.
   assert.equal(page.match(/bg-card-2 px-3 py-2\.5/g)?.length, 6)
+  // Six figures above it, which is the question the page is opened with. The
+  // spec sheet has its own card and a heading now, a step down from these.
+  for (const label of ["CPU", "内存", "硬盘", "负载", "连接", "今日流量"]) {
+    assert.ok(page.includes(`text-2xs text-muted-foreground">${label}</span>`), `missing the ${label} figure`)
+  }
+  assert.equal(page.match(/rounded-lg border border-border-soft bg-card-2 px-3 py-2"/g)?.length, 6, "six tiles")
+  assert.ok(page.includes(">规格<"), "the spec sheet is a card with a heading")
+  // Figure and unit are set apart on the tiles too: `18` at full weight, `%` a
+  // step down, which is the rule the cards and footnotes already follow.
+  assert.match(
+    page,
+    /font-semibold text-foreground text-lg leading-none">\d+(?:\.\d+)?<\/span><span class="ml-1 text-2xs[^"]*">%/,
+    "a percentage's sign sits a step down",
+  )
   // Two views, one of them on, and every window the hub keeps history for. The
   // 削峰 chip sits on both tabs now -- CPU is clipped by the same switch -- and
   // is off at six hours.
@@ -415,7 +429,7 @@ try {
     "a rate splits into figure and unit",
   )
   // One hue per figure, on a tint of itself: the square is a label, not data.
-  assert.equal(resources.match(/grid size-6 shrink-0 place-items-center/g)?.length, 5, "five titled squares")
+  assert.equal(resources.match(/grid shrink-0 place-items-center rounded-md/g)?.length, 5, "five titled squares")
   // The chart chrome the five panels share, asserted where it is defined: an
   // SSR render has no measured width, so recharts emits no surface to look at.
   const { GRID, CURSOR } = await server.ssrLoadModule("/src/components/ChartPanel.tsx")

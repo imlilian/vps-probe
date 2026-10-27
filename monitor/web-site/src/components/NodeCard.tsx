@@ -244,14 +244,15 @@ function Resource({ icon, label, value, sub, pct, tone, title }: {
  */
 export function Figure({ text, size = "sm", className, title }: {
   text: string
-  size?: "sm" | "xs"
+  /** `lg` is for the metric row, where the figure is the thing read first. */
+  size?: "lg" | "sm" | "xs"
   className?: string
   title?: string
 }) {
   const [figure, unit] = splitUnit(text)
   return (
     <span className={cn("tnum whitespace-nowrap", className)} title={title}>
-      <span className={cn("font-semibold text-foreground", size === "sm" ? "text-sm" : "text-xs")}>{figure}</span>
+      <span className={cn("font-semibold text-foreground", size === "lg" ? "text-lg leading-none" : size === "sm" ? "text-sm" : "text-xs")}>{figure}</span>
       {unit && <span className="ml-1 text-2xs font-normal text-muted-foreground">{unit}</span>}
     </span>
   )

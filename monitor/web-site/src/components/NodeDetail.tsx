@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowDown, ArrowLeft, ArrowUp, Cable, Cpu, HardDrive, MemoryStick, Network } from "lucide-react"
+import { ArrowDown, ArrowDownUp, ArrowLeft, ArrowUp, Activity, Cable, Cpu, HardDrive, MemoryStick, Network } from "lucide-react"
+import type { LucideIcon } from "lucide-react"
 import {
   Area, AreaChart, Brush, CartesianGrid, ComposedChart, Line, LineChart, ResponsiveContainer,
   Tooltip, XAxis, YAxis, type DotItemDotProps,
@@ -12,7 +13,7 @@ import { Chip, Segmented } from "@/components/ui/chip"
 import { Glyph } from "@/components/ui/glyph"
 import { Skeleton } from "@/components/ui/skeleton"
 import { priceParts } from "@/components/Billing"
-import { ChartFade, ChartPanel, CURSOR, GRID } from "@/components/ChartPanel"
+import { ChartFade, ChartPanel, CURSOR, GRID, ToneIcon, type ChartTone } from "@/components/ChartPanel"
 import { percentText } from "@/components/Meter"
 import { Country, Figure, Status, Uptime } from "@/components/NodeCard"
 import { api, type Metrics, type Node } from "@/lib/api"
@@ -572,15 +573,19 @@ const glued = (text: string) => text.replace(/(\d) (?=[A-Za-z%])/g, "$1\u00a0")
  * second line: `¥59.90 / 月付 · 2026-09-28 到期` is one fact, and truncating it
  * would hide the date someone came for. The whole value stays in the tooltip for
  * whatever still does not fit.
+ *
+ * A step smaller than it was on the first screen: the six live figures above are
+ * what the page is for now, and a spec sheet that competes with them makes the
+ * reader weigh two sets of numbers at once.
  */
 function Fact({ label, value }: { label: string; value?: string | number | null }) {
   if (value === null || value === undefined || value === "") return null
   return (
     <div className="min-w-0 bg-card-2 px-3 py-2.5">
-      <dt className="text-2xs text-muted-foreground">{label}</dt>
+      <dt className="text-3xs text-muted-foreground">{label}</dt>
       {/* `break-keep` keeps a CJK word whole: at six columns the renewal cell had
           room for two lines, and it spent them on `到` and `期`. */}
-      <dd className="mt-0.5 line-clamp-2 text-sm leading-snug font-medium break-keep" title={String(value)}>
+      <dd className="mt-0.5 line-clamp-2 text-xs leading-snug font-medium break-keep" title={String(value)}>
         {typeof value === "string" ? glued(value) : value}
       </dd>
     </div>
@@ -601,6 +606,45 @@ function budget(width: number, tab: Tab): number {
   const cols = tab === "resources" && width >= 1024 ? 2 : 1
   return samples(width, cols, 12, tab === "latency" ? 1200 : 720)
 }
+
+/**
+ * One figure of the machine as it is now: an icon in its hue family, the label,
+ * the figure with its unit a step down, and whatever qualifies it.
+ *
+ * Six of these sit above the spec sheet, because "how is it doing" is the
+ * question someone opens a machine's page with, and the answer is four numbers
+ * and two rates -- not a sentence about the kernel. The history below answers
+ * "and how did it get here"; these answer "and now", from the live sample the
+ * page already re-renders on every two seconds.
+ *
+ * The tile is an inset (`bg-card-2` + hairline) rather than a card of its own:
+ * six raised cards in a row would compete with the header above them and the
+ * charts below.
+ */
+function Metric({ icon, tone, label, value, sub }: {
+  icon: LucideIcon
+  tone: ChartTone
+  label: string
+  /** Figure and unit as one string, split by `Figure` on the last space. */
+  value: string
+  sub?: React.ReactNode
+}) {
+  return (
+    <div className="min-w-0 rounded-lg border border-border-soft bg-card-2 px-3 py-2">
+      <div className="flex items-center gap-1.5">
+        <ToneIcon icon={icon} tone={tone} />
+        <span className="truncate text-2xs text-muted-foreground">{label}</span>
+      </div>
+      <div className="mt-1.5">
+        <Figure text={value} size="lg" />
+      </div>
+      {sub != null && <div className="mt-1 truncate text-2xs text-muted-foreground">{sub}</div>}
+    </div>
+  )
+}
+
+/** A percentage as `62 %`, so `Figure` can set the sign a step down. */
+const pctFigure = (pct: number | null) => pctText(pct).replace("%", " %")
 
 /**
  * `historyDays` is how far back the hub keeps history. Both tabs offer every
@@ -839,12 +883,55 @@ export function NodeDetail({ node, historyDays, onBack }: {
           )}
         </div>
 
-        {/* Hairline cells rather than a grid of whitespace: a spec sheet reads as
-            a table, and the lines are what let a phone wrap it to two columns
-            without the pairs drifting apart. */}
-        <dl className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border-soft bg-border-soft sm:grid-cols-3 xl:grid-cols-6">
-          {facts.map((fact) => <Fact key={fact.label} {...fact} />)}
-        </dl>
+        {/* Six figures, in the order someone scans a machine: the three
+            things that fill up, then the two things that queue, then the bill
+            for the day. A hub that pushed no live sample yet shows dashes
+            rather than an empty row: the page has already drawn its charts
+            from history, and a metric grid with holes reads as a broken node. */}
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+          <Metric
+            icon={Cpu}
+            tone="cpu"
+            label="CPU"
+            value={m ? pctFigure(m.cpu) : "—"}
+            sub={m ? `${node.cpu_cores} 核 · 负载 ${m.load[0].toFixed(2)}` : undefined}
+          />
+          <Metric
+            icon={MemoryStick}
+            tone="mem"
+            label="内存"
+            value={m ? pctFigure(percent(m.mem_used, m.mem_total)) : "—"}
+            sub={m ? `${bytes(m.mem_used)} / ${bytes(m.mem_total)}` : undefined}
+          />
+          <Metric
+            icon={HardDrive}
+            tone="disk"
+            label="硬盘"
+            value={m ? pctFigure(percent(m.disk_used, m.disk_total)) : "—"}
+            sub={m ? `${bytes(m.disk_used)} / ${bytes(m.disk_total)}` : undefined}
+          />
+          <Metric
+            icon={Activity}
+            tone="load"
+            label="负载"
+            value={m ? m.load[0].toFixed(2) : "—"}
+            sub={m ? `5 分钟 ${m.load[1].toFixed(2)} · 15 分钟 ${m.load[2].toFixed(2)}` : undefined}
+          />
+          <Metric
+            icon={Cable}
+            tone="conns"
+            label="连接"
+            value={m ? String(m.tcp + m.udp) : "—"}
+            sub={m ? `TCP ${m.tcp} · UDP ${m.udp}` : undefined}
+          />
+          <Metric
+            icon={ArrowDownUp}
+            tone="net"
+            label="今日流量"
+            value={`↓ ${bytes(node.day_rx)}`}
+            sub={`↑ ${bytes(node.day_tx)}`}
+          />
+        </div>
 
         {/* The note the operator wrote for visitors. The hub has sent this on
             every frame since the monorepo merge and nothing rendered it, while
@@ -856,19 +943,37 @@ export function NodeDetail({ node, historyDays, onBack }: {
         )}
       </Card>
 
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-        <Segmented label="视图" value={tab} items={TABS} onChange={setTab} />
-        {/* Wraps on a screen narrower than the seven windows of a year. */}
-        <div role="group" aria-label="时间范围" className="flex flex-wrap gap-1">
-          {ranges.map((r) => (
-            <Chip
-              key={r.hours}
-              pressed={hours === r.hours}
-              onClick={() => setPicked((all) => ({ ...all, [tab]: r.hours }))}
-            >
-              {r.label}
-            </Chip>
-          ))}
+      {/* What the machine is, once the figures above have said how it is. The
+          hairline cells are kept -- a spec sheet reads as a table, and the lines
+          are what let a phone wrap it to two columns without the pairs drifting
+          apart -- but the whole strip is a step down from the metric row: this
+          is what someone reads second. */}
+      <Card className="min-w-0 gap-0 p-4 sm:p-5">
+        <h3 className="text-2xs font-medium text-muted-foreground">规格</h3>
+        <dl className="mt-2 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border-soft bg-border-soft sm:grid-cols-3 xl:grid-cols-6">
+          {facts.map((fact) => <Fact key={fact.label} {...fact} />)}
+        </dl>
+      </Card>
+
+      {/* One row, two ends: what is drawn on the left, how it is drawn on the
+          right. The ranges wrap under the views on a phone rather than pushing
+          the switch off the row, and the whole line keeps its place between the
+          spec sheet and the charts. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          <Segmented label="视图" value={tab} items={TABS} onChange={setTab} />
+          {/* Wraps on a screen narrower than the seven windows of a year. */}
+          <div role="group" aria-label="时间范围" className="flex flex-wrap gap-1">
+            {ranges.map((r) => (
+              <Chip
+                key={r.hours}
+                pressed={hours === r.hours}
+                onClick={() => setPicked((all) => ({ ...all, [tab]: r.hours }))}
+              >
+                {r.label}
+              </Chip>
+            ))}
+          </div>
         </div>
         {/* One chip for both tabs: CPU is clipped by the same switch, so hiding
             it on the resources tab would leave a state a reader cannot see or

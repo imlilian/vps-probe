@@ -33,10 +33,27 @@ const TONES = {
   cpu: "bg-blue-500/12 text-blue-600 dark:text-blue-400",
   mem: "bg-violet-500/12 text-violet-600 dark:text-violet-400",
   disk: "bg-amber-500/12 text-amber-600 dark:text-amber-400",
+  load: "bg-pink-500/12 text-pink-600 dark:text-pink-400",
   net: "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400",
   conns: "bg-sky-500/12 text-sky-600 dark:text-sky-400",
 } as const
 export type ChartTone = keyof typeof TONES
+
+/**
+ * The tinted square a figure wears in front of its name. `toolbar` is the metric
+ * row's size; the panel head uses the larger one.
+ */
+export function ToneIcon({ icon: Icon, tone, size = "sm" }: {
+  icon: LucideIcon
+  tone: ChartTone
+  size?: "sm" | "md"
+}) {
+  return (
+    <span className={cn("grid shrink-0 place-items-center rounded-md", size === "md" ? "size-6" : "size-5", TONES[tone])}>
+      <Icon size={size === "md" ? 14 : 12} strokeWidth={2} aria-hidden />
+    </span>
+  )
+}
 
 export function ChartPanel({ icon: Icon, tone, title, subtitle, note, foot, className, children }: {
   icon: LucideIcon
@@ -54,9 +71,7 @@ export function ChartPanel({ icon: Icon, tone, title, subtitle, note, foot, clas
     <Card className={cn("min-w-0 gap-0 p-4", className)}>
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
-          <span className={cn("grid size-6 shrink-0 place-items-center rounded-md", TONES[tone])}>
-            <Icon size={14} strokeWidth={2} aria-hidden />
-          </span>
+          <ToneIcon icon={Icon} tone={tone} size="md" />
           <h3 className="shrink-0 truncate text-xs font-medium text-muted-foreground" title={title}>{title}</h3>
           {subtitle != null && (
             <span className="min-w-0 truncate text-2xs text-muted-foreground">{subtitle}</span>
@@ -64,7 +79,10 @@ export function ChartPanel({ icon: Icon, tone, title, subtitle, note, foot, clas
         </div>
         {note != null && <span className="shrink-0 text-right text-xs">{note}</span>}
       </div>
-      <div className="mt-2 h-40 w-full text-muted-foreground">{children}</div>
+      {/* 208px at every width, 224 past `xl`: the plot wants a longer aspect
+          ratio than 40px of height gave it, and the extra row of pixels is what
+          keeps a 24h line from reading as a texture at the two-column grid. */}
+      <div className="mt-2 h-52 w-full text-muted-foreground xl:h-56">{children}</div>
       {foot != null && <div className="mt-3">{foot}</div>}
     </Card>
   )
