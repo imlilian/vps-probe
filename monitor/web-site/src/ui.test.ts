@@ -389,7 +389,7 @@ try {
   // updates every two seconds, the history behind the line does not.
   const { Resources } = await server.ssrLoadModule("/src/components/NodeDetail.tsx")
   const resources = renderToString(createElement(Resources, {
-    node: fleet[1], points: history(2, "metrics", 6, 60, 1_790_000_000_000).metrics, hours: 6, live: sample,
+    node: fleet[1], points: history(2, "metrics", 6, 60, 1_790_000_000_000).metrics, hours: 6, budget: 600, live: sample,
   }))
   for (const want of ["CPU · 4 核", "内存 ·", "硬盘 ·", "连接数", "网络速率"]) {
     assert.ok(resources.includes(want), `missing ${want}`)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ArrowDown, ArrowLeft, ArrowUp } from "lucide-react"
 import {
   Area, AreaChart, Brush, CartesianGrid, ComposedChart, Line, LineChart, ResponsiveContainer,
@@ -15,6 +15,7 @@ import { priceParts } from "@/components/Billing"
 import { percentText } from "@/components/Meter"
 import { Country, Status, Uptime } from "@/components/NodeCard"
 import { api, type Metrics, type Node } from "@/lib/api"
+import { lttb, samples } from "@/lib/downsample"
 import {
   axisBytes, axisTop, bytes, clockFor, cpuName, despike, osName,
   percent, quarters, rate, RATE_FLOOR, rateAxis, tickClock, timeTicks, windows, withGaps,
@@ -322,11 +323,13 @@ export function Connections({ rows, hours, live }: {
  * the figure read at a glance and its log axis wants the width, while the rest
  * pair up without either one growing a chart taller than the fold.
  */
-export function Resources({ node, points, hours, live }: {
+export function Resources({ node, points, hours, budget, live }: {
   node: Node
   /** The hub's rows for the window, stamped in seconds. */
   points: Point[]
   hours: number
+  /** The most samples the panels can draw: one per CSS pixel they occupy. */
+  budget: number
   /** The node's live sample, for the figures in the panel headings. */
   live?: Metrics | null
 }) {
@@ -346,9 +349,19 @@ export function Resources({ node, points, hours, live }: {
       tx_band: [lift(p.net_tx), lift(p.net_tx_max ?? p.net_tx)],
     }))
   }, [points])
-  // What the panels draw: the rows above, broken where the node was silent. The
-  // axes are fitted to the rows alone.
-  const chart = useMemo(() => withGaps(rows), [rows])
+  // What the panels draw: the rows above, broken where the node was silent, and
+  // thinned to what this screen can resolve. The axes are fitted to `rows`, not
+  // to this: a sample the thinning drops must still open the axis wide enough
+  // for the one it keeps, or the window's range would follow the budget.
+  const chart = useMemo(() => {
+    const broken = withGaps(rows)
+    if (!budget || broken.length <= budget) return broken
+    // All four panels share one row set, so every series votes on what is kept.
+    // A hole has none of these fields, which is how the thinning finds it.
+    const pick = (key: "cpu" | "rx" | "tx") => (row: MetricRow | { ts: number }) =>
+      key in row ? (row as MetricRow)[key] : undefined
+    return lttb(broken, budget, [pick("cpu"), pick("rx"), pick("tx")])
+  }, [rows, budget])
   // The window's highest rate each way, or null from a hub that sends no peak.
   // Tested as a figure rather than as a field: a hub from before the peaks wrote
   // its column default of 0 into every old row, and `?? 0` would then label the
@@ -547,6 +560,21 @@ function Fact({ label, value }: { label: string; value?: string | number | null 
 }
 
 /**
+ * How many samples this screen can draw without aliasing: one per CSS pixel of
+ * the panel the line lands in. The arithmetic -- and why device pixels were the
+ * wrong unit -- is in `lib/downsample.ts`, where it can be tested without a
+ * browser.
+ *
+ * Two columns from `lg` on the resource tab (Tailwind's 64rem) and one for the
+ * latency chart, which spans the page. The 12 is `gap-3` in the grid below --
+ * the only number here that lives somewhere else.
+ */
+function budget(width: number, tab: Tab): number {
+  const cols = tab === "resources" && width >= 1024 ? 2 : 1
+  return samples(width, cols, 12, tab === "latency" ? 1200 : 720)
+}
+
+/**
  * `historyDays` is how far back the hub keeps history. Both tabs offer every
  * window within it: up to a day each ping is on the latency chart, and past it a
  * point is a bucket -- its median, the range its answers spanned and the share
@@ -579,26 +607,55 @@ export function NodeDetail({ node, historyDays, onBack }: {
   const [zoom, setZoom] = useState<[number, number] | null>(null)
   // Where the chart begins on screen, so its height can occupy the remainder.
   const [chartTop, setChartTop] = useState(0)
+  // The width the charts are drawn in, measured rather than derived from the
+  // viewport: the page column is what the panels get, and it is narrower than
+  // the window at every size. Zero until layout has run, which is also what
+  // keeps the first request from being made with a guess.
+  const page = useRef<HTMLDivElement | null>(null)
+  const [width, setWidth] = useState(0)
+  useLayoutEffect(() => {
+    const el = page.current
+    if (!el) return
+    const measure = () => {
+      // Sub-pixel jitter is not a resize: a scrollbar appearing and going again
+      // would otherwise restate the question and refetch the window.
+      const next = Math.round(el.clientWidth)
+      setWidth((was) => (was === next ? was : next))
+    }
+    measure()
+    const seen = new ResizeObserver(measure)
+    seen.observe(el)
+    return () => seen.disconnect()
+  }, [])
+
+  const points = budget(width, tab)
+  // What the last request asked, so a window that is merely being dragged wider
+  // is not refetched for a handful of pixels. Keyed on the question as well: a
+  // new tab, range or retry always asks, whatever the width says.
+  const asked = useRef({ key: "", points: 0 })
 
   useEffect(() => {
+    // Nothing measured yet: the effect runs again once it has been.
+    if (!points) return
+    const key = `${node.id}:${hours}:${tab}:${attempt}`
+    const same = key === asked.current.key
+    // A 15% swing is more than a redraw: at this density it is the difference
+    // between two columns and one, or a window on another monitor.
+    if (same && Math.abs(points - asked.current.points) < asked.current.points * 0.15) return
+    asked.current = { key, points }
+
     let active = true
-    // The charts must not continue drawing the old range while the new one is in
-    // flight.
-    // oxlint-disable-next-line react/set-state-in-effect
-    setData(null)
-    // oxlint-disable-next-line react/set-state-in-effect
-    setZoom(null)
-    // oxlint-disable-next-line react/set-state-in-effect
-    setFailed("")
-    // What this screen can resolve, in device pixels, which is the unit the line
-    // is drawn in: a 1280-wide retina panel has 2560 of them for a day of minutes.
-    // Read here rather than from a ref, since the hub only thins further, an
-    // approximate figure suffices, and the viewport is known before layout. A
-    // rotation keeps whatever it fetched with.
-    //
-    // The tab determines which half is requested; the other accounted for a third
-    // to two thirds of every response and was never drawn.
-    const points = Math.round(globalThis.innerWidth * (globalThis.devicePixelRatio || 1))
+    // A different question must not keep drawing the old answer while the new
+    // one is in flight. A narrower screen asking for the same window is not a
+    // different question, and blanking the charts for it would flash the page.
+    if (!same) {
+      // oxlint-disable-next-line react/set-state-in-effect
+      setData(null)
+      // oxlint-disable-next-line react/set-state-in-effect
+      setZoom(null)
+      // oxlint-disable-next-line react/set-state-in-effect
+      setFailed("")
+    }
     const series = tab === "latency" ? "ping" : "metrics"
     api<{ metrics: Point[]; ping: PingPoint[]; probes: Probes; loss?: Loss }>(
       `/nodes/${node.id}/metrics?hours=${hours}&points=${points}&series=${series}`,
@@ -608,7 +665,7 @@ export function NodeDetail({ node, historyDays, onBack }: {
         if (active) { setFailed(e.message); setData({ metrics: [], ping: [], probes: {} }) }
       })
     return () => { active = false }
-  }, [node.id, hours, tab, attempt])
+  }, [node.id, hours, tab, attempt, points])
 
   const m = node.metrics
   // One series per probe that reported, labelled from the names the samples
@@ -722,7 +779,7 @@ export function NodeDetail({ node, historyDays, onBack }: {
   ]
 
   return (
-    <div className="space-y-4">
+    <div ref={page} className="space-y-4">
       {/* The list is one press away, and the way back has been the site name in
           the bar until now -- not where anyone looks for it once they are two
           machines deep. */}
@@ -951,7 +1008,7 @@ export function NodeDetail({ node, historyDays, onBack }: {
       ) : data.metrics.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">这段时间没有历史数据</p>
       ) : (
-        <Resources node={node} points={data.metrics} hours={hours} live={m} />
+        <Resources node={node} points={data.metrics} hours={hours} budget={points} live={m} />
       )}
     </div>
   )
