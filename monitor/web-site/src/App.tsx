@@ -8,7 +8,6 @@ import { TopBar } from "@/components/TopBar"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api, groupsOf, useNodes, type Node } from "@/lib/api"
-import { loadConfig } from "@/lib/config"
 import { readDensity, readOrder, writeDensity, writeOrder } from "@/lib/prefs"
 import { arrange, type Density, type Order } from "@/lib/sort"
 import { useTheme } from "@/lib/theme"
@@ -55,15 +54,14 @@ export default function App() {
   const { mode, cycle: cycleTheme } = useTheme()
   const [me, setMe] = useState<Me | null>(null)
   const [meError, setMeError] = useState("")
-  const [config, setConfig] = useState<Record<string, unknown> | null>(null)
   const { nodes, error, closed } = useNodes()
   const [open, go] = useNodeRoute()
   // The list's group tab, held here so it survives a visit to a node's page.
   const [group, setGroup] = useState<string | null>(null)
   // The order and the density are the visitor's, kept across visits: read from
   // `localStorage` on the first render, written when they change. Not in the URL
-  // -- nobody shares a link to "my nodes by CPU" -- and not in `theme.json`,
-  // which is the site operator's file rather than the reader's.
+  // -- nobody shares a link to "my nodes by CPU" -- and not in a settings file
+  // either: those would be the site operator's, and these are the reader's.
   const [order, setOrder] = useState<Order>(readOrder)
   const [density, setDensity] = useState<Density>(readDensity)
   const chooseOrder = useCallback((next: Order) => {
@@ -83,9 +81,6 @@ export default function App() {
 
   useEffect(() => {
     loadMe()
-    // Requested alongside /me, not after it. It never rejects: any failure
-    // yields the defaults.
-    void loadConfig().then(setConfig)
     // Warmed here rather than left to Suspense, which requests the chunk only
     // once a render reaches the detail view, itself waiting on /me. Without this
     // the split trades its first paint for a full-page skeleton over the first
@@ -159,10 +154,13 @@ export default function App() {
             </Suspense>
           ) : (
             <p className="py-16 text-center text-sm text-muted-foreground">
-              节点不存在或未公开。<button className="underline" onClick={() => go(null)}>返回列表</button>
+              节点不存在或未公开。<button
+                className="rounded-sm underline underline-offset-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                onClick={() => go(null)}
+              >返回列表</button>
             </p>
           )
-        ) : !nodes || !config ? (
+        ) : !nodes ? (
           <div className={cn("grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4", density === "compact" ? "gap-2" : "gap-3")}>
             {[0, 1, 2].map((i) => (
               <Skeleton key={i} className={density === "compact" ? "h-12" : "h-72"} />
@@ -172,7 +170,6 @@ export default function App() {
           <NodeList
             nodes={sorted}
             group={group}
-            summary={config.show_summary === true}
             order={order}
             density={density}
             onGroup={setGroup}
@@ -187,17 +184,17 @@ export default function App() {
 }
 
 // Group tabs appear only once the operator has grouped something, so a hub
-// without groups keeps the page it always had. The summary follows the tab.
+// without groups keeps the page it always had. The summary follows the tab, and
+// is no longer a switch: it was the operator's `show_summary` from the theme
+// config API, which the hub does not have, so it always read its own default.
 //
 // Exported for `ui.test.ts`: the combination that has to be right -- a group, an
 // order and a density at once -- is this function's, and asserting it through a
 // string of markup is the closest this machine gets to opening a browser.
-export function NodeList({ nodes, group, summary, order, density, onGroup, onOrder, onDensity, onOpen }: {
+export function NodeList({ nodes, group, order, density, onGroup, onOrder, onDensity, onOpen }: {
   nodes: Node[]
   /** null is every node, "" the ungrouped. */
   group: string | null
-  /** The operator's `show_summary` setting. */
-  summary: boolean
   order: Order
   density: Density
   onGroup: (group: string | null) => void
@@ -230,7 +227,7 @@ export function NodeList({ nodes, group, summary, order, density, onGroup, onOrd
         density={density}
         onDensity={onDensity}
       />
-      {summary && <Overview nodes={shown} />}
+      <Overview nodes={shown} />
       {nodes.length === 0 ? (
         <p className="py-16 text-center text-sm text-muted-foreground">还没有节点</p>
       ) : (

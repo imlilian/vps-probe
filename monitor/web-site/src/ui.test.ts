@@ -74,6 +74,10 @@ try {
   // Throughput follows the same rule, so the row above the counts is not a
   // different kind of thing: the figure at full weight, the unit a step down.
   assert.match(full, /text-sm font-medium">[\d.]+<\/span><span class="text-2xs[^"]*">(?:B|KB|MB|GB)\/s</)
+  // A card is a div carrying role="button", so the focus ring the browser would
+  // draw for a real button is ours to draw: without it, tabbing through the list
+  // moves nothing on screen.
+  assert.match(full, /class="[^"]*focus-visible:ring-\[3px\][^"]*"[^>]*role="button"/)
   console.log("a card carries its figures, its sockets and its price")
 
   // An offline node has no live line, and the hour it last reported would read
@@ -171,21 +175,29 @@ try {
   const { NodeList } = await server.ssrLoadModule("/src/App.tsx")
   const list = (props: Record<string, unknown> = {}) =>
     renderToString(createElement(NodeList, {
-      nodes: fleet, group: null, summary: false,
+      nodes: fleet, group: null,
       order: { key: "operator", dir: "asc" }, density: "standard",
       onGroup() {}, onOrder() {}, onDensity() {}, onOpen() {}, ...props,
     }))
 
-  const hongKong = list({ group: "香港", order: { key: "cpu", dir: "desc" } })
+  // Read from the grid down: the summary above the list names the busiest node,
+  // so `indexOf` over the whole page would find that name before the list even
+  // starts and call the order right for the wrong reason.
+  const cards = (html: string) => html.slice(html.indexOf("sm:grid-cols-2 lg:grid-cols-3"))
+  const hongKong = cards(list({ group: "香港", order: { key: "cpu", dir: "desc" } }))
   const first = hongKong.indexOf("香港-CN2-02") // 47% on four cores
   const second = hongKong.indexOf("香港-CN2-01") // 18% on two
   assert.ok(first >= 0 && second > first, "the busier of the two Hong Kong nodes leads")
   assert.ok(!hongKong.includes("东京-BGP-01"), "the tab keeps the rest of the fleet out")
-  const reversed = list({ group: "香港", order: { key: "cpu", dir: "asc" } })
+  const reversed = cards(list({ group: "香港", order: { key: "cpu", dir: "asc" } }))
   assert.ok(reversed.indexOf("香港-CN2-01") < reversed.indexOf("香港-CN2-02"), "the arrow reverses it")
   // Ordering by name reaches across the whole fleet when no tab is chosen.
-  const byName = list({ order: { key: "name", dir: "asc" } })
+  const whole = list({ order: { key: "name", dir: "asc" } })
+  const byName = cards(whole)
   assert.ok(byName.indexOf("东京-BGP-01") < byName.indexOf("香港-CN2-01"))
+  // The summary is part of the page, not a setting: the theme's config API went
+  // with the theme market, and this read its default forever anyway.
+  assert.ok(whole.includes("最忙节点"), "the four tiles are always drawn")
   console.log("a group narrows the list and the order arranges what is left")
 
   // The compact list: the same nodes, a tenth of the card. It keeps what a scan
@@ -218,6 +230,12 @@ try {
     }))
 
   const page = detail()
+  // A figure and its unit stay together on a phone: the cell broke "↑ 4.53 GB"
+  // after the number and left the unit alone on the next line.
+  assert.match(page, /\d\u00a0(?:B|KB|MB|GB|TB)/, "the unit is glued to its figure")
+  // A figure and its unit stay together on a phone: the cell broke "↑ 4.53 GB"
+  // after the number and left the unit alone on the next line.
+  assert.match(page, /\d\u00a0(?:B|KB|MB|GB|TB)/, "the unit is glued to its figure")
   for (const want of ["香港-CN2-02", "全部节点", "系统", "CPU", "内存 / 硬盘", "架构", "今日流量", "续费"]) {
     assert.ok(page.includes(want), `missing ${want}`)
   }

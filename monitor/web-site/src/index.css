@@ -150,3 +150,21 @@
 /* Tabular figures keep live numbers from shifting as they update. Shorter than
    the utility, and every figure on this page wants it. */
 .tnum { font-variant-numeric: tabular-nums; }
+
+/* Everything that moves on this page moves in CSS: the meter's width, a card's
+   border under the pointer, the skeleton's pulse. (The charts are the one
+   exception, and they turn animation off at the series, in the markup.)
+   A block rather than `motion-reduce:` on each of those six classes -- it is the
+   same three properties every time, and a list of utilities is what gets
+   forgotten when a seventh transition is added. Near zero rather than zero:
+   a transition of no length is cancelled rather than run, and `transitionend`
+   never fires for it -- nobody sees 0.01ms, and anything listening still hears. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

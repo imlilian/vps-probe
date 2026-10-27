@@ -56,9 +56,17 @@ export function Toolbar({ nodes, shown, group, onGroup, order, onOrder, density,
     <div className="space-y-2">
       {/* Group names are free text, so they carry a prefix no key of the 全部 tab
           can share. The row scrolls rather than wraps: twelve groups wrapped into
-          four lines push the fleet off a phone's screen. */}
+          four lines push the fleet off a phone's screen. The scrollbar is hidden
+          because the row is a strip of tabs, not a text pane -- on a desktop
+          browser narrow enough to scroll it, the bar draws a white band across
+          the page under the chips. A half-visible chip still says there is more,
+          and Tab scrolls the strip. */}
       {groups.length > 0 && (
-        <div role="group" aria-label="分组" className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-0.5">
+        <div
+          role="group"
+          aria-label="分组"
+          className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
           {tabs.map(([value, label, count]) => (
             <Chip
               key={value === null ? "*" : `=${value}`}

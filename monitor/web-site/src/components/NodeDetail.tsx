@@ -163,6 +163,12 @@ type MetricRow = Point & {
  *
  * `foot` is for what does not fit the heading, such as the connection legend,
  * which is also its readout.
+ *
+ * min-w-0 on the card is load-bearing: a grid item refuses to shrink below its
+ * content, recharts writes the measured width onto the <svg> as an attribute,
+ * and that number then becomes the card's floor. On a phone the chart held the
+ * card 47px wider than the column and the page scrolled sideways. `min-w-0` lets
+ * the track win, and the container measures again.
  */
 function Panel({ title, note, foot, className, children }: {
   title: string
@@ -172,7 +178,7 @@ function Panel({ title, note, foot, className, children }: {
   children: React.ReactNode
 }) {
   return (
-    <Card className={cn("gap-0 p-4", className)}>
+    <Card className={cn("min-w-0 gap-0 p-4", className)}>
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="min-w-0 truncate text-xs font-medium text-muted-foreground" title={title}>{title}</h3>
         {note != null && <span className="tnum shrink-0 text-xs font-medium">{note}</span>}
@@ -462,7 +468,11 @@ export function Resources({ node, points, hours, live }: {
           <ComposedChart data={chart}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
             <XAxis {...timeAxis(chart, hours)} />
-            <YAxis scale="log" {...axes.rate} tickFormatter={axisBytes} unit="/s" {...VALUE_AXIS} />
+            {/* Wider than the other axes: "100 MB/s" is the longest tick in the
+                page, and recharts wraps a label it thinks will not fit -- which
+                put "100" on one line and "MB/s" on the next, half of it clipped
+                by the plot's top edge. */}
+            <YAxis scale="log" {...axes.rate} tickFormatter={axisBytes} unit="/s" {...VALUE_AXIS} width={80} />
             <Tooltip
               {...TOOLTIP}
               // The hub's figures rather than `v`, which is lifted to the axis
@@ -500,6 +510,14 @@ export function Resources({ node, points, hours, live }: {
 }
 
 /**
+ * A figure and its unit are one token. Left to break freely, a cell on a phone
+ * ended a line at "↑ 4.53" and put "GB" alone on the next; a non-breaking space
+ * between a number and the letters that follow it keeps the pair together and
+ * moves the break to the separator, where it belongs.
+ */
+const glued = (text: string) => text.replace(/(\d) (?=[A-Za-z%])/g, "$1\u00a0")
+
+/**
  * One cell of the spec sheet. The label is a step down and muted, the figure is
  * the thing read, and a value too long for a phone's 124px of cell wraps to a
  * second line: `¥59.90 / 月付 · 2026-09-28 到期` is one fact, and truncating it
@@ -511,7 +529,9 @@ function Fact({ label, value }: { label: string; value?: string | number | null 
   return (
     <div className="min-w-0 bg-card px-3 py-2.5">
       <dt className="text-2xs text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 line-clamp-2 text-sm leading-snug font-medium" title={String(value)}>{value}</dd>
+      <dd className="mt-0.5 line-clamp-2 text-sm leading-snug font-medium" title={String(value)}>
+        {typeof value === "string" ? glued(value) : value}
+      </dd>
     </div>
   )
 }
@@ -700,7 +720,7 @@ export function NodeDetail({ node, historyDays, onBack }: {
         全部节点
       </Button>
 
-      <Card className="gap-0 p-4 sm:p-5">
+      <Card className="min-w-0 gap-0 p-4 sm:p-5">
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2">
           <Country node={node} />
           <h2 className="min-w-0 truncate text-xl font-semibold tracking-tight" title={node.name}>{node.name}</h2>
@@ -748,20 +768,23 @@ export function NodeDetail({ node, historyDays, onBack }: {
       </div>
 
       {!data ? (
-        <Card className="gap-0 p-4">
+        <Card className="min-w-0 gap-0 p-4">
           <Skeleton className="h-4 w-24" />
           <Skeleton className="mt-3 h-40 w-full" />
         </Card>
       ) : failed ? (
         <p className="py-8 text-center text-sm text-destructive" role="alert">
           读取历史数据失败：{failed}
-          <button className="ml-2 underline" onClick={() => setAttempt((n) => n + 1)}>重试</button>
+          <button
+            className="ml-2 rounded-sm underline underline-offset-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            onClick={() => setAttempt((n) => n + 1)}
+          >重试</button>
         </p>
       ) : tab === "latency" ? (
         pingSeries.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">这段时间没有延迟数据</p>
         ) : (
-          <Card className="gap-0 p-4">
+          <Card className="min-w-0 gap-0 p-4">
             {/* An explicit pixel height on the column, so the chart can be
                 `flex-1` within it while the legend takes what it needs: four
                 probes are one row of chips on a desktop and two on a phone, so

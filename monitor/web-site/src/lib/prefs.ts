@@ -9,8 +9,9 @@
  *
  * The list's two preferences live here rather than in the components that show
  * them: one place to read the keys, and the parsers next to the defaults they
- * fall back to. Neither is in `theme.json` -- that file is the hub's, it is
- * going away in Phase 6, and a view setting is the visitor's, not the site's.
+ * fall back to. Both are the reader's settings, so they stay in the browser: the
+ * site operator has nothing to configure here, and the hub has no theme settings
+ * to store them in.
  */
 import { formatOrder, parseOrder, type Density, type Order } from "./sort.ts"
 

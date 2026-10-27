@@ -49,9 +49,10 @@ export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
       onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpen())}
       title={`${node.name} · ${status}`}
       // Muted when it stops reporting: the figures are the last ones it sent,
-      // and the whole row says so rather than the dot alone.
+      // and the whole row says so rather than the dot alone. Focus is drawn as
+      // the same border the pointer gets on hover, plus the button's ring.
       className={cn(
-        "min-w-0 cursor-pointer gap-0 px-3 py-2.5 transition-colors hover:border-ring",
+        "min-w-0 cursor-pointer gap-0 px-3 py-2.5 outline-none transition-colors hover:border-ring focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
         !node.online && "text-muted-foreground",
       )}
     >

@@ -213,7 +213,11 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
       // OS line below does not wrap, so on a phone the card would grow past its
       // column and scroll the page sideways. The truncate inside only takes effect
       // once the card is allowed to be narrower.
-      className="min-w-0 cursor-pointer gap-0 p-4 transition-colors hover:border-ring"
+      //
+      // A card is a button here, so it draws the button's focus: the ring and the
+      // border the pointer gets on hover, since a list walked with Tab otherwise
+      // moves nothing on screen.
+      className="min-w-0 cursor-pointer gap-0 p-4 outline-none transition-colors hover:border-ring focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
       role="button"
       tabIndex={0}
       onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpen())}
