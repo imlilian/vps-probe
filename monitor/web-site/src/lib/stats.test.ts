@@ -51,23 +51,36 @@ const plans = [
   node({ price: 60, billing_cycle: "monthly", expires_in: 30 }),
   node({ price: 40, billing_cycle: "monthly", expires_in: -5 }),
 ]
-assert.deepEqual(residual(plans), { amount: 80, currency: "CNY", counted: 3, left: 0 })
+// 80 yuan of prepaid time, drawn as dollars at the rate the page carries.
+assert.deepEqual(residual(plans), { usd: 12, counted: 3, left: 0 })
 assert.deepEqual(residual([node({ price: 100, billing_cycle: "once", expires_in: 300 })]), null)
 assert.deepEqual(residual([node({ price: 0, expires_in: 300 })]), null)
 // An annual plan prorates over its own 360 days, not over a month.
-assert.equal(residual([node({ price: 360, billing_cycle: "yearly", expires_in: 90 })])?.amount, 90)
+assert.equal(residual([node({ price: 360, billing_cycle: "yearly", expires_in: 90 })])?.usd, 13.5)
 console.log("remaining value prorates the time that is left")
 
-// One currency carries the figure; the rest are reported rather than added in.
+// Three currencies, one figure: 60 yuan, 20 euro and 30 dollars are 9.00, 22.42
+// and 30 -- the card answers "what is left", which a per-currency listing does
+// not.
 assert.deepEqual(
   residual([
     node({ price: 30, expires_in: 30 }),
     node({ price: 30, expires_in: 30 }),
-    node({ price: 300, currency: "USD", expires_in: 30 }),
+    node({ price: 20, currency: "EUR", expires_in: 30 }),
+    node({ price: 30, currency: "USD", expires_in: 30 }),
   ]),
-  { amount: 60, currency: "CNY", counted: 2, left: 1 },
+  { usd: 61.42, counted: 4, left: 0 },
 )
-console.log("currencies are not summed together")
+console.log("every currency is converted before it is added")
+
+// A currency the table cannot place is left out and counted, rather than priced
+// at par: the total would otherwise contain a number nobody quoted.
+assert.deepEqual(residual([node({ price: 30, currency: "XYZ", expires_in: 30 })]), null)
+assert.deepEqual(
+  residual([node({ price: 30, expires_in: 30 }), node({ price: 30, currency: "XYZ", expires_in: 30 })]),
+  { usd: 4.5, counted: 1, left: 1 },
+)
+console.log("an unpriced currency is counted, not guessed")
 
 // A plan expiring on the boundary is inside the window; one day later is not.
 assert.deepEqual(due([node({ expires_in: 30 }), node({ expires_in: 31 }), node({ expires_in: -3 }),

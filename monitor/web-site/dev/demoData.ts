@@ -41,6 +41,8 @@ type Spec = {
   mem: number
   disk: number
   price: number
+  /** The currency the price is billed in; the table's default is CNY. */
+  currency?: string
   cycle: string
   expiresIn: number | null
   trafficLimit: number
@@ -95,7 +97,7 @@ const SPECS: Spec[] = [
     id: 3, name: "东京-BGP-01", country: "JP", group: "日本",
     os: "Ubuntu 24.04", kernel: "6.8.0-45-generic", arch: "x86_64", virt: "KVM",
     cpuName: "Intel Xeon Gold 6248", cores: 2, mem: 2 * GiB, disk: 40 * GiB,
-    price: 34.5, cycle: "monthly", expiresIn: 21, trafficLimit: 300 * GiB, trafficMode: "max",
+    price: 4800, currency: "JPY", cycle: "monthly", expiresIn: 21, trafficLimit: 300 * GiB, trafficMode: "max",
     monthUsed: 0.86, rxBase: 4.1 * MiB, txBase: 7.9 * MiB,
     cpuBase: 31, cpuAmp: 12, memPct: 0.52, diskPct: 0.28,
     tcp: 188, udp: 22, procs: 174, uptime: 12 * 86400, probes: [1, 2, 3],
@@ -105,7 +107,7 @@ const SPECS: Spec[] = [
     id: 4, name: "洛杉矶-CN2-GIA", country: "US", group: "美国",
     os: "Debian 12", kernel: "6.1.0-26-amd64", arch: "x86_64", virt: "KVM",
     cpuName: "AMD EPYC 7402P", cores: 4, mem: 8 * GiB, disk: 160 * GiB,
-    price: 89, cycle: "monthly", expiresIn: 143, trafficLimit: 2000 * GiB, trafficMode: "sum",
+    price: 89, currency: "USD", cycle: "monthly", expiresIn: 143, trafficLimit: 2000 * GiB, trafficMode: "sum",
     monthUsed: 0.55, rxBase: 9.4 * MiB, txBase: 3.1 * MiB,
     cpuBase: 68, cpuAmp: 14, memPct: 0.71, diskPct: 0.62,
     tcp: 634, udp: 51, procs: 341, uptime: 7 * 86400, probes: [1, 2, 3],
@@ -126,7 +128,7 @@ const SPECS: Spec[] = [
     id: 6, name: "法兰克福-01", country: "DE", group: "欧洲",
     os: "Debian 12", kernel: "6.1.0-28-cloud-amd64", arch: "x86_64", virt: "KVM",
     cpuName: "Intel Xeon Silver 4314", cores: 8, mem: 16 * GiB, disk: 320 * GiB,
-    price: 129, cycle: "yearly", expiresIn: 298, trafficLimit: 8000 * GiB, trafficMode: "sum",
+    price: 129, currency: "EUR", cycle: "yearly", expiresIn: 298, trafficLimit: 8000 * GiB, trafficMode: "sum",
     monthUsed: 0.24, rxBase: 14.6 * MiB, txBase: 21.3 * MiB,
     cpuBase: 22, cpuAmp: 8, memPct: 0.41, diskPct: 0.35,
     tcp: 271, udp: 33, procs: 402, uptime: 231 * 86400,
@@ -259,7 +261,7 @@ export function nodeList(nowMs = Date.now()) {
       disk_total: spec.disk,
       agent_version: "1.4.2",
       price: spec.price,
-      currency: "CNY",
+      currency: spec.currency ?? "CNY",
       billing_cycle: spec.cycle,
       expires_at: spec.expiresIn === null ? null : new Date(nowMs + spec.expiresIn * 86_400_000).toISOString(),
       expires_in: spec.expiresIn,

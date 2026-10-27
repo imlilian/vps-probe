@@ -121,15 +121,20 @@ try {
   // coming rather than that nothing is.
   assert.match(overview, /台 30 天内到期/)
   assert.ok(!overview.includes("无近期到期"))
-  // Traffic is a table now: the arrows head the rows, the two time scopes the
-  // columns, and the present comes first because it is the one that is moving.
+  // Traffic is a table now: the arrows head the rows and the two time scopes
+  // are named once, in the title, in the order the columns are drawn.
+  assert.match(overview, /流量<span[^>]*>（实时\/今日）</, "the scopes are named in the title")
   assert.ok(overview.indexOf("实时") < overview.indexOf("今日"), "实时 heads the first column")
   // Every unit in that table is set a step down from its figure, which is what
   // keeps "39.6 MB/s" from reading as one word.
   assert.match(overview, /text-2xs[^"]*">MB\/s</)
   assert.match(overview, /text-2xs[^"]*">GB</)
-  // The currency mark is a unit too, and separated from the figure by a gap.
-  assert.match(overview, /text-base[^"]*">¥</)
+  // The estimate is drawn in dollars whatever the machines are billed in, and
+  // the mark is a unit: a size down, and separated from the figure by a gap.
+  assert.match(overview, /text-base[^"]*">US\$</)
+  // Every tile centres its figure between the label and the note, so four cards
+  // of unequal content share one line rather than one hanging from its label.
+  assert.equal(overview.match(/flex flex-1 items-center/g)?.length, 4)
   console.log("the overview counts the fleet, the peak, the traffic and the bill")
 } finally {
   await server.close()

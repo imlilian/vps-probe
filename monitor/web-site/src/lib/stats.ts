@@ -10,6 +10,7 @@
  */
 import type { Node } from "./api.ts"
 import { cycleMonths, daysUntil } from "./format.ts"
+import { toUSD } from "./rates.ts"
 
 /** Days left on a plan, on the hub's calendar when it sends one. */
 function daysLeft(node: Node): number | null {
@@ -68,12 +69,11 @@ export function due(nodes: Node[], within = 30): Due {
 }
 
 export type Residual = {
-  /** What the running plans are still worth, in `currency`. */
-  amount: number
-  currency: string
+  /** What the running plans are still worth, in US dollars. */
+  usd: number
   /** Nodes this figure is made of. */
   counted: number
-  /** Nodes left out: no price, no expiry, or a currency other than `currency`. */
+  /** Nodes left out: no price, no expiry, a one-off purchase, or no rate. */
   left: number
 }
 
@@ -85,30 +85,32 @@ export type Residual = {
  * negative amount. One-off purchases have no period to prorate, so they are left
  * out along with anything unpriced.
  *
- * Currencies are not added together: the largest group decides, and the rest are
- * reported as `left` so the figure does not silently mix yuan and dollars.
+ * Every currency is converted to dollars before it is added: the alternative --
+ * summing by currency and showing the largest group -- answered "what is left in
+ * the currency most of my machines happen to be billed in", which is not the
+ * question the card asks. A currency the rate table does not know is left out
+ * and counted rather than converted at a guess.
  */
 export function residual(nodes: Node[]): Residual | null {
-  const buckets = new Map<string, { amount: number; nodes: number }>()
+  let usd = 0
+  let counted = 0
   let left = 0
   for (const node of nodes) {
     const days = daysLeft(node)
     const months = cycleMonths(node.billing_cycle)
-    if (days === null || months === null || !(node.price > 0)) {
+    const worth =
+      days === null || months === null || !(node.price > 0)
+        ? null
+        : toUSD((node.price * Math.max(0, days)) / (months * 30), node.currency)
+    if (worth === null) {
       left++
       continue
     }
-    const worth = (node.price * Math.max(0, days)) / (months * 30)
-    const bucket = buckets.get(node.currency) ?? { amount: 0, nodes: 0 }
-    bucket.amount += worth
-    bucket.nodes++
-    buckets.set(node.currency, bucket)
+    usd += worth
+    counted++
   }
-  // Most nodes, not most money: what the fleet is mostly billed in is the
-  // currency the visitor thinks in, even where one host costs more than ten.
-  const ranked = [...buckets].sort((a, b) => b[1].nodes - a[1].nodes)
-  const main = ranked[0]
-  if (!main) return null
-  const others = ranked.slice(1).reduce((count, [, bucket]) => count + bucket.nodes, 0)
-  return { amount: main[1].amount, currency: main[0], counted: main[1].nodes, left: left + others }
+  if (!counted) return null
+  // Rounded once, at the end: the tail of a converted sum is float noise, and
+  // what is drawn is a whole dollar anyway.
+  return { usd: Math.round(usd * 100) / 100, counted, left }
 }
