@@ -66,6 +66,11 @@ export type Node = {
   month_start: string
   day_rx: number
   day_tx: number
+  /**
+   * The operator's note for visitors. The hub sends it to every caller, signed
+   * in or not, and keeps `remark` for the panel.
+   */
+  public_remark?: string
   /** Panel only. */
   hostname?: string
   ip?: string
@@ -117,7 +122,17 @@ const TIMEOUT = 20_000
  */
 const RETRIES = 6
 
+/**
+ * The ceiling for the whole ladder, not for one attempt. `RETRIES` was chosen for
+ * dead pooled connections, but six attempts of twenty seconds each leave the
+ * first paint on 「加载中…」 for two minutes before admitting failure, and on a
+ * phone that is a blank screen. Past this the page says what it already knows;
+ * the next tick of the stream's own retry will try again.
+ */
+const DEADLINE = 45_000
+
 export async function api<T>(path: string): Promise<T> {
+  const deadline = Date.now() + DEADLINE
   for (let attempt = 0; ; attempt++) {
     try {
       const res = await fetch(`/api${path}`, { signal: AbortSignal.timeout(TIMEOUT) })
@@ -134,7 +149,7 @@ export async function api<T>(path: string): Promise<T> {
       // TimeoutError and one during the body's read AbortError; nothing else
       // here aborts a request.
       const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")
-      if (!timedOut || attempt === RETRIES) {
+      if (!timedOut || attempt === RETRIES || Date.now() >= deadline) {
         throw new ApiError(0, "网络连接失败，稍后再试")
       }
     }

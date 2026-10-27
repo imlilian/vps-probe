@@ -3,6 +3,7 @@ import { Activity, ArrowDown, ArrowDownUp, ArrowUp, Server, Wallet, type LucideI
 
 import { Card } from "@/components/ui/card"
 import { Glyph } from "@/components/ui/glyph"
+import { percentText } from "@/components/Meter"
 import type { Node } from "@/lib/api"
 import { bytes, moneyParts, rate, splitUnit } from "@/lib/format"
 import { RATES_AS_OF } from "@/lib/rates"
@@ -110,14 +111,17 @@ function Cell({ text }: { text: string }) {
  * expired machine outranks one that merely expires, since it is already dark.
  */
 function expiry(due: Due): { text: string; tone?: string; title?: string } {
-  if (due.expired > 0 && due.soon > 0) {
+  // Two different facts, and adding them makes a third one that is false: an
+  // expired machine is not "due within 30 days", it is already dark. The count
+  // that shows is the worse of the two; the other one is in the tooltip, where
+  // it has room to say which is which.
+  if (due.expired > 0) {
     return {
-      text: `${due.soon + due.expired} 台 30 天内到期`,
+      text: `${due.expired} 台已过期`,
       tone: "text-destructive",
-      title: `${due.expired} 台已过期，${due.soon} 台即将到期`,
+      title: due.soon > 0 ? `另有 ${due.soon} 台将在 30 天内到期` : undefined,
     }
   }
-  if (due.expired > 0) return { text: `${due.expired} 台已过期`, tone: "text-destructive" }
   if (due.soon > 0) return { text: `${due.soon} 台 30 天内到期`, tone: "text-warn" }
   return { text: "无近期到期" }
 }
@@ -162,7 +166,10 @@ export function Overview({ nodes }: { nodes: Node[] }) {
           </Note>
         }
       >
-        <Big>{top ? `${top.cpu.toFixed(1)}%` : "—"}</Big>
+        {/* The same precision as the meter on the card that figure comes from:
+            one decimal below ten, whole numbers above. `46.2%` here against
+            `46%` there, a screen apart, reads as two different machines. */}
+        <Big>{top ? percentText(top.cpu) : "—"}</Big>
       </Tile>
 
       {/* Two directions read across two time scopes: what the line is doing now,
@@ -197,7 +204,12 @@ export function Overview({ nodes }: { nodes: Node[] }) {
         note={
           <Note
             tone={ending.tone}
-            title={worth ? `${worth.counted} 台计入，${worth.left} 台未计入；按 ${RATES_AS_OF} 汇率折成美元` : "没有可估价的机器"}
+            // Both facts share the tooltip: what the count is made of, and the
+            // other expiry count the line had no room for.
+            title={[
+              ending.title,
+              worth ? `${worth.counted} 台计入，${worth.left} 台未计入；按 ${RATES_AS_OF} 汇率折成美元` : "没有可估价的机器",
+            ].filter(Boolean).join(" · ")}
           >
             {ending.text}
           </Note>

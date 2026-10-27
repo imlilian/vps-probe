@@ -157,7 +157,12 @@ function trafficFoot(node: Node) {
 // count to the browser.
 function Expiry({ node }: { node: Node }) {
   const days = node.expires_in !== undefined ? node.expires_in : daysUntil(node.expires_at)
-  if (days === null) return <span className="text-xs text-muted-foreground" title="永不到期">{FOREVER}</span>
+  // No date means nothing to count down: a permanent host, or one the operator
+  // never gave a renewal date. The corner stays empty rather than holding a lone
+  // `∞` -- a glyph whose meaning lived only in a tooltip, sitting in the
+  // `shrink-0` column and squeezing the OS line beside it to `vmwar…`. The
+  // node's own page spells it out in words.
+  if (days === null) return null
   const tone = days < 0 ? "text-destructive" : days <= 7 ? "text-warn" : "text-muted-foreground"
   return (
     <span className={cn("tnum text-xs", tone)}>
@@ -220,6 +225,11 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
       className="min-w-0 cursor-pointer gap-0 p-4 outline-none transition-colors hover:border-ring focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
       role="button"
       tabIndex={0}
+      // Without a name of its own the card is announced as its whole subtree --
+      // six figures and sixty coloured boxes -- so the accessible name is the two
+      // facts a reader would say out loud.
+      aria-label={`${node.name}，${statusLabel(node)}`}
+      data-node={node.id}
       onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpen())}
     >
       <div className="flex items-start justify-between gap-3">

@@ -117,7 +117,14 @@ export function probeStats(
  * page; the node's page carries the rest.
  */
 export function cardProbes(data: PingData, now = Date.now() / 1000, count = SLOTS): ProbeStats[] {
-  const until = Math.ceil(now / BLOCK) * BLOCK
+  // The strip's right edge is the hub's newest bucket, rounded up to the block
+  // grid -- not the visitor's clock. Every other count on the card (`expires_in`,
+  // `last_seen_ago`) is deliberately on the hub's calendar for the same reason:
+  // a phone ten minutes out would put the whole window past every row, leaving
+  // twenty empty blocks under a figure that still reads `36 ms`, and one card
+  // would contradict itself. `now` is only the fallback for a node with no rows.
+  const newest = data.ping.reduce((hi, row) => (Number.isFinite(row.ts) ? Math.max(hi, row.ts) : hi), 0)
+  const until = Math.ceil((newest || now) / BLOCK) * BLOCK
   return Object.entries(data.probes ?? {})
     .map(([id, name]) => ({ id: Number(id), name }))
     .filter((p) => Number.isFinite(p.id))

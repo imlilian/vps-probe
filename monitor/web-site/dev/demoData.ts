@@ -61,6 +61,8 @@ type Spec = {
   uptime: number
   probes: number[]
   profiles?: Record<number, Profile>
+  /** A note an operator would write for visitors; most nodes have none. */
+  publicRemark?: string
   online: boolean
 }
 
@@ -81,6 +83,7 @@ const SPECS: Spec[] = [
     monthUsed: 0.38, rxBase: 2.6 * MiB, txBase: 5.4 * MiB,
     cpuBase: 18, cpuAmp: 9, memPct: 0.46, diskPct: 0.31,
     tcp: 96, udp: 14, procs: 132, uptime: 92 * 86400, probes: [1, 2, 3], online: true,
+    publicRemark: "CN2 GIA 回程，晚高峰偶有拥塞。限速 100 Mbps。",
   },
   {
     id: 2, name: "香港-CN2-02", country: "HK", group: "香港",
@@ -92,6 +95,7 @@ const SPECS: Spec[] = [
     tcp: 412, udp: 38, procs: 268, uptime: 41 * 86400, probes: [1, 2, 3],
     // The line this whole feature exists for: 上海移动 回国 is congested.
     profiles: { 3: "congested" }, online: true,
+    publicRemark: "上海移动方向近期丢包偏高，已报运营商。",
   },
   {
     id: 3, name: "东京-BGP-01", country: "JP", group: "日本",
@@ -183,14 +187,37 @@ function monthStart(nowMs: number): string {
 
 function traffic(spec: Spec) {
   const used = Math.round(spec.trafficLimit * spec.monthUsed)
-  const month_rx = Math.round(used * 0.78)
+  // The direction the plan meters carries `monthUsed` itself, because that is
+  // the figure the bar is drawn from. Splitting the month 78/22 whatever the
+  // mode made an `up`-metered host its operator calls 97% read 21% -- the mock
+  // would then hide exactly the case it was written to show.
+  let month_rx: number
+  let month_tx: number
+  switch (spec.trafficMode) {
+    case "up":
+      month_tx = used
+      month_rx = Math.round(used * 0.28)
+      break
+    case "down":
+      month_rx = used
+      month_tx = Math.round(used * 0.3)
+      break
+    case "max":
+      // The larger of the two is the one that is metered, and it is the download.
+      month_rx = used
+      month_tx = Math.round(used * 0.55)
+      break
+    default:
+      month_rx = Math.round(used * 0.78)
+      month_tx = used - month_rx
+  }
   return {
     month_rx,
-    month_tx: used - month_rx,
+    month_tx,
     total_rx: Math.round(month_rx * 3.4),
-    total_tx: Math.round((used - month_rx) * 4.1),
+    total_tx: Math.round(month_tx * 4.1),
     day_rx: Math.round(month_rx / 27 * (0.7 + 0.6 * noise(spec.id, 11))),
-    day_tx: Math.round((used - month_rx) / 27 * (0.7 + 0.6 * noise(spec.id, 12))),
+    day_tx: Math.round(month_tx / 27 * (0.7 + 0.6 * noise(spec.id, 12))),
   }
 }
 
@@ -269,12 +296,30 @@ export function nodeList(nowMs = Date.now()) {
       traffic_mode: spec.trafficMode,
       traffic_reset_day: 1,
       total_rx, total_tx, month_rx, month_tx,
-      month_used: month_rx + month_tx,
+      // The plan's own counting rule, the same switch the hub and the panel use.
+      // Summing both directions regardless reported 97% of a quota a `up`-metered
+      // plan would call 3%, and the mock is the only place this theme is read.
+      month_used: planUsage(spec, month_rx, month_tx),
       month_start: monthStart(nowMs),
       day_rx, day_tx,
+      public_remark: spec.publicRemark ?? "",
       hostname: spec.name.toLowerCase(),
     }
   })
+}
+
+/** What a plan meters: one direction, the larger of the two, or both. */
+function planUsage(spec: Spec, rx: number, tx: number): number {
+  switch (spec.trafficMode) {
+    case "up":
+      return tx
+    case "down":
+      return rx
+    case "max":
+      return Math.max(rx, tx)
+    default:
+      return rx + tx
+  }
 }
 
 /** The window a request is answered with, matching `api::span`. */

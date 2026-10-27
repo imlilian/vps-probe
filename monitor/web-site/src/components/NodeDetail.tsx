@@ -15,7 +15,7 @@ import { percentText } from "@/components/Meter"
 import { Country, Status } from "@/components/NodeCard"
 import { api, type Metrics, type Node } from "@/lib/api"
 import {
-  axisBytes, axisTop, bytes, clockFor, cpuName, cycle, despike, FOREVER, money, osName,
+  axisBytes, axisTop, bytes, clockFor, cpuName, cycle, despike, money, osName,
   percent, quarters, rate, RATE_FLOOR, rateAxis, tickClock, timeTicks, windows, withGaps,
 } from "@/lib/format"
 import { cn } from "@/lib/utils"
@@ -348,16 +348,19 @@ export function Resources({ node, points, hours, live }: {
   // What the panels draw: the rows above, broken where the node was silent. The
   // axes are fitted to the rows alone.
   const chart = useMemo(() => withGaps(rows), [rows])
-  // The window's highest rate each way, or null from a hub that sends no peak:
-  // a maximum of the means would be labelled a peak it is not.
+  // The window's highest rate each way, or null from a hub that sends no peak.
+  // Tested as a figure rather than as a field: a hub from before the peaks wrote
+  // its column default of 0 into every old row, and `?? 0` would then label the
+  // panel "峰值 ↓ 0 B/s" for a window that merely predates the column.
   const peak = useMemo(() => {
-    if (!points.some((p) => p.net_rx_max !== undefined)) return null
+    if (!points.some((p) => (p.net_rx_max ?? 0) > 0 || (p.net_tx_max ?? 0) > 0)) return null
     const max = (pick: (p: Point) => number | undefined) => points.reduce((hi, p) => Math.max(hi, pick(p) ?? 0), 0)
     return { rx: max((p) => p.net_rx_max), tx: max((p) => p.net_tx_max) }
   }, [points])
   // Whether this hub kept the socket counts, which decides both the fifth card
-  // and whether the rate has to share its row.
-  const withConns = points.some((p) => typeof p.tcp === "number")
+  // and whether the rate has to share its row. A row of zeros is a default, not
+  // a machine holding no sockets, so the test is on the figure.
+  const withConns = points.some((p) => (p.tcp ?? 0) > 0 || (p.udp ?? 0) > 0)
   const axes = useMemo(() => {
     const max = (pick: (m: MetricRow) => number) => rows.reduce((hi, m) => Math.max(hi, pick(m)), 0)
     // A floor of 4%, or a machine that never exceeds 0.4% would get an axis of
@@ -397,7 +400,7 @@ export function Resources({ node, points, hours, live }: {
           457 MB box at the top of the panel. The size is in the title because
           the axis top is claiming it. */}
       <Panel
-        title={`内存 · ${bytes(node.mem_total)}`}
+        title={`内存 · ${axisBytes(node.mem_total)}`}
         note={live ? percentText(percent(live.mem_used, live.mem_total)) : undefined}
       >
         <ResponsiveContainer>
@@ -415,7 +418,7 @@ export function Resources({ node, points, hours, live }: {
           2.7% of its disk draws along the top of the panel when the axis tracks
           the window's own maximum. */}
       <Panel
-        title={`硬盘 · ${bytes(node.disk_total)}`}
+        title={`硬盘 · ${axisBytes(node.disk_total)}`}
         note={live ? percentText(percent(live.disk_used, live.disk_total)) : undefined}
       >
         <ResponsiveContainer>
@@ -484,8 +487,12 @@ export function Resources({ node, points, hours, live }: {
               }}
             />
             {[
-              { key: "rx", stroke: "var(--color-ok)" },
-              { key: "tx", stroke: "var(--color-chart-1)" },
+              // Two bands at one opacity merge into a third colour where they
+              // overlap, and the overlap is exactly the busy stretch a reader is
+              // looking at: the downward fill is the stronger of the two and the
+              // upward one is a tint behind it, so a stack still reads as two.
+              { key: "rx", stroke: "var(--color-ok)", fill: 0.18 },
+              { key: "tx", stroke: "var(--color-chart-1)", fill: 0.09 },
             ].map((s) => (
               <Area
                 key={s.key}
@@ -494,7 +501,7 @@ export function Resources({ node, points, hours, live }: {
                 strokeWidth={1}
                 strokeDasharray="2 2"
                 fill={s.stroke}
-                fillOpacity={0.16}
+                fillOpacity={s.fill}
                 isAnimationActive={false}
                 tooltipType="none"
                 legendType="none"
@@ -699,8 +706,10 @@ export function NodeDetail({ node, historyDays, onBack }: {
       value: [
         node.price > 0 ? `${money(node.price, node.currency)} / ${cycle(node.billing_cycle)}` : "免费",
         // The date alone: the hub stamps the expiry with a time of day, which is
-        // a fact about the hub's clock and not about the renewal.
-        node.expires_at ? `${node.expires_at.slice(0, 10)} 到期` : FOREVER,
+        // a fact about the hub's clock and not about the renewal. `∞` stays off
+        // this line: it is the mark for "no ceiling" on a meter, not a word for
+        // a host with no renewal date.
+        node.expires_at ? `${node.expires_at.slice(0, 10)} 到期` : "不限期",
       ].join(" · "),
     },
   ]
@@ -737,8 +746,13 @@ export function NodeDetail({ node, historyDays, onBack }: {
           {facts.map((fact) => <Fact key={fact.label} {...fact} />)}
         </dl>
 
-        {node.remark && (
-          <p className="mt-3 rounded-md bg-muted px-3 py-2 text-sm whitespace-pre-wrap">{node.remark}</p>
+        {/* The note the operator wrote for visitors. The hub has sent this on
+            every frame since the monorepo merge and nothing rendered it, while
+            the panel-only `remark` was drawn here instead: a visitor saw no note
+            at all, and a signed-in one saw a note written for themselves. The
+            public one wins; `remark` is the fallback for a hub that predates it. */}
+        {(node.public_remark || node.remark) && (
+          <p className="mt-3 rounded-md bg-muted px-3 py-2 text-sm whitespace-pre-wrap">{node.public_remark || node.remark}</p>
         )}
       </Card>
 

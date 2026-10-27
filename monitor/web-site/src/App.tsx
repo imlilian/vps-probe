@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 
 import { NodeCard } from "@/components/NodeCard"
 import { NodeRow } from "@/components/NodeRow"
@@ -56,6 +56,20 @@ export default function App() {
   const [meError, setMeError] = useState("")
   const { nodes, error, closed } = useNodes()
   const [open, go] = useNodeRoute()
+  // Which card was pressed on the way to a node page. A card is a `role="button"`
+  // that unmounts when its page opens, so the browser drops focus back to `body`
+  // and a keyboard reader looking at node 12 comes back to the top of the
+  // document rather than to node 12's row.
+  const lastOpened = useRef<number | null>(null)
+  const openNode = useCallback((id: number) => {
+    lastOpened.current = id
+    go(id)
+  }, [go])
+  useEffect(() => {
+    if (open !== null || lastOpened.current === null) return
+    document.querySelector<HTMLElement>(`[data-node="${lastOpened.current}"]`)?.focus()
+    lastOpened.current = null
+  }, [open])
   // The list's group tab, held here so it survives a visit to a node's page.
   const [group, setGroup] = useState<string | null>(null)
   // The order and the density are the visitor's, kept across visits: read from
@@ -175,7 +189,7 @@ export default function App() {
             onGroup={setGroup}
             onOrder={chooseOrder}
             onDensity={chooseDensity}
-            onOpen={go}
+            onOpen={openNode}
           />
         )}
       </main>
@@ -238,7 +252,7 @@ export function NodeList({ nodes, group, order, density, onGroup, onOrder, onDen
           compact ? "items-stretch gap-2" : "items-start gap-3",
         )}>
           {shown.map((n) => compact
-            ? <NodeRow key={n.id} node={n} onOpen={() => onOpen(n.id)} />
+            ? <NodeRow key={n.id} node={n} order={order.key} onOpen={() => onOpen(n.id)} />
             : <NodeCard key={n.id} node={n} onOpen={() => onOpen(n.id)} />)}
         </div>
       )}

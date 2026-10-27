@@ -141,27 +141,32 @@ export function PingPanel({ node, hours = HOURS }: { node: Node; hours?: number 
   // push every two seconds produces the same blocks until a block rolls over.
   const probes = entry?.data ? cardProbes(entry.data) : []
 
+  // Answered, and there is nothing to draw: the node has no probe configured.
+  // The frame goes with it -- `mt-3 border-t pt-3` over an empty child is a
+  // divider with 24px of nothing under it, which on a fresh install was the
+  // bottom of every card. The rule belongs to the strips inside, not to the
+  // absence of them.
+  if (entry && !probes.length) return null
+
   return (
     <div ref={ref} className="@container mt-3 border-t pt-3">
       {probes.length ? (
         <div className={cn("grid gap-x-4 gap-y-3", COLUMNS[probes.length])}>
           {probes.map((probe) => <Probe key={probe.id} probe={probe} hours={hours} />)}
         </div>
-      ) : !entry ? (
-        // The design case while the first answer is on its way, so the card does
-        // not jump when it lands. Nodes with fewer probes shrink by a row or two.
-        <div className={cn("grid gap-x-4 gap-y-3", COLUMNS[3])} aria-hidden>
-          {[0, 1, 2].map((i) => (
-            <div key={i}>
-              <div className="flex justify-between gap-2">
-                <Skeleton className="h-3 w-16" />
-                <Skeleton className="h-3 w-20" />
-              </div>
-              <Skeleton className="mt-1.5 h-2.5 w-full" />
-            </div>
-          ))}
+      ) : (
+        // One row, not three. A placeholder that reserves the widest case and
+        // then collapses on the answer pulls every card below it upward, which
+        // is the jump it was meant to prevent; one row that grows pushes them
+        // down instead, which reads as the content arriving rather than leaving.
+        <div aria-hidden>
+          <div className="flex justify-between gap-2">
+            <Skeleton className="h-3 w-16" />
+            <Skeleton className="h-3 w-20" />
+          </div>
+          <Skeleton className="mt-1.5 h-2.5 w-full" />
         </div>
-      ) : null}
+      )}
     </div>
   )
 }

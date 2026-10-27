@@ -83,6 +83,11 @@ try {
   // An offline node has no live line, and the hour it last reported would read
   // as current if the strip were drawn from it.
   assert.ok(!card(7).includes("@container"))
+  // And no renewal date is drawn as no mark at all. It used to be a lone `∞`
+  // whose meaning lived in a tooltip, in the column that squeezed the OS line.
+  // Node 7 (上海-家宽) is the undated one; node 8 is also undated but has no
+  // traffic quota, and its `0 B / ∞` is the meter's own mark, not this one.
+  assert.ok(!card(6).includes("∞"), "an undated node leaves the corner empty")
   console.log("an offline card draws no latency strip")
 
   // The strip itself, with a history behind it. Effects never run under
@@ -112,6 +117,22 @@ try {
   }
   console.log("a card with a history draws three strips of twenty blocks")
 
+  // A node with no probe configured answers with an empty `probes`, and the panel
+  // kept its rule and its 24px of padding under nothing: a divider across the
+  // bottom of every card, on a fresh install, with no way to see it in the demo
+  // (all eight sample nodes carry probes).
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ ping: [], probes: {} }), { headers: { "content-type": "application/json" } })
+  try {
+    fetchPing(3)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.ok(!card(2).includes("@container"), "no probes leaves no frame")
+    assert.ok(card(2).includes("本月流量"), "and the rest of the card is untouched")
+  } finally {
+    globalThis.fetch = asked
+  }
+  console.log("a node without probes keeps no empty frame at the bottom")
+
   // The overview row: four tiles, and the bill to schedule in the last one.
   const { Overview } = await server.ssrLoadModule("/src/components/Overview.tsx")
   const overview = renderToString(createElement(Overview, { nodes: fleet }))
@@ -126,6 +147,15 @@ try {
   // coming rather than that nothing is.
   assert.match(overview, /台 30 天内到期/)
   assert.ok(!overview.includes("无近期到期"))
+  // The peak is drawn at the same precision as the meter it came from: `46.2%`
+  // here against the card's `46%`, one screen apart, reads as two machines.
+  assert.match(overview, /text-2xl font-semibold leading-8 tracking-tight">\d+%/, "the peak has no decimal")
+  // An expired machine is not one "due within 30 days" -- it is already dark --
+  // and adding the two counts makes a third fact that is false.
+  const overdue = fleet.map((n, i) => (i === 1 ? { ...n, expires_in: -3, expires_at: "2026-10-20T00:00:00Z" } : n))
+  const withExpired = renderToString(createElement(Overview, { nodes: overdue }))
+  assert.ok(withExpired.includes("1 台已过期"), "the expired node is counted on its own")
+  assert.ok(!withExpired.includes("2 台 30 天内到期"), "and not folded into the 30-day count")
   // Traffic is a table now: the arrows head the rows and the two time scopes
   // are named once, in the title, in the order the columns are drawn.
   assert.match(overview, /流量<span[^>]*>（实时\/今日）</, "the scopes are named in the title")
@@ -217,6 +247,16 @@ try {
   // its band is where the red of its congested probe has to show.
   assert.equal(compactRows.match(/h-1 rounded-xs/g)?.length, 20 * 7, "seven online rows of twenty")
   assert.match(compactRows, /bg-(emerald|amber|orange|red)/, "the band is coloured by the data")
+  // Eleven orders above the list, and a row that showed CPU and memory whatever
+  // was picked: ordering by 速率 rearranged the page with nothing on it to say
+  // why. The figure the order is made of is now on the line -- and only that one,
+  // since a row has 48px. Read below the toolbar, which lists every key by name.
+  const byRate = cards(list({ density: "compact", order: { key: "rate", dir: "desc" } }))
+  assert.match(byRate, />速率</, "a row ordered by rate shows the rate")
+  const byExpiry = cards(list({ density: "compact", order: { key: "expiry", dir: "asc" } }))
+  assert.match(byExpiry, />到期</, "and one ordered by expiry shows the date")
+  const byCpu = cards(list({ density: "compact", order: { key: "cpu", dir: "desc" } }))
+  assert.ok(!/>速率</.test(byCpu), "the keys the row already shows add no cell")
   console.log("the compact list keeps the line's hour and drops the rest")
 
   // The detail page's shell: who the machine is, what it is, and which views it
@@ -230,9 +270,6 @@ try {
     }))
 
   const page = detail()
-  // A figure and its unit stay together on a phone: the cell broke "↑ 4.53 GB"
-  // after the number and left the unit alone on the next line.
-  assert.match(page, /\d\u00a0(?:B|KB|MB|GB|TB)/, "the unit is glued to its figure")
   // A figure and its unit stay together on a phone: the cell broke "↑ 4.53 GB"
   // after the number and left the unit alone on the next line.
   assert.match(page, /\d\u00a0(?:B|KB|MB|GB|TB)/, "the unit is glued to its figure")
@@ -253,6 +290,17 @@ try {
   const hidden = detail({ node: { ...fleet[1], ip: "203.0.113.7", hostname: "hk-02" } })
   assert.ok(!hidden.includes("203.0.113.7"), "the address stays in the panel")
   assert.ok(!hidden.includes("hk-02"), "and so does the hostname")
+  // The note written for visitors. The hub has sent `public_remark` on every
+  // frame since the monorepo merge and this page drew the panel-only `remark`
+  // instead: a visitor saw no note at all, and a signed-in one saw a note that
+  // was never meant for them.
+  assert.ok(page.includes("上海移动方向近期丢包偏高"), "the public note reaches the visitor")
+  const panelNote = detail({ node: { ...fleet[1], public_remark: "", remark: "恢复密码在 1Password" } })
+  assert.ok(panelNote.includes("恢复密码在 1Password"), "a hub without one falls back to the panel's")
+  // No renewal date is words on the page rather than `∞`, which is a meter's
+  // mark for "no ceiling".
+  const undated = detail({ node: { ...fleet[1], expires_at: null, expires_in: null } })
+  assert.ok(undated.includes("不限期"), "an undated machine says so in words")
   // The flag is the node's identity here, as on the card.
   assert.match(page, /alt="HK"/)
   console.log("the detail page names the machine, hides its address and offers both views")

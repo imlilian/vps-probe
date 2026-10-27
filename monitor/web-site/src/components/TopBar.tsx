@@ -78,9 +78,12 @@ export function TopBar({ siteName, authed, online, total, error, closed, mode, o
         </Button>
 
         {/* The panel is a separate app built into the hub, not a route of this
-            one, so this is a navigation rather than a link within the theme. */}
+            one, so this is a navigation rather than a link within the theme.
+            On a phone the label is dropped and only the wrench is left, which
+            would leave the link with no accessible name at all: the words move
+            from `hidden` into `aria-label` and `title` rather than away. */}
         <Button variant="ghost" size="sm" asChild>
-          <a href="/admin/">
+          <a href="/admin/" aria-label={authed ? "进入后台" : "登录"} title={authed ? "进入后台" : "登录"}>
             <Wrench />
             <span className="hidden sm:inline">{authed ? "进入后台" : "登录"}</span>
           </a>

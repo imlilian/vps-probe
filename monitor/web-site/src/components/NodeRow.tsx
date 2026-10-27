@@ -1,9 +1,12 @@
+import type { ReactNode } from "react"
+
 import { Card } from "@/components/ui/card"
 import { percentText } from "@/components/Meter"
 import { CompactStrip } from "@/components/PingPanel"
 import { Country, statusDot, statusLabel } from "@/components/NodeCard"
 import type { Node } from "@/lib/api"
-import { money, percent } from "@/lib/format"
+import { bytes, daysUntil, money, percent, rate, uptime } from "@/lib/format"
+import type { SortKey } from "@/lib/sort"
 import { cn } from "@/lib/utils"
 
 /**
@@ -18,6 +21,39 @@ function Figure({ label, pct }: { label: string; pct: number | null }) {
       <span className="text-xs font-medium">{percentText(pct)}</span>
     </span>
   )
+}
+
+/**
+ * The reading the list is currently ordered by, for the keys the row does not
+ * already show.
+ *
+ * Eleven chips above the list, and a row that shows only CPU and memory: sorting
+ * by 速率 or 到期 reordered the page with nothing on screen to explain why. So
+ * the one figure the order is made of is on the line -- and only that one,
+ * because a row has 48px and its name still has to fit.
+ *
+ * CPU, memory and price carry their own columns already, and the name, region and
+ * operator keys are visible as the row's own identity.
+ */
+function orderedBy(node: Node, key: SortKey): { label: string; text: ReactNode } | null {
+  const m = node.online ? node.metrics : null
+  switch (key) {
+    case "rate":
+      return m ? { label: "速率", text: rate(m.net_rx + m.net_tx) } : null
+    case "today":
+      return { label: "今日", text: bytes(node.day_rx + node.day_tx) }
+    case "disk":
+      return m ? { label: "硬盘", text: percentText(percent(m.disk_used, m.disk_total)) } : null
+    case "uptime":
+      return m ? { label: "在线", text: uptime(m.uptime) } : null
+    case "expiry": {
+      const days = node.expires_in !== undefined ? node.expires_in : daysUntil(node.expires_at)
+      if (days === null) return { label: "到期", text: "不限期" }
+      return { label: "到期", text: days < 0 ? "已过期" : `${days} 天` }
+    }
+    default:
+      return null
+  }
 }
 
 /**
@@ -36,10 +72,11 @@ function Figure({ label, pct }: { label: string; pct: number | null }) {
  * load, sockets, expiry, the per-probe figures -- is on the node's own page, one
  * press away.
  */
-export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
+export function NodeRow({ node, order, onOpen }: { node: Node; order?: SortKey; onOpen: () => void }) {
   const m = node.online ? node.metrics : null
   const billing = node.price > 0 ? money(node.price, node.currency) : ""
   const status = statusLabel(node)
+  const extra = order ? orderedBy(node, order) : null
 
   return (
     <Card
@@ -48,6 +85,8 @@ export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
       tabIndex={0}
       onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpen())}
       title={`${node.name} · ${status}`}
+      aria-label={`${node.name}，${status}`}
+      data-node={node.id}
       // Muted when it stops reporting: the figures are the last ones it sent,
       // and the whole row says so rather than the dot alone. Focus is drawn as
       // the same border the pointer gets on hover, plus the button's ring.
@@ -64,6 +103,14 @@ export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
         <h3 className="min-w-0 flex-1 truncate text-sm font-medium" title={node.name}>{node.name}</h3>
         <Figure label="CPU" pct={m ? m.cpu : null} />
         <Figure label="内存" pct={m ? percent(m.mem_used, m.mem_total) : null} />
+        {/* Whichever figure the list is ordered by, when it is not one of the
+            two above: see [orderedBy]. */}
+        {extra && (
+          <span className="tnum inline-flex shrink-0 items-baseline gap-1">
+            <span className="text-2xs text-muted-foreground">{extra.label}</span>
+            <span className="text-xs font-medium">{extra.text}</span>
+          </span>
+        )}
         {/* The same string the card shows, a step muted: at the end of a row it
             is the least urgent thing on the line, but it is what the 价格 sort
             sorts by, so it has to be on the line. */}

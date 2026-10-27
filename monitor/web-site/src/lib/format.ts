@@ -266,6 +266,10 @@ const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880, 100
 const TICK_MONTHS = [1, 2, 3, 6, 12]
 
 export function timeTicks(from: number, to: number, count = 8): number[] {
+  // A history row whose `ts` is not a number, or a window that runs backwards,
+  // sends the month branch into a loop with no exit: `t > to` never becomes true
+  // and the tab freezes. `safeNodes` guards the live figures, not these rows.
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return []
   const step = TICK_STEPS.find((s) => (to - from) / s <= count)
   if (step === undefined) return monthTicks(from, to, count)
   const zone = new Date(from).getTimezoneOffset() * 60_000
@@ -289,7 +293,10 @@ function monthTicks(from: number, to: number, count: number): number[] {
   const ticks: number[] = []
   for (month = Math.ceil(month / every) * every; ; month += every) {
     const t = new Date(Math.floor(month / 12), month % 12, 1).getTime()
-    if (t > to) return ticks
+    // A guard, not the exit: `t > to` is the exit, and a `to` that never gets
+    // smaller (a NaN month, a clock that runs backwards) would never reach it.
+    // Two years of monthly ticks is more than any axis has room for.
+    if (!Number.isFinite(t) || t > to || ticks.length > 24) return ticks
     ticks.push(t)
   }
 }
