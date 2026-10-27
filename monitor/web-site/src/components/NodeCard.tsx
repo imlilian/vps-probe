@@ -8,8 +8,9 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
 import { Meter } from "@/components/Meter"
+import { PingPanel } from "@/components/PingPanel"
 import type { Node } from "@/lib/api"
-import { bytes, daysUntil, FOREVER, osName, pair, percent, rate, sinceSeen, uptime } from "@/lib/format"
+import { bytes, cpuName, cycle, daysUntil, FOREVER, money, osName, pair, percent, rate, sinceSeen, uptime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
 // Emitted as files and fetched on first use, so a page carries only the flags its
@@ -108,7 +109,7 @@ export function Country({ node }: { node: Node }) {
       src={src}
       alt={node.country}
       title={node.country}
-      className="h-3 w-4.5 shrink-0 rounded-[2px] ring-1 ring-foreground/10"
+      className="h-3 w-4.5 shrink-0 rounded-xs ring-1 ring-foreground/10"
     />
   )
 }
@@ -160,6 +161,10 @@ function Expiry({ node }: { node: Node }) {
 
 export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
   const m = node.metrics
+  // Load against the core count it competes for, so one number says whether the
+  // machine has room. A load of 1.0 is idle on four cores and saturated on one.
+  const loadPct = m && node.cpu_cores > 0 ? (m.load[0] / node.cpu_cores) * 100 : null
+  const billing = node.price > 0 ? `${cycle(node.billing_cycle)} ${money(node.price, node.currency)}` : ""
 
   return (
     <Card
@@ -183,7 +188,7 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
             {node.os && <OsIcon os={node.os} />}
             <span className="truncate">
               {node.os
-                ? [node.virt !== "none" && node.virt, node.arch].filter(Boolean).join(" · ")
+                ? [osName(node.os), node.virt !== "none" && node.virt, node.arch].filter(Boolean).join(" · ")
                 : "等待首次上报"}
             </span>
           </p>
@@ -204,9 +209,9 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
             {/* The core count belongs beside the word CPU: it is what the
                 percentage and the load averages are both measured against. */}
             <Meter
-              label={`CPU ${node.cpu_cores} 核`}
+              label={`CPU · ${node.cpu_cores} 核`}
               pct={m ? m.cpu : null}
-              foot={m ? m.load.map((n) => n.toFixed(2)).join(" ") : "—"}
+              foot={cpuName(node.cpu_name) || "—"}
             />
             <Meter
               label="内存"
@@ -219,31 +224,46 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
               foot={m ? pair(m.disk_used, m.disk_total) : bytes(node.disk_total)}
             />
             <Meter
-              label="流量"
+              label="负载"
+              pct={loadPct}
+              foot={m ? m.load.map((n) => n.toFixed(2)).join(" ") : "—"}
+            />
+          </div>
+
+          {/* Throughput gets its own block rather than a fifth tile: it is the
+              figure read fastest, and the plan's allowance is what the bar under
+              it measures. */}
+          <div className="mt-4 space-y-2.5 border-t pt-3">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="tnum inline-flex items-baseline gap-1 text-xs text-muted-foreground">
+                <ArrowDown className="size-3 self-center" />
+                <b className="text-sm font-medium text-foreground">{m ? rate(m.net_rx) : "—"}</b>
+              </span>
+              <span className="tnum inline-flex items-baseline gap-1 text-xs text-muted-foreground">
+                <ArrowUp className="size-3 self-center" />
+                <b className="text-sm font-medium text-foreground">{m ? rate(m.net_tx) : "—"}</b>
+              </span>
+            </div>
+            <Meter
+              label="本月流量"
               pct={node.traffic_limit > 0 ? percent(monthUsage(node), node.traffic_limit) : null}
               empty={FOREVER}
               foot={trafficFoot(node)}
             />
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 border-t pt-4 text-xs">
-            <span className="tnum inline-flex items-center gap-1.5">
-              <ArrowDown className="size-3 text-muted-foreground" />
-              {m ? rate(m.net_rx) : "—"}
+          {/* The two things a card cannot show live: what the machine is doing
+              at the socket level, and what it costs. */}
+          <div className="mt-3 flex items-baseline justify-between gap-2 text-xs text-muted-foreground">
+            <span className="tnum truncate">
+              TCP {m ? m.tcp : "—"} · UDP {m ? m.udp : "—"} · 进程 {m ? m.procs : "—"}
             </span>
-            <span className="tnum inline-flex items-center gap-1.5">
-              <ArrowUp className="size-3 text-muted-foreground" />
-              {m ? rate(m.net_tx) : "—"}
-            </span>
-            <span className="tnum inline-flex items-center gap-1.5 text-muted-foreground">
-              <ArrowDown className="size-3" />
-              {bytes(node.total_rx)}
-            </span>
-            <span className="tnum inline-flex items-center gap-1.5 text-muted-foreground">
-              <ArrowUp className="size-3" />
-              {bytes(node.total_tx)}
-            </span>
+            {billing && <span className="tnum shrink-0">{billing}</span>}
           </div>
+
+          {/* An offline node has no line to measure, and its last hour would be
+              read as a live one. */}
+          {node.online && <PingPanel node={node} />}
         </>
       ) : (
         /* Never connected: nothing to plot, so the card stays short rather than

@@ -9,6 +9,8 @@ import { createElement } from "react"
 import { renderToString } from "react-dom/server"
 import { createServer } from "vite"
 
+import type { Node } from "@/lib/api"
+
 // `theme.ts` subscribes at module scope, and nothing on this machine has a
 // system colour scheme to subscribe to.
 Object.assign(globalThis, {
@@ -47,6 +49,55 @@ try {
   assert.ok(stale.includes("实时数据中断"), "the reason belongs in the tooltip")
   assert.ok(bar({ closed: true }).includes("bg-offline"))
   console.log("a broken stream is visible without reading the page")
+
+  // The card, rendered against the sample fleet: the figures a visitor reads
+  // first, and the socket counts and price that used to sit nowhere.
+  const { NodeCard } = await server.ssrLoadModule("/src/components/NodeCard.tsx")
+  const { nodeList } = await server.ssrLoadModule("/dev/demoData.ts")
+  const fleet = nodeList(1_790_000_000_000) as unknown as Node[]
+  const card = (i: number) =>
+    renderToString(createElement(NodeCard, { node: fleet[i], onOpen() {} }))
+
+  const full = card(1)
+  for (const want of ["香港-CN2-02", "负载", "本月流量", "TCP", "进程", "¥59.9"]) {
+    assert.ok(full.includes(want), `missing ${want}`)
+  }
+  // The latency panel mounts its own container, so its presence is what says a
+  // card with a line behind it will draw one.
+  assert.ok(full.includes("@container"))
+  console.log("a card carries its figures, its sockets and its price")
+
+  // An offline node has no live line, and the hour it last reported would read
+  // as current if the strip were drawn from it.
+  assert.ok(!card(7).includes("@container"))
+  console.log("an offline card draws no latency strip")
+
+  // The strip itself, with a history behind it. Effects never run under
+  // renderToString, so the cache is filled the way the hook would fill it, from
+  // the sample hub's own answer shape.
+  const { fetchPing } = await server.ssrLoadModule("/src/lib/ping.ts")
+  const { history } = await server.ssrLoadModule("/dev/demoData.ts")
+  const asked = globalThis.fetch
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify(history(2, "ping", 1, 60, Date.now())), {
+      headers: { "content-type": "application/json" },
+    })
+  try {
+    fetchPing(2)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const strip = card(1)
+    const blocks = strip.match(/h-2\.5 rounded-xs/g)?.length ?? 0
+    assert.equal(blocks, 60, `three probes of twenty blocks, got ${blocks}`)
+    for (const want of ["上海电信", "上海联通", "上海移动", "ms"]) {
+      assert.ok(strip.includes(want), `missing ${want}`)
+    }
+    // Colour is data: something in the fleet's worst line is not the healthiest
+    // step, and the block classes are the palette's, not literals.
+    assert.ok(/bg-(emerald|amber|orange|red|muted)/.test(strip))
+  } finally {
+    globalThis.fetch = asked
+  }
+  console.log("a card with a history draws three strips of twenty blocks")
 } finally {
   await server.close()
 }
