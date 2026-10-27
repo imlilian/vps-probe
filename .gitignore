@@ -15,5 +15,6 @@
 
 # 参考主题（只读样例，不参与构建、不入库）与图标源目录（已复制进两个前端）
 /Komari-Theme-Horizon/
+/Theme-Glassmorphism/
 /final_icon/
 /K23Flux-monitor-theme-ping/

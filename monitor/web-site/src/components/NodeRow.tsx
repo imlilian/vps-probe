@@ -2,7 +2,8 @@ import type { ReactNode } from "react"
 
 import { Card } from "@/components/ui/card"
 import { Glyph } from "@/components/ui/glyph"
-import { percentText } from "@/components/Meter"
+import { flowTone } from "@/components/Flow"
+import { percentText, RESOURCE_TONES } from "@/components/Meter"
 import { Billing } from "@/components/Billing"
 import { Country, deployed, Figure, monthUsage, statusDot, statusLabel } from "@/components/NodeCard"
 import { ProbeLines } from "@/components/PingPanel"
@@ -23,7 +24,7 @@ function Mini({ label, value, pct, tone, title }: {
   return (
     <div className="min-w-0" title={title}>
       <div className="flex items-baseline justify-between gap-1">
-        <span className="truncate text-[0.625rem] leading-3 font-medium tracking-wide text-muted-foreground uppercase">{label}</span>
+        <span className="truncate text-3xs font-medium tracking-wide text-muted-foreground uppercase">{label}</span>
         <span className="tnum shrink-0 text-2xs font-semibold">{value}</span>
       </div>
       <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-rail">
@@ -44,7 +45,7 @@ function Speed({ dir, value }: { dir: "rx" | "tx"; value: string }) {
       <Glyph
         icon={down ? ArrowDown : ArrowUp}
         box="sm"
-        className={down ? "text-emerald-600 dark:text-emerald-400" : "text-blue-600 dark:text-blue-400"}
+        className={flowTone(down)}
       />
       <span className="tnum text-2xs font-semibold">{figure}</span>
       {unit && <span className="text-2xs text-muted-foreground">{unit}</span>}
@@ -85,7 +86,7 @@ export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
       data-node={node.id}
       // Focus is drawn as the same border the pointer gets on hover, plus the
       // button's ring.
-      className="min-w-0 cursor-pointer gap-0 p-3 outline-none transition-[box-shadow,border-color] duration-200 hover:border-ring/50 hover:shadow-raise focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+      className="min-w-0 cursor-pointer gap-0 p-3 outline-none transition-[box-shadow,border-color] duration-200 hover:border-ring/50 hover:shadow-raise focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
     >
       <div className="flex items-center gap-1.5">
         <Country node={node} />
@@ -95,12 +96,12 @@ export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
         <span className={cn("size-1.5 shrink-0 rounded-full", statusDot(node))} title={status} />
         <h3 className="min-w-0 flex-1 truncate text-xs font-semibold" title={node.name}>{node.name}</h3>
         {node.online ? (
-          <span className="tnum inline-flex shrink-0 items-center gap-0.5 rounded-md border bg-card-2 px-1 py-0.5 text-[0.625rem] leading-3 text-muted-foreground">
+          <span className="tnum inline-flex shrink-0 items-center gap-0.5 rounded-md border bg-card-2 px-1 py-0.5 text-3xs text-muted-foreground">
             <Glyph icon={Clock} box="sm" className="size-3" />
             {m ? uptimeShort(m.uptime) : "—"}
           </span>
         ) : deployed(node) ? (
-          <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[0.625rem] leading-3 font-semibold text-destructive">
+          <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-3xs font-semibold text-destructive">
             <Glyph icon={WifiOff} box="sm" className="size-3" />
             离线
           </span>
@@ -110,26 +111,26 @@ export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
       {deployed(node) ? (
         <>
           <div className="mt-2 grid grid-cols-4 gap-2">
-            <Mini label="CPU" value={percentText(m ? m.cpu : null)} pct={m ? m.cpu : null} tone="from-blue-500 to-indigo-500" />
+            <Mini label="CPU" value={percentText(m ? m.cpu : null)} pct={m ? m.cpu : null} tone={RESOURCE_TONES.cpu} />
             <Mini
               label="内存"
               value={m ? percentText(percent(m.mem_used, m.mem_total)) : "—"}
               pct={m ? percent(m.mem_used, m.mem_total) : null}
-              tone="from-violet-500 to-purple-500"
+              tone={RESOURCE_TONES.mem}
               title={m ? `${bytes(m.mem_used)} / ${bytes(m.mem_total)}` : undefined}
             />
             <Mini
               label="硬盘"
               value={m ? percentText(percent(m.disk_used, m.disk_total)) : "—"}
               pct={m ? percent(m.disk_used, m.disk_total) : null}
-              tone="from-amber-500 to-orange-500"
+              tone={RESOURCE_TONES.disk}
               title={m ? `${bytes(m.disk_used)} / ${bytes(m.disk_total)}` : undefined}
             />
             <Mini
               label="负载"
               value={m ? m.load[0].toFixed(2) : "—"}
               pct={loadPct}
-              tone="from-pink-500 to-rose-400"
+              tone={RESOURCE_TONES.load}
               title={m ? `5m ${m.load[1].toFixed(2)} · 15m ${m.load[2].toFixed(2)}` : undefined}
             />
           </div>

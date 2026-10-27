@@ -11,11 +11,12 @@ import { Card } from "@/components/ui/card"
 import { Chip, Segmented } from "@/components/ui/chip"
 import { Glyph } from "@/components/ui/glyph"
 import { Skeleton } from "@/components/ui/skeleton"
+import { priceParts } from "@/components/Billing"
 import { percentText } from "@/components/Meter"
 import { Country, Status, Uptime } from "@/components/NodeCard"
 import { api, type Metrics, type Node } from "@/lib/api"
 import {
-  axisBytes, axisTop, bytes, clockFor, cpuName, cycle, despike, money, osName,
+  axisBytes, axisTop, bytes, clockFor, cpuName, despike, osName,
   percent, quarters, rate, RATE_FLOOR, rateAxis, tickClock, timeTicks, windows, withGaps,
 } from "@/lib/format"
 import { cn } from "@/lib/utils"
@@ -110,13 +111,13 @@ const TOOLTIP = {
 // and a rate axis of 1 KB/s to 100 MB/s its 10 MB/s label and two gridlines.
 const VALUE_AXIS = { ...AXIS, width: 68, interval: 0 }
 
-// The palette is greyscale, so lightness alone is exhausted after two or three
-// series and the dash pattern carries the rest.
-// ponytail: the dash period is shorter than the jitter once every ping in the
-// window is on the chart, so at the day range a dotted line and a dashed one both
-// read as texture and only lightness separates them. A muted colour palette was
-// built and measured but not adopted; restoring it means five oklch pairs and
-// dropping `dash`.
+// One style per series: the first five probes take the chart palette's five
+// hues in reading order, and the dash pattern is what tells a series from its
+// neighbours once the list wraps past five -- the sixth probe draws like the
+// first, which the legend chips can hide rather than a sixth style solving.
+// The dashes carry a caveat at the day range: a sample is a pixel apart there,
+// every dash period is shorter than the jitter, and a dotted line reads as
+// texture like a dashed one -- hue is what separates them.
 const PALETTE = [
   { stroke: "var(--color-chart-1)", dash: undefined },
   { stroke: "var(--color-chart-3)", dash: "6 3" },
@@ -692,6 +693,10 @@ export function NodeDetail({ node, historyDays, onBack }: {
     return [...rows.values()].sort((a, b) => a.ts - b.ts)
   }, [pingSeries])
 
+  // The price in the pieces `Billing` draws it in, so the renewal reads the same
+  // on the card and on this page: `$168/3年`, not `US$168.00 / 3 年付`.
+  const price = priceParts(node)
+
   // The spec sheet: one machine's facts, in one strip. Six cells, so the grid
   // divides cleanly into rows of two, three and six.
   const facts = [
@@ -706,7 +711,7 @@ export function NodeDetail({ node, historyDays, onBack }: {
     {
       label: "续费",
       value: [
-        node.price > 0 ? `${money(node.price, node.currency)} / ${cycle(node.billing_cycle)}` : "免费",
+        node.price > 0 ? `${price.mark}${price.value}${price.suffix ? `/${price.suffix}` : ""}` : price.value,
         // The date alone: the hub stamps the expiry with a time of day, which is
         // a fact about the hub's clock and not about the renewal. `∞` stays off
         // this line: it is the mark for "no ceiling" on a meter, not a word for
@@ -795,7 +800,7 @@ export function NodeDetail({ node, historyDays, onBack }: {
         <p className="py-8 text-center text-sm text-destructive" role="alert">
           读取历史数据失败：{failed}
           <button
-            className="ml-2 rounded-sm underline underline-offset-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            className="ml-2 rounded-sm underline underline-offset-2 outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             onClick={() => setAttempt((n) => n + 1)}
           >重试</button>
         </p>

@@ -18,7 +18,10 @@ export const MODE_LABEL: Record<ThemeMode, string> = {
 const KEY = "theme"
 
 const DARK_MEDIA = matchMedia("(prefers-color-scheme: dark)")
-// Must match `--background` in index.css: slate-100 and slate-950.
+// Fallback only, for a page whose stylesheet never arrived -- the colour the
+// effect below sets on the meta is read from the page itself, so it is
+// `--background` resolved rather than a second copy of it to keep in step.
+// Must still match `--background` in index.css: slate-100 and slate-950.
 const THEME_COLOR = { light: "#f1f5f9", dark: "#020618" }
 
 /**
@@ -84,14 +87,21 @@ export function useTheme() {
     // The address bar and task switcher follow the page rather than the system,
     // so the choice holds outside the viewport as well. The two media-scoped
     // tags in index.html cover the first paint; this one has no media
-    // attribute, so it wins over both from here on.
+    // attribute, so it wins over both from here on. The colour is read from the
+    // page -- `--background`, resolved -- which keeps the chrome in step with
+    // the palette without a second copy of the value; the class was toggled and
+    // the layout forced above, so it has already resolved to the chosen half.
     let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]:not([media])')
     if (!meta) {
       meta = document.createElement("meta")
       meta.name = "theme-color"
       document.head.append(meta)
     }
-    meta.content = dark ? THEME_COLOR.dark : THEME_COLOR.light
+    const paint = getComputedStyle(document.body).backgroundColor
+    meta.content =
+      !paint || paint === "transparent" || paint === "rgba(0, 0, 0, 0)"
+        ? dark ? THEME_COLOR.dark : THEME_COLOR.light
+        : paint
   }, [dark])
 
   // light -> dark -> system -> light: one fixed order, so the button always

@@ -52,7 +52,7 @@ export function TopBar({ siteName, authed, error, closed, mode, onMode, onHome }
           width; above it everything is one row again. */}
       <div className="mx-auto flex min-h-14 max-w-page flex-wrap items-center gap-x-2 gap-y-1.5 px-4 py-2 xs:flex-nowrap xs:gap-x-3 xs:py-0 sm:px-6">
         <button
-          className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md outline-none transition-opacity hover:opacity-80 focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md outline-none transition-opacity hover:opacity-80 focus-visible:ring-3 focus-visible:ring-ring/50"
           onClick={onHome}
           title="返回列表"
         >
@@ -105,7 +105,7 @@ export function TopBar({ siteName, authed, error, closed, mode, onMode, onHome }
                 title={`主题：${MODE_LABEL[value]}`}
                 onClick={() => onMode(value)}
                 className={cn(
-                  "grid size-7 place-items-center rounded-md outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                  "grid size-7 place-items-center rounded-md outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
                   // The chosen stop is a raised surface, not a lighter label: on
                   // `bg-card` the dark half drew it below the track, where it read
                   // as a hole. The hairline is for the dark side, where a shadow

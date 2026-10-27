@@ -90,7 +90,7 @@ export function Toolbar({
               title={label}
               onClick={() => onDensity(value)}
               className={cn(
-                "grid size-7 place-items-center rounded-md outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                "grid size-7 place-items-center rounded-md outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
                 density === value
                   ? "bg-selected text-foreground shadow-sm ring-1 ring-black/5 dark:ring-white/10"
                   : "text-muted-foreground hover:text-foreground",
@@ -128,7 +128,7 @@ export function Toolbar({
               disabled={count === 0}
               onClick={() => onGroup(value)}
               className={cn(
-                "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-2xs outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-default disabled:opacity-40",
+                "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-2xs outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-default disabled:opacity-40",
                 group === value
                   ? "border-brand/40 bg-brand/10 font-medium text-brand"
                   : "border-transparent text-muted-foreground hover:bg-card hover:text-foreground",
@@ -149,7 +149,7 @@ export function Toolbar({
               title={hint}
               value={order.key}
               onChange={(e) => onOrder(nextOrder(order, e.target.value as SortKey))}
-              className="h-8 cursor-pointer appearance-none rounded-lg bg-transparent pr-7 pl-2.5 text-2xs outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              className="h-8 cursor-pointer appearance-none rounded-lg bg-transparent pr-7 pl-2.5 text-2xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             >
               {SORTS.map((sort) => (
                 <option key={sort.key} value={sort.key}>{sort.label}</option>
@@ -230,13 +230,13 @@ function SearchBox({ query, onQuery }: { query: string; onQuery: (query: string)
         onBlur={() => {
           if (!query) setOpen(false)
         }}
-        className="h-8 w-32 rounded-lg border bg-card pr-6 pl-7 text-2xs outline-none placeholder:text-muted-foreground/70 focus-visible:ring-[3px] focus-visible:ring-ring/50 sm:w-44 [&::-webkit-search-cancel-button]:hidden"
+        className="h-8 w-32 rounded-lg border bg-card pr-6 pl-7 text-2xs outline-none placeholder:text-muted-foreground/70 focus-visible:ring-3 focus-visible:ring-ring/50 sm:w-44 [&::-webkit-search-cancel-button]:hidden"
       />
       <button
         aria-label="关闭搜索"
         title="关闭搜索"
         onClick={close}
-        className="absolute top-1/2 right-1.5 grid size-5 -translate-y-1/2 place-items-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        className="absolute top-1/2 right-1.5 grid size-5 -translate-y-1/2 place-items-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
       >
         <Glyph icon={X} box="sm" />
       </button>

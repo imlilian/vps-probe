@@ -11,6 +11,9 @@
     <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
     <link rel="icon" href="/favicon-192.png" type="image/png" sizes="192x192" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- First paint only, before the script picks a mode: theme.ts takes over
+         from --background (resolved from the page) once it runs, so a palette
+         change needs these two and the fallbacks in theme.ts to move with it. -->
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f1f5f9" />
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#020618" />
     <title>Monitor</title>

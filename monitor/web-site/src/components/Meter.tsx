@@ -1,5 +1,17 @@
 import type { ReactNode } from "react"
 
+/**
+ * The four resource meters' gradient fills, one hue per resource so a column of
+ * cards can be scanned by colour. Written once: the standard card's four and the
+ * compact card's four draw the same fact and must not drift apart.
+ */
+export const RESOURCE_TONES = {
+  cpu: "from-blue-500 to-indigo-500",
+  mem: "from-violet-500 to-purple-500",
+  disk: "from-amber-500 to-orange-500",
+  load: "from-pink-500 to-rose-500",
+} as const
+
 type Props = { label: ReactNode; pct: number | null; foot: ReactNode; empty?: ReactNode }
 
 /**

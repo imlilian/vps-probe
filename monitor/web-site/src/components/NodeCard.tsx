@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from "react"
-import { Activity, ArrowDown, ArrowUp, Clock, Cpu, HardDrive, MemoryStick, Network, WifiOff, type LucideIcon } from "lucide-react"
+import { Activity, Clock, Cpu, HardDrive, MemoryStick, Network, WifiOff, type LucideIcon } from "lucide-react"
 import {
   siAlmalinux, siAlpinelinux, siArchlinux, siCentos, siDebian, siFedora, siLinux, siOpensuse, siRedhat,
   siRockylinux, siUbuntu, type SimpleIcon,
@@ -8,8 +8,9 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Billing } from "@/components/Billing"
 import { Card } from "@/components/ui/card"
+import { FlowTag } from "@/components/Flow"
 import { Glyph } from "@/components/ui/glyph"
-import { percentText } from "@/components/Meter"
+import { percentText, RESOURCE_TONES } from "@/components/Meter"
 import { PingPanel } from "@/components/PingPanel"
 import type { Node } from "@/lib/api"
 import {
@@ -150,7 +151,7 @@ function OsIcon({ os }: { os: string }) {
       viewBox="0 0 24 24"
       role="img"
       style={{ "--brand": `#${icon.hex}` } as CSSProperties}
-      className="size-3 shrink-0 fill-(--brand) dark:fill-[color-mix(in_oklab,var(--brand)_60%,white)]"
+      className="size-3 shrink-0 distro-mark"
     >
       <title>{osName(os)}</title>
       <path d={icon.path} />
@@ -257,27 +258,18 @@ export function Figure({ text, size = "sm", className, title }: {
 }
 
 /**
- * Throughput in one direction: the arrow and its two letters, then the figure
- * with the unit a step down.
+ * Throughput in one direction: the shared label, then the figure with the unit
+ * a step down.
  *
- * RX/TX rather than 入站/出站 -- see the same component in the summary. The two
- * directions keep the colours they have everywhere else on the page, emerald down
- * and blue up, so the traffic block and the tile above it are read the same way.
+ * RX/TX rather than 入站/出站 -- see FlowTag. The two directions keep the
+ * colours they have everywhere else on the page, emerald down and blue up, so
+ * the traffic block and the tile above it are read the same way.
  */
 function Speed({ dir, value }: { dir: "rx" | "tx"; value: string }) {
   const [figure, unit] = splitUnit(value)
-  const down = dir === "rx"
   return (
     <span className="inline-flex min-w-0 items-baseline gap-1">
-      <span
-        className={cn(
-          "flex shrink-0 items-center gap-0.5 text-2xs font-semibold",
-          down ? "text-emerald-600 dark:text-emerald-400" : "text-blue-600 dark:text-blue-400",
-        )}
-      >
-        <Glyph icon={down ? ArrowDown : ArrowUp} box="sm" />
-        {down ? "RX" : "TX"}
-      </span>
+      <FlowTag dir={dir} />
       <span className="tnum truncate text-sm font-semibold">{figure}</span>
       {unit && <span className="shrink-0 text-2xs text-muted-foreground">{unit}</span>}
     </span>
@@ -333,7 +325,7 @@ function Traffic({ node }: { node: Node }) {
             quota below is a share of, so it leads the bar rather than trailing
             it under a word. */}
         <span className="flex items-baseline gap-1">
-          <span className="rounded-xs bg-brand/10 px-1 text-[0.625rem] font-semibold tracking-wide text-brand">{mode}</span>
+          <span className="rounded-xs bg-brand/10 px-1 text-3xs font-semibold tracking-wide text-brand">{mode}</span>
           <Figure text={bytes(used)} size="xs" />
         </span>
       </div>
@@ -396,7 +388,7 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
       // A card is a button here, so it draws the button's focus: the ring and the
       // border the pointer gets on hover, since a list walked with Tab otherwise
       // moves nothing on screen.
-      className="min-w-0 cursor-pointer gap-0 p-3.5 outline-none transition-[box-shadow,border-color] duration-200 hover:border-ring/50 hover:shadow-raise focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+      className="min-w-0 cursor-pointer gap-0 p-3.5 outline-none transition-[box-shadow,border-color] duration-200 hover:border-ring/50 hover:shadow-raise focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
       role="button"
       tabIndex={0}
       // Without a name of its own the card is announced as its whole subtree --
@@ -440,7 +432,7 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
               value={percentText(m ? m.cpu : null)}
               sub={[node.cpu_cores ? `${node.cpu_cores} 核` : "", cpu].filter(Boolean).join(" · ")}
               pct={m ? m.cpu : null}
-              tone="from-blue-500 to-indigo-500"
+              tone={RESOURCE_TONES.cpu}
             />
             <Resource
               icon={MemoryStick}
@@ -448,7 +440,7 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
               value={m ? percentText(percent(m.mem_used, m.mem_total)) : "—"}
               sub={m ? pair(m.mem_used, m.mem_total) : bytes(node.mem_total)}
               pct={m ? percent(m.mem_used, m.mem_total) : null}
-              tone="from-violet-500 to-purple-500"
+              tone={RESOURCE_TONES.mem}
             />
             <Resource
               icon={HardDrive}
@@ -456,7 +448,7 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
               value={m ? percentText(percent(m.disk_used, m.disk_total)) : "—"}
               sub={m ? pair(m.disk_used, m.disk_total) : bytes(node.disk_total)}
               pct={m ? percent(m.disk_used, m.disk_total) : null}
-              tone="from-amber-500 to-orange-500"
+              tone={RESOURCE_TONES.disk}
             />
             <Resource
               icon={Activity}
@@ -464,7 +456,7 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
               value={m ? m.load[0].toFixed(2) : "—"}
               sub={m ? `5m ${m.load[1].toFixed(2)} · 15m ${m.load[2].toFixed(2)}` : "—"}
               pct={loadPct}
-              tone="from-pink-500 to-rose-400"
+              tone={RESOURCE_TONES.load}
             />
           </div>
 

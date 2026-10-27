@@ -1,7 +1,8 @@
 import type { ReactNode } from "react"
-import { Activity, ArrowDown, ArrowUp, CalendarClock, Gauge, Server, Wallet, type LucideIcon } from "lucide-react"
+import { Activity, CalendarClock, Gauge, Server, Wallet, type LucideIcon } from "lucide-react"
 
 import { Card } from "@/components/ui/card"
+import { FlowTag } from "@/components/Flow"
 import { Glyph } from "@/components/ui/glyph"
 import { percentText } from "@/components/Meter"
 import type { Node } from "@/lib/api"
@@ -80,30 +81,17 @@ function Money({ amount, currency }: { amount: number; currency: string }) {
 }
 
 /**
- * One direction of a flow card: the arrow and its two letters, then the figure
- * with its unit a step down.
+ * One direction of a flow card: the shared label, then the figure with its unit
+ * a step down.
  *
- * RX/TX rather than 入站/出站. Two letters are the same width in every language,
- * they are what the labels on a switch port already say, and the arrow in front
- * of them carries the meaning for anyone who has never met the abbreviation --
- * which is the trade this page makes everywhere: an icon is free, a word is not.
- * The colours are the ones the rest of the page uses for the same two
- * directions, emerald down and blue up.
+ * RX/TX rather than 入站/出站, and the colours emerald down and blue up -- see
+ * FlowTag, where both are written once for the whole page.
  */
 function Flow({ dir, text }: { dir: "rx" | "tx"; text: string }) {
   const [value, unit] = splitUnit(text)
-  const down = dir === "rx"
   return (
     <>
-      <span
-        className={cn(
-          "flex items-center gap-1 text-2xs font-semibold tracking-wide",
-          down ? "text-emerald-600 dark:text-emerald-400" : "text-blue-600 dark:text-blue-400",
-        )}
-      >
-        <Glyph icon={down ? ArrowDown : ArrowUp} box="sm" />
-        {down ? "RX" : "TX"}
-      </span>
+      <FlowTag dir={dir} className="gap-1 tracking-wide" />
       <span className="tnum whitespace-nowrap text-right text-sm font-semibold">
         {value}
         {unit && <span className="ml-1 text-2xs font-normal text-muted-foreground">{unit}</span>}

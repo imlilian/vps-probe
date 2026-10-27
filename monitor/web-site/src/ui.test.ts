@@ -112,7 +112,7 @@ try {
   // A card is a div carrying role="button", so the focus ring the browser would
   // draw for a real button is ours to draw: without it, tabbing through the list
   // moves nothing on screen.
-  assert.match(full, /class="[^"]*focus-visible:ring-\[3px\][^"]*"[^>]*role="button"/)
+  assert.match(full, /class="[^"]*focus-visible:ring-3[^"]*"[^>]*role="button"/)
   console.log("a card carries its figures, its sockets and its price")
 
   // An offline node has no live line, and the hour it last reported would read

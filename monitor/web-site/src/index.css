@@ -196,6 +196,12 @@
      eye should land on, but at 11px it is still legible, and 10px was not. */
   --text-2xs: 0.6875rem;
   --text-2xs--line-height: 1rem;
+  /* A step below `text-2xs`, for the compact card's micro labels and the
+     traffic mode tag: uppercase, letter-spaced or a bare tag of two to four
+     letters, which hold at 10px where a lowercase unit trailing a figure does
+     not -- the case `text-2xs` was sized against. */
+  --text-3xs: 0.625rem;
+  --text-3xs--line-height: 0.75rem;
   /* 416px: the width below which the header's four groups no longer share a
      line with the site name. Tailwind's next stop down is `sm` at 640px, and a
      bar that loses a row at 640 wastes 200px of the range where it fits. */
@@ -227,6 +233,14 @@
 /* Tabular figures keep live numbers from shifting as they update. Shorter than
    the utility, and every figure on this page wants it. */
 .tnum { font-variant-numeric: tabular-nums; }
+
+/* A distribution mark is drawn in its own brand colour, which arrives with the
+   icon from simple-icons rather than from this palette -- the one fill on the
+   page that cannot be a step of it. On the dark side the darkest of the marks
+   (AlmaLinux's black, CentOS's navy) would vanish against the card, so they are
+   mixed toward white there. `--brand` is set per icon, inline. */
+.distro-mark { fill: var(--brand); }
+.dark .distro-mark { fill: color-mix(in oklab, var(--brand) 60%, white); }
 
 /* Everything that moves on this page moves in CSS: the meter's width, a card's
    shadow under the pointer, the skeleton's pulse. (The charts are the one

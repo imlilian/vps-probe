@@ -8,6 +8,22 @@ export function expiryDays(node: Node): number | null {
 }
 
 /**
+ * The price in the pieces a tag draws it in: the mark alone (`$`, not the
+ * locale's `US$`), the amount, and the period as a suffix to hang off it.
+ *
+ * The one formatting decision lives here, so the card's footer and the detail
+ * page's spec cell print the same fact the same way: cents only where there are
+ * cents (`$168`, not `$168.00`), and no suffix for a one-off purchase, which has
+ * a date rather than a period. A machine with no price is `免费` in the value,
+ * with nothing else on the line.
+ */
+export function priceParts(node: Node): { mark: string; value: string; suffix: string | null } {
+  if (!(node.price > 0)) return { mark: "", value: "免费", suffix: null }
+  const { value } = moneyParts(node.price, node.currency, node.price % 1 === 0 ? 0 : 2)
+  return { mark: moneyMark(node.currency), value, suffix: cycleSuffix(node.billing_cycle) }
+}
+
+/**
  * The last line of a card: what it costs per period and what that period buys,
  * laid out the way a price tag is -- `$168/3年 · 剩 981 天`.
  *
@@ -27,11 +43,7 @@ export function expiryDays(node: Node): number | null {
  */
 export function Billing({ node, className }: { node: Node; className?: string }) {
   const days = expiryDays(node)
-  const priced = node.price > 0
-  // Cents only where there are cents: a tag reads `$168/3年`, not `$168.00/3年`,
-  // and `¥29.90` keeps both digits because it has them.
-  const { value } = moneyParts(node.price, node.currency, node.price % 1 === 0 ? 0 : 2)
-  const suffix = priced ? cycleSuffix(node.billing_cycle) : null
+  const { mark, value, suffix } = priceParts(node)
   const expired = days !== null && days < 0
   const tone = expired ? "text-destructive" : days !== null && days <= 7 ? "text-warn" : "text-muted-foreground"
 
@@ -40,14 +52,14 @@ export function Billing({ node, className }: { node: Node; className?: string })
     // is where a price is looked for and where the two densities line up.
     <div className={cn("tnum flex items-baseline justify-end gap-1.5 whitespace-nowrap", className)}>
       <span className="font-semibold text-foreground">
-        {priced ? (
+        {mark ? (
           <>
-            {moneyMark(node.currency)}
+            {mark}
             {value}
             {suffix && <span className="font-medium text-muted-foreground">/{suffix}</span>}
           </>
         ) : (
-          "免费"
+          value
         )}
       </span>
       <span aria-hidden className="text-border">·</span>
