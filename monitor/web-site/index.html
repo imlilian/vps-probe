@@ -3,8 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" href="/favicon.svg" />
+    <!-- The four names the hub stamps with their bytes (frontend.rs ICON_PATHS);
+         keep the paths fixed. `favicon.ico` is what a browser asks for on its
+         own, the PNGs are what a pinned tab and Android read. -->
+    <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="/favicon-192.png" type="image/png" sizes="192x192" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f3f6fa" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#070b13" />
     <title>Monitor</title>
   </head>
   <body>

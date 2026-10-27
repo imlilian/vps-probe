@@ -3,8 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" href="/favicon.svg" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- Absolute `/admin/...` rather than `/`: the panel has its own icon, and
+         the hub stamps exactly these two paths (frontend.rs ICON_PATHS). A
+         relative href would dodge the stamp and leave a stale tab icon. -->
+    <link rel="icon" href="/admin/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="icon" href="/admin/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/admin/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/admin/apple-touch-icon.png" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f3f6fa" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#070b13" />
     <title>Monitor 后台</title>
   </head>
   <body>

@@ -20,6 +20,26 @@ MONITOR_HUB=https://hub.example.com npm run dev
 
 不设 `MONITOR_HUB` 时代理至 `http://127.0.0.1:9911`。
 
+### 不连 hub 的本地预览
+
+改界面时没必要为看一眼效果去部署一台带真实探测的机器：
+
+```bash
+npm run dev:mock          # http://localhost:5173
+```
+
+`dev:mock` 是 `vite --mode mock`：该模式下 `vite.config.ts` 挂上 `dev/mockHub.ts` 这个插件并关掉
+`/api` 代理。插件自己回答 `/api/me`、`/api/nodes`、`/api/nodes/{id}/metrics`，并在 `/api/ws` 上手写
+WebSocket 握手、每 2 秒推一帧——URL 与 JSON 形状都和真 hub 一样，所以 `src/` 里没有一行 demo 分支，
+`npm run build` 的产物也不含 `dev/`。
+
+样例是 8 台节点，各演一种情况：3 个探测的正常机、周期拥塞的坏线、只有 2 个探测、有 5 个探测（只画前
+3 个）、1 个探测、离线、流量将尽、即将到期。数据在 `dev/demoData.ts`，是对时间戳的纯函数：刷新页面
+不会重排历史，轮询时颜色也不会跳动。
+
+`src/lib/demo.contract.ts` 把样例数据与 `Node` 类型绑在一起，页面读到的字段样例若没给，`tsc -b` 直接
+报错——样例不会悄悄落后于页面。
+
 构建产物位于 `dist/`。提交前运行 `npm run build && npm run lint && npm test`。
 
 `npm test` 校验数字格式化、坐标轴与时间刻度，以及实时指标的输入边界。没有测试框架，Node 自己剥掉

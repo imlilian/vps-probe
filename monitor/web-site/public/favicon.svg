@@ -1,10 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
-  <!-- Greyscale like the rest of the theme, and one mid tone rather than a
-       light/dark pair: a favicon sits on browser chrome this page does not
-       pick, so it has to read on both. -->
-  <g fill="#8a8a8a">
-    <rect x="2" y="9" width="3" height="5" rx="1"/>
-    <rect x="6.5" y="5" width="3" height="9" rx="1"/>
-    <rect x="11" y="2" width="3" height="12" rx="1"/>
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#334155"/>
+      <stop offset="1" stop-color="#0F172A"/>
+    </linearGradient>
+    <radialGradient id="hl" cx="0.3" cy="0.22" r="0.9">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="0.6" stop-color="#ffffff" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="36" y="36" width="440" height="440" rx="110" ry="110" fill="url(#bg)"/>
+  <rect x="36" y="36" width="440" height="440" rx="110" ry="110" fill="url(#hl)"/>
+  <g fill="none" stroke="#ffffff" stroke-width="20" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M120,256 L196,256 L224,196 L262,332 L296,224 L322,256 L392,256"/>
   </g>
+  <circle cx="120" cy="256" r="13" fill="#ffffff"/>
 </svg>
