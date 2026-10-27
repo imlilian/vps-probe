@@ -11,69 +11,75 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* The palette is one block, not two. `light-dark()` picks its half from the
-   element's `color-scheme`, which :root leaves as `light dark` -- the system's
-   answer -- and `.light` / `.dark` pin. So the first paint, before any script
-   has run, already follows the system instead of flashing white at a visitor
-   whose desktop is dark; only someone who chose the opposite of their system
-   sees one repaint, when the stored choice is applied. Writing the dark half a
-   second time under a media query would spare that repaint and leave two
-   copies of thirty colours to keep in step.
-   `light-dark()` needs a 2024 browser; the `oklch()` this file used before
-   needed 2023 and none of it ran on anything older. */
+/* Every colour below is a step of Tailwind's own palette, written as the oklch
+   triplet v4 ships and labelled with the step it came from. The reference theme
+   was a build artifact, so its stylesheet had `#ffffffd1` and `#5370952b` where
+   its author had written `bg-white/80` and `border-slate-500/18`; copying those
+   numbers would have copied a decompile. Steps rather than eyeballed values also
+   mean the palette moves as one when a step is changed.
+   `light-dark()` is the one piece that is not a Tailwind idiom: it lets the
+   palette stay a single block, picking a half from `color-scheme`. :root leaves
+   that as `light dark` -- the system's answer -- and `.light` / `.dark` pin it,
+   so the first paint, before any script runs, already matches the desktop
+   instead of flashing white. Writing the dark half again under a media query
+   would spare one repaint for the few who chose the opposite of their system,
+   and cost a second copy of thirty colours to keep in step. */
 :root {
   color-scheme: light dark;
-  --radius: 0.75rem;
+  /* 8px base: rounded-xl is the 12px card, rounded-md the 6px button. */
+  --radius: 0.5rem;
 
-  /* Page, surfaces and text. The card is translucent rather than opaque so the
-     dot grid underneath reads through it, which is what makes a full grid of
-     cards look like one pane of glass instead of a wall of boxes. */
-  --background: light-dark(#f3f6fa, #070b13);
-  --foreground: light-dark(#101a2b, #eaf1fb);
-  --card: light-dark(#ffffffd1, #101929d9);
-  --card-foreground: light-dark(#101a2b, #eaf1fb);
-  --primary: light-dark(#16233a, #eaf1fb);
-  --primary-foreground: light-dark(#f8fafc, #0b1420);
-  --secondary: light-dark(#e9eff8, #1a2437);
-  --secondary-foreground: light-dark(#22304a, #e6eefb);
-  --muted: light-dark(#edf2f8, #162034);
-  --muted-foreground: light-dark(#52647b, #99abc5);
-  --accent: light-dark(#e6eefa, #1c2942);
-  --accent-foreground: light-dark(#16233a, #e6eefb);
-  --destructive: light-dark(#d92d20, #f87171);
-  --border: light-dark(rgb(83 112 149 / 17%), rgb(113 148 194 / 17%));
-  --ring: light-dark(#467ee6, #6b9cff);
+  /* Page, surfaces, text. The card is white at 80% rather than opaque so the
+     dot grid reads through it, which is what makes a grid of cards look like one
+     pane of glass instead of a wall of boxes. */
+  --background: light-dark(oklch(0.968 0.007 247.896), oklch(0.129 0.042 264.695)); /* slate-100 / slate-950 */
+  --foreground: light-dark(oklch(0.208 0.042 265.755), oklch(0.968 0.007 247.896)); /* slate-900 / slate-100 */
+  --card: light-dark(oklch(1 0 0 / 80%), oklch(0.208 0.042 265.755 / 80%)); /* white/80 / slate-900/80 */
+  --card-foreground: light-dark(oklch(0.208 0.042 265.755), oklch(0.968 0.007 247.896));
+  --primary: light-dark(oklch(0.208 0.042 265.755), oklch(0.968 0.007 247.896));
+  --primary-foreground: light-dark(oklch(0.984 0.003 247.858), oklch(0.208 0.042 265.755));
+  --secondary: light-dark(oklch(0.929 0.013 255.508), oklch(0.279 0.041 260.031)); /* slate-200 / slate-800 */
+  --secondary-foreground: light-dark(oklch(0.372 0.044 257.287), oklch(0.968 0.007 247.896));
+  --muted: light-dark(oklch(0.929 0.013 255.508), oklch(0.279 0.041 260.031));
+  /* slate-600, not slate-500: the lighter step is 4.35:1 on this page, under
+     the 4.5 that a 12px label needs. */
+  --muted-foreground: light-dark(oklch(0.446 0.043 257.281), oklch(0.704 0.04 256.788)); /* slate-600 / slate-400 */
+  --accent: light-dark(oklch(0.929 0.013 255.508), oklch(0.279 0.041 260.031));
+  --accent-foreground: light-dark(oklch(0.208 0.042 265.755), oklch(0.968 0.007 247.896));
+  --destructive: light-dark(oklch(0.505 0.213 27.518), oklch(0.704 0.191 22.216)); /* red-700 / red-400 */
+  --border: light-dark(oklch(0.554 0.046 257.417 / 18%), oklch(0.704 0.04 256.788 / 18%)); /* slate-500/400 @ 18% */
+  --ring: light-dark(oklch(0.623 0.214 259.815), oklch(0.707 0.165 254.624)); /* blue-500 / blue-400 */
 
-  /* The one accent. Links, the brand mark, the trend lines: everything that is
-     meant to be looked at first. */
-  --brand: light-dark(#467ee6, #6b9cff);
+  /* The one accent: links, the brand mark, the trend lines. blue-600 clears
+     4.79:1 on this page; blue-500 would not. */
+  --brand: light-dark(oklch(0.546 0.245 262.881), oklch(0.707 0.165 254.624)); /* blue-600 / blue-400 */
 
-  /* Chart series, in the order a reader meets them. One blue for the primary
-     series, then a lighter step, then three hues far enough apart to tell at a
-     glance -- these never carry a threshold, so hue is free to be hue. */
-  --chart-1: light-dark(#467ee6, #6b9cff);
-  --chart-2: light-dark(#7c9ff0, #a9c2ff);
-  --chart-3: light-dark(#17a58c, #37d0b0);
-  --chart-4: light-dark(#a06be0, #c084fc);
-  --chart-5: light-dark(#e0689e, #f472b6);
+  /* Chart series in reading order: one blue, a lighter step of it, then three
+     hues far enough apart to tell at a glance. These never carry a threshold,
+     so hue is free to be hue. */
+  --chart-1: light-dark(oklch(0.546 0.245 262.881), oklch(0.707 0.165 254.624)); /* blue-600 / blue-400 */
+  --chart-2: light-dark(oklch(0.707 0.165 254.624), oklch(0.809 0.105 251.813)); /* blue-400 / blue-300 */
+  --chart-3: light-dark(oklch(0.596 0.145 163.225), oklch(0.765 0.177 163.223)); /* emerald-600 / emerald-400 */
+  --chart-4: light-dark(oklch(0.606 0.25 292.717), oklch(0.702 0.183 293.541)); /* violet-500 / violet-400 */
+  --chart-5: light-dark(oklch(0.656 0.241 354.308), oklch(0.718 0.202 349.761)); /* pink-500 / pink-400 */
 
-  /* Green, amber, red: the three states a reader acts on. Each clears 4.5:1
-     against the card on its own side of the scheme, so a figure tinted with one
-     stays legible. */
-  --ok: light-dark(#0f9f6e, #34d399);
-  --warn: light-dark(#b45309, #fbbf24);
-  --online: light-dark(#0f9f6e, #34d399);
-  --offline: light-dark(#8b9bb0, #64748b);
+  /* Green, amber, red: the three states a reader acts on. Each is the step that
+     clears 4.5:1 as text on its own side -- emerald-700 at 4.9 on the page,
+     amber-700 at 4.59, red-700 at 5.86 -- because a figure tinted for its state
+     is still a figure someone has to read. */
+  --ok: light-dark(oklch(0.508 0.118 165.612), oklch(0.765 0.177 163.223)); /* emerald-700 / emerald-400 */
+  --warn: light-dark(oklch(0.555 0.163 48.998), oklch(0.828 0.189 84.429)); /* amber-700 / amber-400 */
+  --online: light-dark(oklch(0.508 0.118 165.612), oklch(0.765 0.177 163.223));
+  --offline: light-dark(oklch(0.554 0.046 257.417), oklch(0.704 0.04 256.788)); /* slate-500 / slate-400 */
 
-  /* The page's texture. `--dot` is the 28px grid; `--glow` is the cold light
-     spilling from the top edge, which keeps a page of cards from looking flat
-     without being noticed as a gradient. */
-  --dot: light-dark(rgb(83 112 149 / 12%), rgb(113 148 194 / 10%));
-  --glow: light-dark(rgb(70 126 230 / 8%), rgb(107 156 255 / 10%));
+  /* The page's texture: a 28px dot grid, and cold light spilling from the top
+     edge so a page of cards is not flat. Both are the palette at low alpha. */
+  --dot: light-dark(oklch(0.554 0.046 257.417 / 12%), oklch(0.704 0.04 256.788 / 10%));
+  --glow: light-dark(oklch(0.623 0.214 259.815 / 8%), oklch(0.707 0.165 254.624 / 10%));
 }
 
 /* Pinned by `useTheme`. After the :root block so it wins on equal specificity;
-   `color-scheme` is then inherited, and every `light-dark()` below resolves
+   `color-scheme` is then inherited, and every `light-dark()` above resolves
    against it. */
 .light { color-scheme: light; }
 .dark { color-scheme: dark; }
@@ -108,12 +114,13 @@
   --color-warn: var(--warn);
   --color-online: var(--online);
   --color-offline: var(--offline);
+}
 
-  /* Lifted, not darkened: a translucent card over a light page needs its edge
-     drawn rather than its shadow deepened, and the same blur reads on both
-     sides of the scheme. */
-  --shadow-card: 0 1px 2px light-dark(rgb(16 26 43 / 5%), rgb(0 0 0 / 35%)),
-    0 14px 34px -22px light-dark(rgb(16 26 43 / 22%), rgb(0 0 0 / 65%));
+/* The page column, named rather than repeated as an arbitrary value: 1400px
+   sits between `max-w-7xl` (1280) and `max-w-8xl` (1536), and the list page and
+   the bar above it have to agree on it. */
+@theme {
+  --container-page: 1400px;
 }
 
 @layer base {
@@ -123,7 +130,7 @@
   html { scrollbar-gutter: stable; }
   body {
     @apply bg-background text-foreground antialiased;
-    /* The grid is drawn behind the cards and never moves; the glow is a single
+    /* The grid is drawn behind the cards and never moves; the glow is one
        1000px ellipse hanging off the top edge, fixed to the viewport so a
        scrolled page keeps its light. */
     background-image:
@@ -133,13 +140,9 @@
     background-repeat: repeat, no-repeat;
     background-attachment: scroll, fixed;
   }
-  ::selection { background: light-dark(rgb(70 126 230 / 18%), rgb(107 156 255 / 30%)); }
+  ::selection { @apply bg-brand/20; }
 }
 
-/* Tabular figures keep live numbers from shifting as they update. */
+/* Tabular figures keep live numbers from shifting as they update. Shorter than
+   the utility, and every figure on this page wants it. */
 .tnum { font-variant-numeric: tabular-nums; }
-
-/* A figure that updates every few seconds should not fade on every update; only
-   the colour transitions, so a value turning red is noticed and a value merely
-   changing is not. */
-.live { transition: color 150ms ease-out; }

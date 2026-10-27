@@ -18,7 +18,8 @@ export const MODE_LABEL: Record<ThemeMode, string> = {
 const KEY = "theme"
 
 const DARK_MEDIA = matchMedia("(prefers-color-scheme: dark)")
-const THEME_COLOR = { light: "#f3f6fa", dark: "#070b13" }
+// Must match `--background` in index.css: slate-100 and slate-950.
+const THEME_COLOR = { light: "#f1f5f9", dark: "#020618" }
 
 /**
  * Three states rather than two: light, dark, and whatever the system says. The

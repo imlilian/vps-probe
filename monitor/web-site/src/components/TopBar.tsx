@@ -36,7 +36,7 @@ export function TopBar({ siteName, authed, online, total, error, closed, mode, o
 
   return (
     <header className="sticky top-0 z-20 border-b bg-background/70 backdrop-blur-xl">
-      <div className="mx-auto flex h-14 max-w-[1400px] items-center gap-2 px-4 sm:gap-3 sm:px-6">
+      <div className="mx-auto flex h-14 max-w-page items-center gap-2 px-4 sm:gap-3 sm:px-6">
         <button
           className="flex min-w-0 items-center gap-2.5 rounded-md outline-none transition-opacity hover:opacity-80 focus-visible:ring-[3px] focus-visible:ring-ring/50"
           onClick={onHome}
@@ -45,8 +45,8 @@ export function TopBar({ siteName, authed, online, total, error, closed, mode, o
           {/* The hub stamps this path with the icon the operator uploaded, or
               with the theme's own if they uploaded none. */}
           <img src="/favicon.svg" alt="" className="size-7 shrink-0 rounded-lg" />
-          <span className="truncate text-[15px] font-semibold tracking-tight">{siteName}</span>
-          <span className="hidden shrink-0 rounded border px-1.5 py-px text-[10px] font-medium tracking-[0.18em] text-muted-foreground sm:inline">
+          <span className="truncate text-sm font-semibold tracking-tight">{siteName}</span>
+          <span className="hidden shrink-0 rounded border px-1.5 py-0.5 text-xs font-medium tracking-widest text-muted-foreground sm:inline">
             MONITOR
           </span>
         </button>

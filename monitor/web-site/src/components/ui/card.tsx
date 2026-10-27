@@ -9,13 +9,14 @@ import { cn } from "@/lib/utils"
 //
 // The fill is translucent and blurred: the page's dot grid showing through at
 // 12px is what makes a grid of cards read as one surface, and it costs nothing
-// at rest since the layer underneath never moves.
+// at rest since the layer underneath never moves. The shadow is the stock one --
+// on a pale page the edge is drawn by the border, not by a deeper drop.
 function Card({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card"
       className={cn(
-        "flex flex-col gap-6 rounded-xl border bg-card py-6 text-card-foreground shadow-card backdrop-blur-md",
+        "flex flex-col gap-6 rounded-xl border bg-card py-6 text-card-foreground shadow-sm backdrop-blur-md",
         className
       )}
       {...props}

@@ -128,7 +128,7 @@ export default function App() {
         onHome={() => go(null)}
       />
 
-      <main className="mx-auto max-w-[1400px] space-y-5 px-4 py-5 pb-16 sm:px-6">
+      <main className="mx-auto max-w-page space-y-5 px-4 py-5 pb-16 sm:px-6">
         {error && <p className="text-sm text-destructive">{error}</p>}
 
         {open !== null ? (
