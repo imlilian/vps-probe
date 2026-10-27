@@ -87,20 +87,32 @@ const MONEY = new Map<string, Intl.NumberFormat>()
  * so JPY reads JP¥, apart from CNY. Fractions stop at two places, the precision
  * the price is entered in, not at the currency's minor unit: rounding to whole
  * yen would show a price of 0.4 as JP¥0. A formatter costs about 100 µs to
- * build, hence one per currency.
+ * build, hence one per currency and precision.
+ *
+ * `digits` caps the places kept. A price is quoted to the cent; an estimate made
+ * of prorated days claims less than that, and `0` keeps it from reading as if it
+ * were exact. Left out, the currency's own precision applies as before -- yen
+ * still shows none.
  */
-export function money(amount: number, currency: string): string {
+export function money(amount: number, currency: string, digits?: number): string {
   try {
-    let format = MONEY.get(currency)
+    const key = `${currency}:${digits ?? ""}`
+    let format = MONEY.get(key)
     if (!format) {
-      format = new Intl.NumberFormat("zh-CN", { style: "currency", currency, maximumFractionDigits: 2 })
-      MONEY.set(currency, format)
+      // Only the cap: `minimumFractionDigits` stays the currency's, so JPY keeps
+      // its zero places while 1200.5 is still shown as 1,200.5 rather than 1,200.
+      format = new Intl.NumberFormat("zh-CN", {
+        style: "currency",
+        currency,
+        maximumFractionDigits: digits ?? 2,
+      })
+      MONEY.set(key, format)
     }
     return format.format(amount)
   } catch {
     // Intl throws on anything but three letters, which hubs before 1.3.1 stored
     // unchecked when written through the API.
-    return `${currency} ${amount.toFixed(2)}`.trim()
+    return `${currency} ${amount.toFixed(digits ?? 2)}`.trim()
   }
 }
 
@@ -109,10 +121,20 @@ export function money(amount: number, currency: string): string {
 const NAMED_CYCLES: Record<string, number> = { monthly: 1, quarterly: 3, semiannual: 6, yearly: 12, biennial: 24, triennial: 36 }
 const CYCLE_WORDS: Record<number, string> = { 1: "月付", 3: "季付", 6: "半年付", 12: "年付" }
 
+/**
+ * Months in a billing cycle, null where the price is not a subscription: a
+ * one-off purchase, or a name this build does not know. Split out from [cycle]
+ * because a remaining-value estimate needs the number, not the word for it.
+ */
+export function cycleMonths(billing: string): number | null {
+  if (billing === "once") return null
+  return (NAMED_CYCLES[billing] ?? Number(/^(\d+)m$/.exec(billing)?.[1])) || null
+}
+
 /** How a billing cycle reads: 月付, 5 年付, 18 个月付, 一次性. */
 export function cycle(billing: string): string {
   if (billing === "once") return "一次性"
-  const months = NAMED_CYCLES[billing] ?? Number(/^(\d+)m$/.exec(billing)?.[1])
+  const months = cycleMonths(billing)
   if (!months) return billing
   return CYCLE_WORDS[months] ?? (months % 12 ? `${months} 个月付` : `${months / 12} 年付`)
 }

@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react"
 
 import { NodeCard } from "@/components/NodeCard"
-import { Summary } from "@/components/Summary"
+import { Overview } from "@/components/Overview"
 import { TopBar } from "@/components/TopBar"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -210,7 +210,7 @@ function NodeList({ nodes, group, summary, onGroup, onOpen }: {
           ))}
         </div>
       )}
-      {summary && <Summary nodes={shown} />}
+      {summary && <Overview nodes={shown} />}
       {nodes.length === 0 ? (
         <p className="py-16 text-center text-sm text-muted-foreground">还没有节点</p>
       ) : (

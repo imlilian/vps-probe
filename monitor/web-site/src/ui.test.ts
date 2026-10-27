@@ -104,6 +104,21 @@ try {
     globalThis.fetch = asked
   }
   console.log("a card with a history draws three strips of twenty blocks")
+
+  // The overview row: four tiles, and the bill to schedule in the last one.
+  const { Overview } = await server.ssrLoadModule("/src/components/Overview.tsx")
+  const overview = renderToString(createElement(Overview, { nodes: fleet }))
+  for (const want of ["节点", "最忙节点", "流量", "剩余价值", "今日", "实时"]) {
+    assert.ok(overview.includes(want), `missing ${want}`)
+  }
+  // Seven of the eight sample nodes are up. React separates two text children
+  // with a comment, so the pair is matched rather than searched for.
+  assert.match(overview, /7<span[^>]*> \/ <!-- -->8/)
+  // Two sample nodes are inside the month, so the row has to say a bill is
+  // coming rather than that nothing is.
+  assert.match(overview, /台 30 天内到期/)
+  assert.ok(!overview.includes("无近期到期"))
+  console.log("the overview counts the fleet, the peak, the traffic and the bill")
 } finally {
   await server.close()
 }
