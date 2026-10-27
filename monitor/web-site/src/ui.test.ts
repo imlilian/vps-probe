@@ -340,10 +340,12 @@ try {
   // Six cells of the spec sheet, so the hairline grid divides into rows of two,
   // three and six.
   assert.equal(page.match(/bg-card-2 px-3 py-2\.5/g)?.length, 6)
-  // Two views, one of them on, and every window the hub keeps history for.
+  // Two views, one of them on, and every window the hub keeps history for. The
+  // 削峰 chip sits on both tabs now -- CPU is clipped by the same switch -- and
+  // is off at six hours.
   assert.ok(page.includes('aria-label="视图"'))
   assert.equal(page.match(/aria-pressed="true"/g)?.length, 1 + 1, "one view and one range")
-  assert.equal(page.match(/aria-pressed="false"/g)?.length, 1 + (windows(7).length - 1))
+  assert.equal(page.match(/aria-pressed="false"/g)?.length, 1 + (windows(7).length - 1) + 1, "plus 削峰")
   // A public page never shows where the machine is: an operator's `ip` and
   // `hostname` are the panel's.
   const hidden = detail({ node: { ...fleet[1], ip: "203.0.113.7", hostname: "hk-02" } })
@@ -398,10 +400,27 @@ try {
   assert.equal(resources.match(/lg:col-span-2/g)?.length, 1, "the network takes the whole row")
   // The heading figure is the live one, not the window's mean. `percentText`
   // keeps a decimal below ten and drops it above, so the same rule is applied
-  // here rather than reading a round number off the sample.
+  // here rather than reading a round number off the sample. It is a `Figure`:
+  // the figure at full weight, and whatever follows the last space a step down
+  // -- so `7.0 MB/s` splits and `38%` does not, which is the same rule the
+  // cards follow.
   const cpu = sample!.cpu
-  assert.ok(resources.includes(`${cpu < 10 ? cpu.toFixed(1) : cpu.toFixed(0)}%`), "CPU reads its live figure")
-  assert.ok(resources.includes(`负载 ${sample!.load[0].toFixed(2)}`))
+  const cpuFigure = cpu < 10 ? cpu.toFixed(1) : cpu.toFixed(0)
+  assert.match(resources, new RegExp(`font-semibold text-foreground text-sm">${cpuFigure}%<`), "CPU reads its live figure")
+  // React separates the label from the expression that follows it with a comment.
+  assert.ok(resources.includes(`负载 <!-- -->${sample!.load[0].toFixed(2)}`), "load beside it")
+  assert.match(
+    resources,
+    /font-semibold text-foreground text-xs">[\d.]+<\/span><span class="ml-1 text-2xs[^"]*">[KMGT]?B\/s</,
+    "a rate splits into figure and unit",
+  )
+  // One hue per figure, on a tint of itself: the square is a label, not data.
+  assert.equal(resources.match(/grid size-6 shrink-0 place-items-center/g)?.length, 5, "five titled squares")
+  // The chart chrome the five panels share, asserted where it is defined: an
+  // SSR render has no measured width, so recharts emits no surface to look at.
+  const { GRID, CURSOR } = await server.ssrLoadModule("/src/components/ChartPanel.tsx")
+  assert.equal(GRID.strokeDasharray, "2 4", "the grid is a hairline, not a second series")
+  assert.equal(CURSOR.strokeDasharray, "3 3", "and the crosshair is dashed too")
   console.log("the resource grid heads each chart with its live figure")
 } finally {
   await server.close()

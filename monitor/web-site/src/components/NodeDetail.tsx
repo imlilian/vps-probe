@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowDown, ArrowLeft, ArrowUp } from "lucide-react"
+import { ArrowDown, ArrowLeft, ArrowUp, Cable, Cpu, HardDrive, MemoryStick, Network } from "lucide-react"
 import {
   Area, AreaChart, Brush, CartesianGrid, ComposedChart, Line, LineChart, ResponsiveContainer,
   Tooltip, XAxis, YAxis, type DotItemDotProps,
@@ -12,8 +12,9 @@ import { Chip, Segmented } from "@/components/ui/chip"
 import { Glyph } from "@/components/ui/glyph"
 import { Skeleton } from "@/components/ui/skeleton"
 import { priceParts } from "@/components/Billing"
+import { ChartFade, ChartPanel, CURSOR, GRID } from "@/components/ChartPanel"
 import { percentText } from "@/components/Meter"
-import { Country, Status, Uptime } from "@/components/NodeCard"
+import { Country, Figure, Status, Uptime } from "@/components/NodeCard"
 import { api, type Metrics, type Node } from "@/lib/api"
 import { lttb, samples } from "@/lib/downsample"
 import {
@@ -64,10 +65,23 @@ type Loss = Record<string, number>
 
 const AXIS = { stroke: "currentColor", fontSize: 11, tickLine: false, axisLine: false }
 
+/**
+ * `percentText` hands back a node -- a hub with no figure shows an em dash --
+ * while a chart heading carries a figure and its unit as one string, so `Figure`
+ * can split them. Narrowed here once instead of at each of the three headings.
+ */
+const pctText = (pct: number | null) => String(percentText(pct))
+
 // No grow-in animation: it would spend 1.5 s drawing a line across the panel on
 // every range change, on a page meant to be read at a glance, and on the latency
 // chart across seven hundred points per probe.
-const SERIES = { dot: false as const, strokeWidth: 1.5, isAnimationActive: false }
+//
+// `monotone` rather than the default straight segments: at a sample per pixel a
+// polyline is a staircase of one-pixel steps, and the eye reads the steps as
+// jitter on top of the data. The curve passes through every kept sample, so
+// nothing is smoothed away -- `lttb` already decided what survives -- and a null
+// still breaks it: `connectNulls` stays false everywhere it was false.
+const SERIES = { dot: false as const, strokeWidth: 1.5, isAnimationActive: false, type: "monotone" as const }
 
 // A resource chart's series. A row with a gap on either side has no neighbour to
 // draw a line to, so it is marked with a dot; without one, a node back for a
@@ -89,6 +103,10 @@ const RESOURCE_SERIES = {
 // was a white hole in the middle of it.
 const TOOLTIP = {
   isAnimationActive: false,
+  // The crosshair: a hairline at the cursor, so the reader can carry a value
+  // down to the time axis. Dashed and in the border token -- it is a reading
+  // aid, not a third series.
+  cursor: CURSOR,
   labelFormatter: (ts: unknown) => new Date(Number(ts)).toLocaleString("zh-CN"),
   contentStyle: {
     fontSize: 12,
@@ -113,18 +131,21 @@ const TOOLTIP = {
 const VALUE_AXIS = { ...AXIS, width: 68, interval: 0 }
 
 // One style per series: the first five probes take the chart palette's five
-// hues in reading order, and the dash pattern is what tells a series from its
-// neighbours once the list wraps past five -- the sixth probe draws like the
-// first, which the legend chips can hide rather than a sixth style solving.
-// The dashes carry a caveat at the day range: a sample is a pixel apart there,
-// every dash period is shorter than the jitter, and a dotted line reads as
-// texture like a dashed one -- hue is what separates them.
+// hues, all of them solid. The dash only appears once the list wraps past five,
+// where it is the fallback that keeps a sixth series distinguishable from the
+// first -- at a sample a pixel apart, five dash patterns of their own read as
+// five textures rather than five lines, and hue is what separates them.
 const PALETTE = [
   { stroke: "var(--color-chart-1)", dash: undefined },
+  { stroke: "var(--color-chart-3)", dash: undefined },
+  { stroke: "var(--color-chart-2)", dash: undefined },
+  { stroke: "var(--color-chart-4)", dash: undefined },
+  { stroke: "var(--color-chart-5)", dash: undefined },
+  { stroke: "var(--color-chart-1)", dash: "6 3" },
   { stroke: "var(--color-chart-3)", dash: "6 3" },
-  { stroke: "var(--color-chart-2)", dash: "2 3" },
-  { stroke: "var(--color-chart-4)", dash: "10 4 2 4" },
-  { stroke: "var(--color-chart-5)", dash: "1 4" },
+  { stroke: "var(--color-chart-2)", dash: "6 3" },
+  { stroke: "var(--color-chart-4)", dash: "6 3" },
+  { stroke: "var(--color-chart-5)", dash: "6 3" },
 ]
 
 const TABS = [
@@ -155,40 +176,6 @@ type MetricRow = Point & {
   tx: number
   rx_band: [number, number]
   tx_band: [number, number]
-}
-
-/**
- * One chart in its card: a heading, the figure the chart is currently at, and
- * the plot. The value on the right is live -- the node prop behind it updates
- * every two seconds -- so the card answers "and now?" without a trip to the
- * last point of the line.
- *
- * `foot` is for what does not fit the heading, such as the connection legend,
- * which is also its readout.
- *
- * min-w-0 on the card is load-bearing: a grid item refuses to shrink below its
- * content, recharts writes the measured width onto the <svg> as an attribute,
- * and that number then becomes the card's floor. On a phone the chart held the
- * card 47px wider than the column and the page scrolled sideways. `min-w-0` lets
- * the track win, and the container measures again.
- */
-function Panel({ title, note, foot, className, children }: {
-  title: string
-  note?: React.ReactNode
-  foot?: React.ReactNode
-  className?: string
-  children: React.ReactNode
-}) {
-  return (
-    <Card className={cn("min-w-0 gap-0 p-4", className)}>
-      <div className="flex items-baseline justify-between gap-3">
-        <h3 className="min-w-0 truncate text-xs font-medium text-muted-foreground" title={title}>{title}</h3>
-        {note != null && <span className="tnum shrink-0 text-xs font-medium">{note}</span>}
-      </div>
-      <div className="mt-2 h-40 w-full text-muted-foreground">{children}</div>
-      {foot != null && <div className="mt-3">{foot}</div>}
-    </Card>
-  )
 }
 
 /** A legend's sample of the line it names: same hue, same dash. */
@@ -263,7 +250,9 @@ export function Connections({ rows, hours, live }: {
     return null
   }
   return (
-    <Panel
+    <ChartPanel
+      icon={Cable}
+      tone="conns"
       title="连接数"
       foot={
         <div role="group" aria-label="连接数曲线" className="flex flex-wrap gap-1.5">
@@ -287,7 +276,7 @@ export function Connections({ rows, hours, live }: {
     >
       <ResponsiveContainer>
         <LineChart data={rows}>
-          <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
+          <CartesianGrid {...GRID} />
           <XAxis {...timeAxis(rows, hours)} />
           {/* Zero included, unlike the latency axis: a socket count is read as a
               fraction of what the machine usually holds, and a line floating on
@@ -306,7 +295,7 @@ export function Connections({ rows, hours, live }: {
           ))}
         </LineChart>
       </ResponsiveContainer>
-    </Panel>
+    </ChartPanel>
   )
 }
 
@@ -323,13 +312,15 @@ export function Connections({ rows, hours, live }: {
  * the figure read at a glance and its log axis wants the width, while the rest
  * pair up without either one growing a chart taller than the fold.
  */
-export function Resources({ node, points, hours, budget, live }: {
+export function Resources({ node, points, hours, budget, smooth, live }: {
   node: Node
   /** The hub's rows for the window, stamped in seconds. */
   points: Point[]
   hours: number
   /** The most samples the panels can draw: one per CSS pixel they occupy. */
   budget: number
+  /** Whether single-bucket spikes in CPU are clipped to their neighbours. */
+  smooth?: boolean
   /** The node's live sample, for the figures in the panel headings. */
   live?: Metrics | null
 }) {
@@ -362,6 +353,21 @@ export function Resources({ node, points, hours, budget, live }: {
       key in row ? (row as MetricRow)[key] : undefined
     return lttb(broken, budget, [pick("cpu"), pick("rx"), pick("tx")])
   }, [rows, budget])
+  // CPU's line, with single-bucket spikes clipped to what its neighbours agree
+  // on. The window is a duration, not a count, for the same reason as the
+  // latency chart's: a day arrives as three-minute buckets on a desktop and
+  // two-minute ones on a phone, and a fixed count would clip a real spike on
+  // one and keep it on the other.
+  //
+  // A hole is null here rather than absent: `despike` skips nulls and would
+  // otherwise read an undefined as a neighbour. The rows themselves are left
+  // alone -- the other four panels draw from the same array.
+  const plot = useMemo(() => {
+    if (!smooth || chart.length === 0) return chart
+    const values = chart.map((row) => ("cpu" in row ? (row as MetricRow).cpu : null))
+    const cleaned = despike(values, despikeWindow(chart))
+    return chart.map((row, i) => ({ ...row, cpu_s: cleaned[i] ?? undefined }))
+  }, [chart, smooth])
   // The window's highest rate each way, or null from a hub that sends no peak.
   // Tested as a figure rather than as a field: a hub from before the peaks wrote
   // its column default of 0 into every old row, and `?? 0` would then label the
@@ -393,62 +399,81 @@ export function Resources({ node, points, hours, budget, live }: {
 
   return (
     <div className="grid items-start gap-3 lg:grid-cols-2">
-      <Panel
+      <ChartPanel
+        icon={Cpu}
+        tone="cpu"
         title={`CPU · ${node.cpu_cores} 核`}
-        note={live ? `${percentText(live.cpu)} · 负载 ${live.load[0].toFixed(2)}` : undefined}
+        note={live ? (
+          <span className="inline-flex items-baseline gap-1.5">
+            <Figure text={pctText(live.cpu)} />
+            <span className="text-2xs text-muted-foreground">负载 {live.load[0].toFixed(2)}</span>
+          </span>
+        ) : undefined}
       >
         <ResponsiveContainer>
-          <AreaChart data={chart}>
-            <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
-            <XAxis {...timeAxis(chart, hours)} />
+          <AreaChart data={plot}>
+            <ChartFade id="fade-cpu" color="var(--color-chart-1)" />
+            <CartesianGrid {...GRID} />
+            <XAxis {...timeAxis(plot, hours)} />
             <YAxis {...axes.cpu} unit="%" {...VALUE_AXIS} />
             <Tooltip {...TOOLTIP} formatter={(v) => [`${Number(v).toFixed(1)}%`, "CPU"]} />
-            <Area dataKey="cpu" stroke="var(--color-chart-1)" fill="var(--color-chart-1)" fillOpacity={0.15} {...RESOURCE_SERIES} />
+            <Area
+              dataKey={smooth ? "cpu_s" : "cpu"}
+              stroke="var(--color-chart-1)"
+              fill="url(#fade-cpu)"
+              {...RESOURCE_SERIES}
+            />
           </AreaChart>
         </ResponsiveContainer>
-      </Panel>
+      </ChartPanel>
 
       {/* The axis top is the machine's memory, so the line's height is the
           fraction in use whatever range is picked. Tracking the window's own
           maximum, which is what an area chart does by default, puts 127 MB of a
           457 MB box at the top of the panel. The size is in the title because
           the axis top is claiming it. */}
-      <Panel
+      <ChartPanel
+        icon={MemoryStick}
+        tone="mem"
         title={`内存 · ${axisBytes(node.mem_total)}`}
-        note={live ? percentText(percent(live.mem_used, live.mem_total)) : undefined}
+        note={live ? <Figure text={pctText(percent(live.mem_used, live.mem_total))} /> : undefined}
       >
         <ResponsiveContainer>
-          <AreaChart data={chart}>
-            <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
-            <XAxis {...timeAxis(chart, hours)} />
+          <AreaChart data={plot}>
+            <ChartFade id="fade-mem" color="var(--color-chart-4)" />
+            <CartesianGrid {...GRID} />
+            <XAxis {...timeAxis(plot, hours)} />
             <YAxis domain={[0, node.mem_total]} ticks={quarters(node.mem_total)} tickFormatter={axisBytes} {...VALUE_AXIS} />
             <Tooltip {...TOOLTIP} formatter={(v) => bytes(Number(v))} />
-            <Area dataKey="mem_used" name="内存" stroke="var(--color-chart-2)" fill="var(--color-chart-2)" fillOpacity={0.15} {...RESOURCE_SERIES} />
+            <Area dataKey="mem_used" name="内存" stroke="var(--color-chart-4)" fill="url(#fade-mem)" {...RESOURCE_SERIES} />
           </AreaChart>
         </ResponsiveContainer>
-      </Panel>
+      </ChartPanel>
 
       {/* The disk it is filling, for the same reason as memory: a node using
           2.7% of its disk draws along the top of the panel when the axis tracks
           the window's own maximum. */}
-      <Panel
+      <ChartPanel
+        icon={HardDrive}
+        tone="disk"
         title={`硬盘 · ${axisBytes(node.disk_total)}`}
-        note={live ? percentText(percent(live.disk_used, live.disk_total)) : undefined}
+        note={live ? <Figure text={pctText(percent(live.disk_used, live.disk_total))} /> : undefined}
       >
         <ResponsiveContainer>
-          <AreaChart data={chart}>
-            <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
-            <XAxis {...timeAxis(chart, hours)} />
+          <AreaChart data={plot}>
+            <ChartFade id="fade-disk" color="var(--color-chart-2)" />
+            <CartesianGrid {...GRID} />
+            <XAxis {...timeAxis(plot, hours)} />
             <YAxis domain={[0, node.disk_total]} ticks={quarters(node.disk_total)} tickFormatter={axisBytes} {...VALUE_AXIS} />
             <Tooltip {...TOOLTIP} formatter={(v) => bytes(Number(v))} />
-            <Area dataKey="disk_used" name="硬盘" stroke="var(--color-chart-2)" fill="var(--color-chart-2)" fillOpacity={0.15} {...RESOURCE_SERIES} />
+            <Area dataKey="disk_used" name="硬盘" stroke="var(--color-chart-2)" fill="url(#fade-disk)" {...RESOURCE_SERIES} />
           </AreaChart>
         </ResponsiveContainer>
-      </Panel>
+      </ChartPanel>
 
       {/* Drawn only for a hub that sent the counts: an empty panel would claim
           the machine holds no sockets. */}
-      {withConns && <Connections rows={chart} hours={hours} live={live} />}
+      {withConns && <Connections rows={plot} hours={hours} live={live} />}
 
       {/* A rate has no total to be a fraction of, and its range spans orders of
           magnitude: a week of one node runs from 0.2 KB/s idle to bursts of
@@ -469,22 +494,25 @@ export function Resources({ node, points, hours, budget, live }: {
           Full width when the sockets sit beside it, half otherwise: four panels
           pair up into two rows, five leave the rate the odd one out and the
           width its log axis wants. */}
-      <Panel
-        title={peak ? `网络速率 · 峰值 ↓ ${rate(peak.rx)} · ↑ ${rate(peak.tx)}` : "网络速率"}
+      <ChartPanel
+        icon={Network}
+        tone="net"
+        title="网络速率"
+        subtitle={peak ? `峰值 ↓ ${rate(peak.rx)} · ↑ ${rate(peak.tx)}` : undefined}
         note={live ? (
           <span className="inline-flex items-baseline gap-1.5">
             <Glyph icon={ArrowDown} box="sm" />
-            {rate(live.net_rx)}
+            <Figure text={rate(live.net_rx)} size="xs" />
             <Glyph icon={ArrowUp} box="sm" />
-            {rate(live.net_tx)}
+            <Figure text={rate(live.net_tx)} size="xs" />
           </span>
         ) : undefined}
         className={withConns ? "lg:col-span-2" : undefined}
       >
         <ResponsiveContainer>
-          <ComposedChart data={chart}>
-            <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
-            <XAxis {...timeAxis(chart, hours)} />
+          <ComposedChart data={plot}>
+            <CartesianGrid {...GRID} />
+            <XAxis {...timeAxis(plot, hours)} />
             {/* Wider than the other axes: "100 MB/s" is the longest tick in the
                 page, and recharts wraps a label it thinks will not fit -- which
                 put "100" on one line and "MB/s" on the next, half of it clipped
@@ -525,7 +553,7 @@ export function Resources({ node, points, hours, budget, live }: {
             <Line dataKey="tx" name="上行" stroke="var(--color-chart-1)" {...RESOURCE_SERIES} />
           </ComposedChart>
         </ResponsiveContainer>
-      </Panel>
+      </ChartPanel>
     </div>
   )
 }
@@ -591,7 +619,12 @@ export function NodeDetail({ node, historyDays, onBack }: {
   // different questions.
   const [picked, setPicked] = useState({ resources: 6, latency: 6 })
   const hours = picked[tab]
-  const [smooth, setSmooth] = useState(false)
+  // Spikes clipped or not. `null` is "whatever this window wants", which is off
+  // inside a day and on past it: a bucket is minutes wide there, and one bad
+  // minute inside it draws a spike as tall as the day's real shape. Pressing the
+  // chip pins the choice for as long as the page is open.
+  const [smoothPick, setSmoothPick] = useState<boolean | null>(null)
+  const smooth = smoothPick ?? hours >= 24
   // Probes switched off. Hiding a slow one is what makes the fast ones readable,
   // as the axis rescales to what remains.
   const [hiddenProbes, setHiddenProbes] = useState<number[]>([])
@@ -837,15 +870,16 @@ export function NodeDetail({ node, historyDays, onBack }: {
             </Chip>
           ))}
         </div>
-        {tab === "latency" && (
-          <Chip
-            pressed={smooth}
-            onClick={() => setSmooth((on) => !on)}
-            title="按邻点中位数削去单点尖峰"
-          >
-            削峰
-          </Chip>
-        )}
+        {/* One chip for both tabs: CPU is clipped by the same switch, so hiding
+            it on the resources tab would leave a state a reader cannot see or
+            change. */}
+        <Chip
+          pressed={smooth}
+          onClick={() => setSmoothPick(!smooth)}
+          title="按邻点中位数削去单点尖峰"
+        >
+          削峰
+        </Chip>
       </div>
 
       {!data ? (
@@ -895,7 +929,7 @@ export function NodeDetail({ node, historyDays, onBack }: {
                 ) : (
                   <ResponsiveContainer>
                     <ComposedChart data={pingRows}>
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
+                      <CartesianGrid {...GRID} />
                       <XAxis
                         {...timeAxis(
                           pingRows,
@@ -1008,7 +1042,7 @@ export function NodeDetail({ node, historyDays, onBack }: {
       ) : data.metrics.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">这段时间没有历史数据</p>
       ) : (
-        <Resources node={node} points={data.metrics} hours={hours} budget={points} live={m} />
+        <Resources node={node} points={data.metrics} hours={hours} budget={points} smooth={smooth} live={m} />
       )}
     </div>
   )
