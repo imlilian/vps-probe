@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react"
-import { ArrowDown, ArrowUp } from "lucide-react"
+import { ArrowDown, ArrowUp, type LucideIcon } from "lucide-react"
 import {
   siAlmalinux, siAlpinelinux, siArchlinux, siCentos, siDebian, siFedora, siLinux, siOpensuse, siRedhat,
   siRockylinux, siUbuntu, type SimpleIcon,
@@ -7,10 +7,11 @@ import {
 
 import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
+import { Glyph } from "@/components/ui/glyph"
 import { Meter } from "@/components/Meter"
 import { PingPanel } from "@/components/PingPanel"
 import type { Node } from "@/lib/api"
-import { bytes, cpuName, cycle, daysUntil, FOREVER, money, osName, pair, percent, rate, sinceSeen, uptime } from "@/lib/format"
+import { bytes, cpuName, cycle, daysUntil, FOREVER, money, osName, pair, percent, rate, sinceSeen, splitUnit, uptime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
 // Emitted as files and fetched on first use, so a page carries only the flags its
@@ -174,6 +175,24 @@ function Count({ value, label }: { value: number | undefined; label: string }) {
   )
 }
 
+/**
+ * Throughput in one direction, set the way a count is: arrow, figure, then the
+ * unit a step smaller and muted. Left as one string, `39.6 MB/s` is three things
+ * at one weight, and the row above `412 TCP` reads as if it were a different
+ * component -- it is not, it is the same rule about which half of a measurement
+ * the eye came for.
+ */
+function Speed({ icon, value }: { icon: LucideIcon; value: string }) {
+  const [figure, unit] = splitUnit(value)
+  return (
+    <span className="tnum inline-flex items-baseline gap-1">
+      <Glyph icon={icon} box="sm" className="self-center" />
+      <span className="text-sm font-medium">{figure}</span>
+      {unit && <span className="text-2xs text-muted-foreground">{unit}</span>}
+    </span>
+  )
+}
+
 export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
   const m = node.metrics
   // Load against the core count it competes for, so one number says whether the
@@ -250,14 +269,8 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
               it measures. */}
           <div className="mt-4 space-y-2.5 border-t pt-3">
             <div className="flex items-baseline justify-between gap-3">
-              <span className="tnum inline-flex items-baseline gap-1 text-xs text-muted-foreground">
-                <ArrowDown className="size-3 self-center" />
-                <b className="text-sm font-medium text-foreground">{m ? rate(m.net_rx) : "—"}</b>
-              </span>
-              <span className="tnum inline-flex items-baseline gap-1 text-xs text-muted-foreground">
-                <ArrowUp className="size-3 self-center" />
-                <b className="text-sm font-medium text-foreground">{m ? rate(m.net_tx) : "—"}</b>
-              </span>
+              <Speed icon={ArrowDown} value={m ? rate(m.net_rx) : "—"} />
+              <Speed icon={ArrowUp} value={m ? rate(m.net_tx) : "—"} />
             </div>
             <Meter
               label="本月流量"

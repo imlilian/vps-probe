@@ -4,8 +4,8 @@
 //
 // Nothing imports it, so the bundle never includes it.
 import {
-  axisBytes, axisTop, bytes, cpuName, cycle, daysUntil, despike, money, osName, pair, percent, quarters,
-  RATE_FLOOR, rateAxis, sinceSeen, tickClock, timeTicks, uptime, windows, withGaps,
+  axisBytes, axisTop, bytes, cpuName, cycle, daysUntil, despike, money, moneyParts, osName, pair, percent,
+  quarters, RATE_FLOOR, rateAxis, sinceSeen, splitUnit, tickClock, timeTicks, uptime, windows, withGaps,
 } from "./format.ts"
 
 let failed = 0
@@ -186,6 +186,23 @@ eq(money(100, "HKD"), "HK$100.00", "港币同样符号在前")
 eq(money(1200, "JPY"), "JP¥1,200", "日元不带小数，与人民币分开")
 eq(money(1200.5, "JPY"), "JP¥1,200.5", "日元填了小数照实显示，不取整")
 eq(money(100, "港币"), "港币 100.00", "旧 hub 存下的非法代码不抛错")
+
+// 拆开是为了把符号排成单位：符号跟着数字走，不跟着数字一样大
+eq(moneyParts(795, "CNY", 0), { symbol: "¥", value: "795" }, "人民币拆出符号")
+eq(moneyParts(1200, "JPY"), { symbol: "JP¥", value: "1,200" }, "日元符号连同 JP 一起拆出")
+eq(moneyParts(12.5, "USD"), { symbol: "US$", value: "12.50" }, "美元符号是三位")
+eq(moneyParts(100, "港币"), { symbol: "", value: "港币 100.00" }, "拆不开的代码留在数字上")
+// 拆分后拼回去必须还是那一串：格式化口径没有跟着改
+eq(["CNY", "USD", "JPY"].map((c) => {
+  const { symbol, value } = moneyParts(1234.5, c)
+  return `${symbol}${value}`.trim()
+}), ["CNY", "USD", "JPY"].map((c) => money(1234.5, c)), "拆开再拼回等于不拆")
+
+// 「115 GB」拆成数字与单位，单位才能排小一号
+eq(splitUnit("115 GB"), ["115", "GB"], "字节数与单位")
+eq(splitUnit("39.6 MB/s"), ["39.6", "MB/s"], "速率带斜杠也算单位")
+eq(splitUnit("0 B"), ["0", "B"], "零字节")
+eq(splitUnit("—"), ["—", ""], "没有单位的一个横杠")
 
 eq(osName("Debian GNU/Linux 12 (bookworm)"), "Debian 12", "发行版名去掉代号")
 eq(cpuName("Intel(R) Xeon(R) CPU E5-2680 8-Core Processor"), "Intel Xeon E5-2680", "CPU 名去掉商标和核数")

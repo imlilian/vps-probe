@@ -95,25 +95,62 @@ const MONEY = new Map<string, Intl.NumberFormat>()
  * still shows none.
  */
 export function money(amount: number, currency: string, digits?: number): string {
+  const format = moneyFormat(currency, digits)
+  return format ? format.format(amount) : `${currency} ${amount.toFixed(digits ?? 2)}`.trim()
+}
+
+function moneyFormat(currency: string, digits?: number): Intl.NumberFormat | null {
+  const key = `${currency}:${digits ?? ""}`
+  const cached = MONEY.get(key)
+  if (cached) return cached
   try {
-    const key = `${currency}:${digits ?? ""}`
-    let format = MONEY.get(key)
-    if (!format) {
-      // Only the cap: `minimumFractionDigits` stays the currency's, so JPY keeps
-      // its zero places while 1200.5 is still shown as 1,200.5 rather than 1,200.
-      format = new Intl.NumberFormat("zh-CN", {
-        style: "currency",
-        currency,
-        maximumFractionDigits: digits ?? 2,
-      })
-      MONEY.set(key, format)
-    }
-    return format.format(amount)
+    // Only the cap: `minimumFractionDigits` stays the currency's, so JPY keeps
+    // its zero places while 1200.5 is still shown as 1,200.5 rather than 1,200.
+    const format = new Intl.NumberFormat("zh-CN", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: digits ?? 2,
+    })
+    MONEY.set(key, format)
+    return format
   } catch {
     // Intl throws on anything but three letters, which hubs before 1.3.1 stored
     // unchecked when written through the API.
-    return `${currency} ${amount.toFixed(digits ?? 2)}`.trim()
+    return null
   }
+}
+
+/**
+ * The same price in two pieces, for a figure that sets its mark as a unit: `¥`
+ * at body size beside a 24px `795` reads as a currency, where `¥795` in one size
+ * makes the mark as loud as the amount and, in a column of them, as wide. The
+ * currency code is the mark where the locale has no symbol -- Intl emits SGD as
+ * the currency part -- and an unparseable code stays on the figure, since there
+ * is nothing to split.
+ *
+ * A negative amount keeps its sign on the figure: nothing here shows one, and
+ * `¥-12` would be the alternative.
+ */
+export function moneyParts(amount: number, currency: string, digits?: number): { symbol: string; value: string } {
+  const format = moneyFormat(currency, digits)
+  if (!format) return { symbol: "", value: `${currency} ${amount.toFixed(digits ?? 2)}`.trim() }
+  let symbol = ""
+  let value = ""
+  for (const part of format.formatToParts(amount)) {
+    if (part.type === "currency") symbol += part.value
+    else value += part.value
+  }
+  return { symbol, value: value.trim() }
+}
+
+/**
+ * "115 GB" as the figure and the unit it carries, so the unit can be set a step
+ * smaller -- the rule the socket counts already follow. A string with no unit,
+ * like the dash of a node that never reported, stands on its own.
+ */
+export function splitUnit(text: string): [string, string] {
+  const at = text.lastIndexOf(" ")
+  return at < 0 ? [text, ""] : [text.slice(0, at), text.slice(at + 1)]
 }
 
 // Hub 1.3.0 and earlier store only these names; later hubs store any other

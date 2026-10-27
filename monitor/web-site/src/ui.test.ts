@@ -71,6 +71,9 @@ try {
   // The latency panel mounts its own container, so its presence is what says a
   // card with a line behind it will draw one.
   assert.ok(full.includes("@container"))
+  // Throughput follows the same rule, so the row above the counts is not a
+  // different kind of thing: the figure at full weight, the unit a step down.
+  assert.match(full, /text-sm font-medium">[\d.]+<\/span><span class="text-2xs[^"]*">(?:B|KB|MB|GB)\/s</)
   console.log("a card carries its figures, its sockets and its price")
 
   // An offline node has no live line, and the hour it last reported would read
@@ -118,6 +121,15 @@ try {
   // coming rather than that nothing is.
   assert.match(overview, /台 30 天内到期/)
   assert.ok(!overview.includes("无近期到期"))
+  // Traffic is a table now: the arrows head the rows, the two time scopes the
+  // columns, and the present comes first because it is the one that is moving.
+  assert.ok(overview.indexOf("实时") < overview.indexOf("今日"), "实时 heads the first column")
+  // Every unit in that table is set a step down from its figure, which is what
+  // keeps "39.6 MB/s" from reading as one word.
+  assert.match(overview, /text-2xs[^"]*">MB\/s</)
+  assert.match(overview, /text-2xs[^"]*">GB</)
+  // The currency mark is a unit too, and separated from the figure by a gap.
+  assert.match(overview, /text-base[^"]*">¥</)
   console.log("the overview counts the fleet, the peak, the traffic and the bill")
 } finally {
   await server.close()

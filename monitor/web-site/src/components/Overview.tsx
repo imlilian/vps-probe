@@ -1,17 +1,18 @@
 import type { ReactNode } from "react"
-import { Activity, ArrowDown, ArrowDownUp, ArrowUp, Server, Wallet } from "lucide-react"
+import { Activity, ArrowDown, ArrowDownUp, ArrowUp, Server, Wallet, type LucideIcon } from "lucide-react"
 
 import { Card } from "@/components/ui/card"
+import { Glyph } from "@/components/ui/glyph"
 import type { Node } from "@/lib/api"
-import { bytes, money, rate } from "@/lib/format"
+import { bytes, moneyParts, rate, splitUnit } from "@/lib/format"
 import { busiest, due, fleet, live, residual, today, type Due } from "@/lib/stats"
 import { cn } from "@/lib/utils"
 
-function Tile({ icon: Icon, label, children }: { icon: typeof Server; label: string; children: ReactNode }) {
+function Tile({ icon, label, children }: { icon: LucideIcon; label: string; children: ReactNode }) {
   return (
     <Card className="@container gap-0 p-3.5">
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Icon className="size-3.5" />
+        <Glyph icon={icon} />
         {label}
       </div>
       {children}
@@ -36,23 +37,38 @@ function Note({ children, tone, title }: { children: ReactNode; tone?: string; t
   )
 }
 
-/** In and out, the form every traffic figure takes on this page. */
-function Flow({ rx, tx, format }: { rx: number; tx: number; format: (n: number) => string }) {
-  const lane = (Icon: typeof ArrowDown, value: number) => (
-    <span className="inline-flex items-baseline gap-1">
-      <Icon className="size-3 self-center text-muted-foreground" />
-      <span className="font-medium">{format(value)}</span>
-    </span>
-  )
-  // Two lanes side by side once the tile is wide enough, stacked when it is not:
-  // in a phone's two-column row a card is about 158px, where "↓ 12.3 GB" twice
-  // over does not fit. Querying the card rather than the viewport keeps this
-  // right in the four-column desktop row too, where a card is a third as wide as
-  // the screen.
+/**
+ * The estimate, split: the mark as a unit, the amount as the figure. Set as one
+ * string, `¥795` makes the symbol as loud and as wide as the number it belongs
+ * to, which is the mistake `TCP 412` makes in the other direction; the gap
+ * between them is what keeps the pair from reading as three digits and a stray
+ * character.
+ */
+function Money({ amount, currency }: { amount: number; currency: string }) {
+  const { symbol, value } = moneyParts(amount, currency, 0)
   return (
-    <span className="tnum flex flex-col gap-0.5 text-sm @[200px]:flex-row @[200px]:items-baseline @[200px]:gap-3">
-      {lane(ArrowDown, rx)}
-      {lane(ArrowUp, tx)}
+    <Big>
+      <span className="mr-1.5 text-base font-medium text-muted-foreground">{symbol}</span>
+      {value}
+    </Big>
+  )
+}
+
+/**
+ * One figure of the traffic table: the number leads, its unit trails a step
+ * smaller, as in the socket counts.
+ *
+ * The value steps down a size on a narrow card because four of these have to
+ * share a phone's 130px of card. `whitespace-nowrap` is the part that matters:
+ * the space in "39.6 MB/s" is a line-break opportunity, and a 158px card took
+ * it, leaving the figure on one line and `MB/s` on the next.
+ */
+function Cell({ text }: { text: string }) {
+  const [value, unit] = splitUnit(text)
+  return (
+    <span className="tnum whitespace-nowrap text-right">
+      <span className="text-xs font-medium text-foreground @[220px]:text-sm">{value}</span>
+      {unit && <span className="ml-1 text-2xs text-muted-foreground">{unit}</span>}
     </span>
   )
 }
@@ -106,21 +122,39 @@ export function Overview({ nodes }: { nodes: Node[] }) {
         </Note>
       </Tile>
 
+      {/* Two directions read across two time scopes: what the line is doing
+          now, and what it has moved since midnight. The arrows head the rows
+          rather than the columns because they are the same in every language --
+          a row of 实时／今日 would be the words the eye skips anyway, and their
+          width changes with the translation while the figures cannot.
+
+          Four figures and two units in a phone's 130px is the tightest thing on
+          this page: measured in a system sans face it comes to 130px, exactly
+          what the card has, and the columns are content-sized, so any face a
+          shade wider spends the card's right padding rather than the page's. */}
       <Tile icon={ArrowDownUp} label="流量">
-        <div className="mt-1.5 space-y-1">
-          <div className="flex items-baseline gap-2">
-            <span className="w-7 shrink-0 text-2xs text-muted-foreground">今日</span>
-            <Flow rx={day.rx} tx={day.tx} format={bytes} />
-          </div>
-          <div className="flex items-baseline gap-2">
-            <span className="w-7 shrink-0 text-2xs text-muted-foreground">实时</span>
-            <Flow rx={now.rx} tx={now.tx} format={rate} />
-          </div>
+        <div className="mt-1.5 grid grid-cols-[auto_1fr_1fr] items-baseline gap-x-1 gap-y-1 text-2xs text-muted-foreground">
+          <span />
+          <span className="text-right">实时</span>
+          <span className="text-right">今日</span>
+
+          <Glyph icon={ArrowDown} box="sm" className="self-center" />
+          <Cell text={rate(now.rx)} />
+          <Cell text={bytes(day.rx)} />
+
+          <Glyph icon={ArrowUp} box="sm" className="self-center" />
+          <Cell text={rate(now.tx)} />
+          <Cell text={bytes(day.tx)} />
         </div>
       </Tile>
 
       <Tile icon={Wallet} label="剩余价值">
-        <Big>{worth ? money(worth.amount, worth.currency, 0) : "—"}</Big>
+        {/* Centred between the label and the note rather than pinned under the
+            label: one figure is all this card has, and hung from the top it left
+            a hole in the middle of a card that its neighbour made tall. */}
+        <div className="flex flex-1 items-center">
+          {worth ? <Money amount={worth.amount} currency={worth.currency} /> : <Big>—</Big>}
+        </div>
         <Note
           tone={ending.tone}
           title={worth ? `${worth.counted} 台计入，${worth.left} 台无价格或无到期日` : "没有可估价的机器"}
