@@ -11,6 +11,7 @@ import type { Node } from "@/lib/api"
 import { AXIS, GRID, LINE, TOOLTIP, probeStyle, timeAxis } from "@/lib/chart"
 import { pingWindows } from "@/lib/format"
 import { usePingHistory } from "@/lib/history"
+import { useInView } from "@/lib/useInView"
 import { buildLatencyRows, probeStats, type ProbeSeries } from "@/lib/pingDetail"
 import { cn } from "@/lib/utils"
 
@@ -30,7 +31,8 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
   const [hidden, setHidden] = useState<number[]>([])
   const [smoothPick, setSmoothPick] = useState<boolean | null>(null)
   const smooth = smoothPick ?? hours >= 24
-  const answer = usePingHistory(node.id, hours)
+  const [sectionRef, seen] = useInView<HTMLElement>()
+  const answer = usePingHistory(node.id, hours, seen)
   const stepMs = (answer.step || 60) * 1000
 
   const series = useMemo<ProbeSeries[]>(() => {
@@ -59,7 +61,7 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
   }
 
   return (
-    <section className="space-y-3" aria-label="网络延迟">
+    <section ref={sectionRef} className="space-y-3" aria-label="网络延迟">
       <RangeBar
         ranges={ranges}
         value={hours}
@@ -73,7 +75,13 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
         )}
       />
 
-      {answer.loading && (
+      {!seen && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-20" />)}
+        </div>
+      )}
+
+      {seen && answer.loading && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-20" />)}
         </div>
@@ -115,7 +123,7 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
                   key={stat.id}
                   type="button"
                   aria-pressed={on}
-                  aria-label={`${stat.name}，${on ? "已显示" : "已隐藏"}；平均延迟 ${ms(stat.avg)}，丢包 ${lossText(stat.loss)}`}
+                  aria-label={`${stat.name}，${on ? "已显示" : "已隐藏"}；平均延迟 ${ms(stat.avg)}，P50 ${ms(stat.p50)}，P99 ${ms(stat.p99)}，丢包 ${lossText(stat.loss)}，样本 ${stat.samples}`}
                   onClick={() => toggle(stat.id)}
                   className={cn(
                     "group flex min-w-48 flex-1 items-center gap-3 rounded-lg bg-card-2 p-3 text-left transition-opacity hover:bg-card",
@@ -157,7 +165,7 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
                 平滑峰值
               </Chip>
             </div>
-            <div className="mt-2 h-80 text-muted-foreground">
+            <div className="mt-2 h-80 text-muted-foreground" role="img" aria-label="延迟曲线">
               {shown.length === 0 ? (
                 <p className="py-8 text-center text-sm">没有选中任何探测</p>
               ) : (

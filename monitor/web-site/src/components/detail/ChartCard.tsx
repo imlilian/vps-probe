@@ -50,7 +50,7 @@ export function ChartCard({ icon: Icon, tone, title, subtitle, note, legend, cla
       </div>
       {/* The plot gets 192px, 224px past xl: a longer aspect than 160px gave,
           and enough to keep a 30-day line from reading as a texture. */}
-      <div className="mt-2 h-48 w-full text-muted-foreground xl:h-56">{children}</div>
+      <div className="mt-2 h-48 w-full text-muted-foreground xl:h-56" role="img" aria-label={`${title} 曲线`}>{children}</div>
       {legend != null && <div className="mt-2">{legend}</div>}
     </Card>
   )

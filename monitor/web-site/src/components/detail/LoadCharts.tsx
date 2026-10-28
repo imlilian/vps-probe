@@ -4,7 +4,7 @@ import {
   Area, CartesianGrid, ComposedChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts"
 
-import { ChartFade } from "@/components/ChartPanel"
+import { ChartFade } from "./ChartFade"
 import type { Node } from "@/lib/api"
 import {
   AXIS, COLOR, CPU_TICKS, DERIVED, GRID, LINE, PEAK, TOOLTIP, VALUE_AXIS, timeAxis,

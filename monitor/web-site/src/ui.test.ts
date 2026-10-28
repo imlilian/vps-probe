@@ -340,7 +340,7 @@ try {
   // The detail page's shell: who the machine is, what it is, and which views it
   // offers. Its charts need effects and a viewport, so what is asserted here is
   // everything above them -- and the one field that must not be here at all.
-  const { NodeDetail, Connections } = await server.ssrLoadModule("/src/components/NodeDetail.tsx")
+  const { NodeDetail } = await server.ssrLoadModule("/src/components/NodeDetail.tsx")
   const detail = (props: Record<string, unknown> = {}) =>
     renderToString(createElement(NodeDetail, {
       node: fleet[1], historyDays: 7, onBack() {}, ...props,
@@ -418,62 +418,7 @@ try {
   assert.equal(load.match(/data-slot="card"/g)?.length, 6, "six load panels")
   console.log("the load grid draws six panels with their legends")
 
-  // The connection panel on its own, fed the hub's own answer: the legend is the
-  // readout, so each chip carries the count the machine is at now -- the live
-  // sample where the hub pushed one, the newest bucket otherwise.
-  const sample = fleet[1]!.metrics
-  const metricsRows = history(2, "metrics", 6, 60, 1_790_000_000_000).metrics as
-    { ts: number; tcp: number; udp: number; procs: number }[]
-  const conns = renderToString(createElement(Connections, {
-    rows: metricsRows.map((r) => ({ ...r, ts: r.ts * 1_000 })),
-    hours: 6,
-    live: sample,
-  }))
-  for (const want of ["连接数", "TCP", "UDP", "进程"]) {
-    assert.ok(conns.includes(want), `missing ${want}`)
-  }
-  for (const [label, value] of [["TCP", sample!.tcp], ["UDP", sample!.udp], ["进程", sample!.procs]] as const) {
-    assert.ok(conns.includes(`>${value}</span>`), `${label} shows its live count`)
-  }
-  assert.equal(conns.match(/aria-pressed="true"/g)?.length, 3, "three series, all drawn")
-  console.log("the connection panel counts sockets and processes, and names them")
-
-  // The resource grid: five panels, one of them spanning both columns, each
-  // heading carrying the figure the node is at right now -- the node prop
-  // updates every two seconds, the history behind the line does not.
-  const { Resources } = await server.ssrLoadModule("/src/components/NodeDetail.tsx")
-  const resources = renderToString(createElement(Resources, {
-    node: fleet[1], points: history(2, "metrics", 6, 60, 1_790_000_000_000).metrics, hours: 6, budget: 600, live: sample,
-  }))
-  for (const want of ["CPU · 4 核", "内存 ·", "硬盘 ·", "连接数", "网络速率"]) {
-    assert.ok(resources.includes(want), `missing ${want}`)
-  }
-  assert.equal(resources.match(/data-slot="card"/g)?.length, 5, "four resources and the sockets")
-  assert.equal(resources.match(/lg:col-span-2/g)?.length, 1, "the network takes the whole row")
-  // The heading figure is the live one, not the window's mean. `percentText`
-  // keeps a decimal below ten and drops it above, so the same rule is applied
-  // here rather than reading a round number off the sample. It is a `Figure`:
-  // the figure at full weight, and whatever follows the last space a step down
-  // -- so `7.0 MB/s` splits and `38%` does not, which is the same rule the
-  // cards follow.
-  const cpu = sample!.cpu
-  const cpuFigure = cpu < 10 ? cpu.toFixed(1) : cpu.toFixed(0)
-  assert.match(resources, new RegExp(`font-semibold text-foreground text-sm">${cpuFigure}%<`), "CPU reads its live figure")
-  // React separates the label from the expression that follows it with a comment.
-  assert.ok(resources.includes(`负载 <!-- -->${sample!.load[0].toFixed(2)}`), "load beside it")
-  assert.match(
-    resources,
-    /font-semibold text-foreground text-xs">[\d.]+<\/span><span class="ml-1 text-2xs[^"]*">[KMGT]?B\/s</,
-    "a rate splits into figure and unit",
-  )
-  // One hue per figure, on a tint of itself: the square is a label, not data.
-  assert.equal(resources.match(/grid shrink-0 place-items-center rounded-md/g)?.length, 5, "five titled squares")
-  // The chart chrome the five panels share, asserted where it is defined: an
-  // SSR render has no measured width, so recharts emits no surface to look at.
-  const { GRID, CURSOR } = await server.ssrLoadModule("/src/components/ChartPanel.tsx")
-  assert.equal(GRID.strokeDasharray, "2 4", "the grid is a hairline, not a second series")
-  assert.equal(CURSOR.strokeDasharray, "3 3", "and the crosshair is dashed too")
-  console.log("the resource grid heads each chart with its live figure")
+  console.log("the detail page composes header, figures, info, load and latency")
 } finally {
   await server.close()
 }
