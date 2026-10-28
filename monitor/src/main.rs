@@ -533,10 +533,15 @@ fn raise_open_files() {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("MONITOR_LOG")
-                .unwrap_or_else(|_| "monitor_hub=info,tower_http=warn".into()),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("MONITOR_LOG").unwrap_or_else(|_| {
+            // `probe_hub`, the crate's own name, not the binary's file name.
+            // EnvFilter is authoritative for targets no directive names, so a
+            // stale spelling here drops every line the hub writes about
+            // itself -- sign-in rejections, the open-file limit, the
+            // plain-HTTP warning -- and leaves only tower's. Nothing said so:
+            // the process starts, serves, and looks healthy.
+            "probe_hub=info,tower_http=warn".into()
+        }))
         .init();
 
     let args = parse_args()?;
