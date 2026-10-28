@@ -411,7 +411,7 @@ async fn serve(app: Shared, node_id: i64, ip: String, mut socket: WebSocket) -> 
     heartbeat.tick().await; // The first tick completes immediately.
     let mut last_frame = Instant::now();
     // The address this node's country is still owed for. A lookup that failed,
-    // or was held back by `ASKED`, is retried on the heartbeat while the
+    // or was held back by `claim`, is retried on the heartbeat while the
     // connection lasts; otherwise it would wait for the next hello, which on a
     // steady link is days away.
     let mut owed: Option<String> = None;
@@ -635,39 +635,129 @@ fn country_source(ip: &str, ipv4: &str, ipv6: &str) -> Option<IpAddr> {
     [v4, v6, ip.parse().ok()].into_iter().flatten().find(|a| public(*a))
 }
 
-/// When each node was last looked up.
+/// The gap before a second question about a node, and the widest one there is.
+const LOCATE_BASE: Duration = Duration::from_secs(3_600);
+const LOCATE_CEILING: Duration = Duration::from_secs(24 * 3_600);
+
+/// How long to leave a node alone after `fails` questions in a row came back
+/// with no country: an hour, then two, then six, then a day.
+///
+/// The service is free and its allowance counts against the hub's own address,
+/// so it is shared by every node: one machine that will never resolve must not
+/// spend what the nine that would resolve need. Nothing is ever given up on --
+/// an address the service could not place today is one it may place tomorrow,
+/// and a node that gave up would keep an empty column until it moved or the hub
+/// restarted. The ceiling is what makes that affordable: a hopeless node costs
+/// one request a day rather than twenty-four.
+fn retry_delay(fails: u32) -> Duration {
+    match fails {
+        0 | 1 => LOCATE_BASE,
+        2 => LOCATE_BASE * 2,
+        3 => LOCATE_BASE * 6,
+        _ => LOCATE_CEILING,
+    }
+}
+
+/// What the hub remembers about one node's country questions.
+#[derive(Debug)]
+struct Attempt {
+    /// The address the last question was asked for.
+    source: String,
+    /// Questions in a row that came back with nothing, for that address.
+    fails: u32,
+    /// The earliest moment the next question may be asked.
+    due: Instant,
+}
+
+/// When each node may next be asked about, by node id.
 ///
 /// A failed lookup leaves the country column empty, so `save_facts` continues to
 /// report the node as owed one and `serve` retries it on every heartbeat; without
-/// this gate that would be an outbound request every 30 seconds, and an agent
+/// this record that would be an outbound request every 30 seconds, and an agent
 /// reconnecting every few seconds -- a poor link, or two machines sharing a
-/// token -- would add one per reconnect. Keying on the address cannot cover the
-/// second case: the two machines report different addresses, so every reconnect
-/// reads as a new question and the gate never closes. Only the time is
-/// recorded. The cost is that a node genuinely changing address within the hour
-/// acquires its badge when the hour is up, and an empty column is already a
-/// permitted state. Returning to the last address answered before the current
-/// one is not a change: `Db::save_facts` restores that answer without asking.
-static ASKED: OnceLock<Mutex<HashMap<i64, Instant>>> = OnceLock::new();
-const LOCATE_RETRY: Duration = Duration::from_secs(3_600);
+/// token -- would add one per reconnect. The window therefore keys on time
+/// rather than on the address: those two machines report different addresses,
+/// and a gate that read each reconnect as a new question would never close.
+///
+/// A node that genuinely moves is the other side of that. Its new address
+/// inherits the window but not the ladder -- see `claim` -- so the worst a move
+/// waits is one base hour rather than the day a stale ladder would impose.
+/// Returning to the address answered before the current one is not a change:
+/// `Db::save_facts` restores that answer without asking.
+static ATTEMPTS: OnceLock<Mutex<HashMap<i64, Attempt>>> = OnceLock::new();
 
-/// Resolves a node's lookup address (see [`country_source`]) to a country, at
-/// most once per hour per node.
+/// Books a question about `source` and says whether to ask it now.
+///
+/// The window is armed as if the question about to be asked will fail, so a
+/// request in flight cannot be joined by a second one however long it takes; the
+/// answer then either lengthens the ladder (`record_failure`) or forgets the node
+/// (`record_success`).
+fn claim(attempts: &mut HashMap<i64, Attempt>, node_id: i64, source: &str, now: Instant) -> bool {
+    let ask = |fails: u32, due: Instant| Attempt { source: source.to_owned(), fails, due };
+    let Some(known) = attempts.get(&node_id) else {
+        attempts.insert(node_id, ask(0, now + retry_delay(1)));
+        return true;
+    };
+    if now < known.due {
+        // Still inside the window, so no question now. The one thing that can
+        // move the window is an address it was not asked for: that address does
+        // not inherit the ladder -- a day of backoff is a statement about an
+        // address, and this is a different one -- but it does inherit the wait
+        // itself, so two addresses cannot take turns asking every few seconds.
+        if known.source != source {
+            let due = known.due.min(now + LOCATE_BASE);
+            attempts.insert(node_id, ask(0, due));
+        }
+        return false;
+    }
+    // Past the window. A different address starts the ladder over: the failures
+    // belonged to the address that left.
+    let fails = if known.source == source { known.fails } else { 0 };
+    attempts.insert(node_id, ask(fails, now + retry_delay(fails + 1)));
+    true
+}
+
+/// Counts a question that came back with no country, and widens the gap.
+///
+/// Only for the address that was asked: a move recorded while the request was in
+/// flight starts its own ladder from zero, and this failure is not its to carry.
+fn record_failure(attempts: &mut HashMap<i64, Attempt>, node_id: i64, source: &str, now: Instant) {
+    let Some(known) = attempts.get_mut(&node_id) else { return };
+    if known.source != source {
+        return;
+    }
+    known.fails += 1;
+    known.due = now + retry_delay(known.fails);
+}
+
+/// Forgets a node once its country has landed, so the next question -- a move, a
+/// restore, a hub that stored the answer for a moment and lost it -- starts at
+/// the top of the ladder rather than continuing it.
+fn record_success(attempts: &mut HashMap<i64, Attempt>, node_id: i64, source: &str) {
+    if attempts.get(&node_id).is_some_and(|known| known.source == source) {
+        attempts.remove(&node_id);
+    }
+}
+
+/// Resolves a node's lookup address (see [`country_source`]) to a country, no
+/// sooner than `claim` allows.
 ///
 /// The answer comes from a third party and appears on the public page, so only
 /// two ASCII letters are ever stored. Anything else -- an outage, a rate limit,
 /// an address the service cannot place -- leaves the column empty and the badge
-/// hidden until the retry.
+/// hidden until the retry: an hour at first, then two, six, and a day.
 ///
-/// ponytail: no backoff beyond that one window, and the record is per process. A
-/// hub restart repeats the lookup once per node.
+/// ponytail: the record is per process, so a hub restart asks once per node
+/// again, and nothing prunes it -- a node deleted in the panel keeps a few dozen
+/// bytes here until the next restart.
 fn locate(app: Shared, node_id: i64, source: String) {
-    let mut asked = ASKED.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
-    if asked.get(&node_id).is_some_and(|at| at.elapsed() < LOCATE_RETRY) {
-        return;
+    let attempts = ATTEMPTS.get_or_init(Default::default);
+    {
+        let mut held = attempts.lock().unwrap_or_else(|e| e.into_inner());
+        if !claim(&mut held, node_id, &source, Instant::now()) {
+            return;
+        }
     }
-    asked.insert(node_id, Instant::now());
-    drop(asked);
 
     tokio::spawn(async move {
         let lookup = async {
@@ -676,15 +766,35 @@ fn locate(app: Shared, node_id: i64, source: String) {
         };
         let cc = match lookup.await {
             Ok(body) => body.trim().to_ascii_uppercase(),
-            Err(e) => return debug!("node {node_id}: no country for {source}: {e:#}"),
+            Err(e) => {
+                debug!("node {node_id}: no country for {source}: {e:#}");
+                return settle(node_id, &source, false);
+            }
         };
         if cc.len() != 2 || !cc.bytes().all(|b| b.is_ascii_uppercase()) {
-            return debug!("node {node_id}: {source} resolved to no country");
+            debug!("node {node_id}: {source} resolved to no country");
+            return settle(node_id, &source, false);
         }
         if let Err(e) = app.db.set_country(node_id, &cc, &source) {
             warn!("node {node_id}: storing country {cc} failed: {e:#}");
         }
+        // Answered either way: the ladder is about the service, and a failure to
+        // store is the hub's own. Forgetting the node leaves the next heartbeat
+        // to ask again, which is what a local fault wants.
+        settle(node_id, &source, true);
     });
+}
+
+/// Files the outcome of the question `locate` asked: a country landed forgets
+/// the node, its absence widens the gap.
+fn settle(node_id: i64, source: &str, landed: bool) {
+    let attempts = ATTEMPTS.get_or_init(Default::default);
+    let mut held = attempts.lock().unwrap_or_else(|e| e.into_inner());
+    if landed {
+        record_success(&mut held, node_id, source);
+    } else {
+        record_failure(&mut held, node_id, source, Instant::now());
+    }
 }
 
 /// Figures `api::node_view` fills into `metrics` from the traffic row. They never
@@ -1563,6 +1673,112 @@ mod tests {
         assert_eq!(hello("198.51.100.88", "192.168.1.5", "2409:8a1e::5"), None);
         assert_eq!(app.db.node(id).unwrap().unwrap().country, "CN", "a new proxy exit changes nothing");
         assert_eq!(hello("192.168.1.2", "192.168.1.5", ""), None);
+    }
+
+    /// A node that never resolves is asked about less and less often, and never
+    /// abandoned: the ladder climbs to a day and stays there.
+    #[test]
+    fn a_node_that_never_resolves_is_asked_less_and_less_often() {
+        let base = Instant::now();
+        let at = |secs: u64| base + Duration::from_secs(secs);
+        let mut attempts: HashMap<i64, Attempt> = HashMap::new();
+        let src = "198.51.100.4";
+
+        assert!(claim(&mut attempts, 1, src, at(0)));
+        assert_eq!(attempts[&1].due, at(3_600), "the first question arms an hour");
+        // One question at a time: a request still in flight cannot be joined,
+        // however long it takes to come back.
+        assert!(!claim(&mut attempts, 1, src, at(1)));
+        assert!(!claim(&mut attempts, 1, src, at(3_599)));
+
+        record_failure(&mut attempts, 1, src, at(2));
+        assert_eq!(attempts[&1].due, at(3_602), "an hour after the failure, not the request");
+
+        assert!(!claim(&mut attempts, 1, src, at(3_601)));
+        assert!(claim(&mut attempts, 1, src, at(3_602)));
+        assert_eq!(attempts[&1].due, at(10_802), "two hours for the second");
+
+        record_failure(&mut attempts, 1, src, at(3_603));
+        assert!(claim(&mut attempts, 1, src, at(10_803)));
+        assert_eq!(attempts[&1].due, at(32_403), "six for the third");
+
+        record_failure(&mut attempts, 1, src, at(10_805));
+        assert!(claim(&mut attempts, 1, src, at(32_405)));
+        assert_eq!(attempts[&1].due, at(118_805), "and a day for the fourth");
+
+        // No giving up: from here a hopeless node costs one request a day.
+        record_failure(&mut attempts, 1, src, at(32_407));
+        assert!(claim(&mut attempts, 1, src, at(118_807)));
+        assert_eq!(attempts[&1].due, at(205_207), "still a day, not a week");
+    }
+
+    /// The point of the ladder, simulated on the heartbeat's cadence: a node that
+    /// never resolves costs four questions in its first day and one a day after
+    /// that. Forty such nodes come to about forty a day, against a free
+    /// allowance of a thousand for every node together; the fixed hourly retry
+    /// this replaced came to 960.
+    #[test]
+    fn a_hopeless_node_settles_at_one_request_a_day() {
+        let base = Instant::now();
+        let at = |secs: u64| base + Duration::from_secs(secs);
+        let mut attempts: HashMap<i64, Attempt> = HashMap::new();
+        let (heartbeat, day, week) = (30_u64, 86_400_u64, 7 * 86_400_u64);
+        let mut asked = Vec::new();
+        let mut secs = 0;
+        while secs <= week {
+            // Each heartbeat asks for the node whose country is still owed; the
+            // gate is what decides whether that becomes a request.
+            if claim(&mut attempts, 1, "198.51.100.4", at(secs)) {
+                asked.push(secs);
+                // Its failure comes back within the same window, which is the
+                // worst case for the count below.
+                record_failure(&mut attempts, 1, "198.51.100.4", at(secs));
+            }
+            secs += heartbeat;
+        }
+
+        assert_eq!(
+            asked,
+            vec![0, 3_600, 10_800, 32_400, 118_800, 205_200, 291_600, 378_000, 464_400, 550_800]
+        );
+        assert_eq!(asked.iter().filter(|s| **s < day).count(), 4, "four in the first day");
+        let steady: Vec<u64> = asked.windows(2).skip(3).map(|w| w[1] - w[0]).collect();
+        assert!(steady.iter().all(|gap| *gap == day), "and a day apart from then on: {steady:?}");
+    }
+
+    /// An address that moves starts the ladder over: it waits out the window
+    /// already running -- two addresses must not take turns asking every few
+    /// seconds -- but never the day a stale ladder would have imposed.
+    #[test]
+    fn a_new_address_does_not_inherit_the_old_one_s_backoff() {
+        let base = Instant::now();
+        let at = |secs: u64| base + Duration::from_secs(secs);
+        let mut attempts: HashMap<i64, Attempt> = HashMap::new();
+        // Four failures, so the node sits a day away for the address that left.
+        attempts.insert(1, Attempt { source: "198.51.100.4".into(), fails: 4, due: at(86_400) });
+
+        assert!(!claim(&mut attempts, 1, "2409:8a1e::5", at(3_600)), "the move does not skip the wait");
+        assert_eq!(attempts[&1].due, at(7_200), "one hour behind the last question, not a day");
+        assert_eq!(attempts[&1].fails, 0, "the ladder belonged to the address that left");
+
+        // Back and forth between the two: the window holds either way.
+        assert!(!claim(&mut attempts, 1, "198.51.100.4", at(3_601)));
+        assert_eq!(attempts[&1].due, at(7_200));
+        assert!(!claim(&mut attempts, 1, "2409:8a1e::5", at(7_199)));
+        assert!(claim(&mut attempts, 1, "2409:8a1e::5", at(7_200)));
+
+        // A failure for the address that left, reported late, is not the new
+        // address's to carry.
+        record_failure(&mut attempts, 1, "198.51.100.4", at(7_500));
+        assert_eq!(attempts[&1].fails, 0);
+
+        // A country landing forgets the node, and only for the address that
+        // answered: the newer question keeps its window.
+        record_success(&mut attempts, 1, "198.51.100.4");
+        assert!(attempts.contains_key(&1), "a stale answer leaves the newer question alone");
+        record_success(&mut attempts, 1, "2409:8a1e::5");
+        assert!(!attempts.contains_key(&1), "the next question starts from the top");
+        assert!(claim(&mut attempts, 1, "2409:8a1e::5", at(7_201)));
     }
 
     #[test]
