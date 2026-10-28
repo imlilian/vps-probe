@@ -374,10 +374,10 @@ try {
   assert.match(page, /aria-label="切换节点"/, "and the fleet switcher is a select")
   assert.ok(page.includes(">在线<"), "the state is one word")
   assert.ok(!page.includes(">在线 9"), "and the uptime is not glued to it")
-  // Two controls are on: the resources view and the six-hour range. The star,
-  // the other view, the other three ranges and the 削峰 chip are off.
+  // Two controls are on: the load range and the latency range. The star, the
+  // live chip, the other ranges and the two 削峰 chips are off.
   assert.equal(page.match(/aria-pressed="true"/g)?.length, 2, "one view and one range")
-  assert.equal(page.match(/aria-pressed="false"/g)?.length, 6, "star + other view + other ranges + 削峰")
+  assert.equal(page.match(/aria-pressed="false"/g)?.length, 10, "star + live + other ranges + two 削峰")
   // A public page never shows where the machine is: an operator's `ip` and
   // `hostname` are the panel's.
   const hidden = detail({ node: { ...fleet[1], ip: "203.0.113.7", hostname: "hk-02" } })
@@ -401,6 +401,22 @@ try {
   // The flag is the node's identity here, as on the card.
   assert.match(page, /alt="HK"/)
   console.log("the detail page names the machine, shows sixteen figures and hides its address")
+
+  // The load grid: six panels over one hub answer. The headers and legends are
+  // what SSR can prove; the measured plot needs a browser.
+  const { LoadCharts } = await server.ssrLoadModule("/src/components/detail/LoadCharts.tsx")
+  const loadRows = history(2, "metrics", 6, 60, 1_790_000_000_000).metrics
+  const load = renderToString(createElement(LoadCharts, {
+    node: fleet[1], rows: loadRows, hours: 6, smooth: false,
+  }))
+  for (const want of ["CPU", "内存与 Swap", "磁盘", "实时网络", "网络连接", "进程"]) {
+    assert.ok(load.includes(`>${want}</h3>`), `missing the ${want} panel`)
+  }
+  for (const want of ["RAM 总量", "Swap 总量", "下载峰值", "上传峰值", "TCP", "UDP"]) {
+    assert.ok(load.includes(want), `missing the ${want} legend`)
+  }
+  assert.equal(load.match(/data-slot="card"/g)?.length, 6, "six load panels")
+  console.log("the load grid draws six panels with their legends")
 
   // The connection panel on its own, fed the hub's own answer: the legend is the
   // readout, so each chip carries the count the machine is at now -- the live

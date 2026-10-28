@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 
 import type { Node } from "./api.ts"
 import {
-  detailBytes, detailRate, expiryDays, expiryTone, monthlyCost, peakOf,
+  detailBytes, detailRate, diskForecast, expiryDays, expiryTone, monthlyCost, peakOf,
   remainingTime, remainingValue, trafficPct, trafficUsed, uptimeLong,
 } from "./detail.ts"
 
@@ -59,5 +59,12 @@ assert.equal(peakOf([{ net_rx: 0, net_tx: 0 }]), null, "全零不是峰值")
 assert.equal(expiryTone(null), "muted", "无到期 muted")
 assert.equal(expiryTone(400), "ok", "正常 ok")
 assert.equal(expiryTone(-1), "danger", "过期 danger")
+
+const day = 86_400_000
+assert.equal(diskForecast([{ ts: 0, disk_used: 10 }, { ts: day, disk_used: 20 }], 100), "预计 8 天后满", "线性写满预测")
+assert.equal(diskForecast([{ ts: 0, disk_used: 20 }, { ts: day, disk_used: 20 }], 100), null, "不涨不预测")
+assert.equal(diskForecast([{ ts: 0, disk_used: 101 }, { ts: day, disk_used: 102 }], 100), "预计已满", "已满")
+assert.equal(diskForecast([{ ts: 0, disk_used: 10 }], 100), null, "一个点不够")
+assert.equal(diskForecast([{ ts: 0, disk_used: 10 }, { ts: day, disk_used: 20 }], 0), null, "没有总量不预测")
 
 console.log("detail arithmetic: costs, expiry, traffic, uptime, bytes, peaks")

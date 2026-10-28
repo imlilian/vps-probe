@@ -121,3 +121,26 @@ export function peakOf(rows: PeakRow[]): { rx: number; tx: number } | null {
   }
   return rx > 0 || tx > 0 ? { rx, tx } : null
 }
+
+/**
+ * A linear projection of the disk filling, for the disk card's subtitle. It is
+ * deliberately quiet: a flat or falling disk has no forecast, and a projection
+ * past ten years is not a fact worth printing. The rows are the window the
+ * chart is already showing; no extra request is made.
+ */
+export function diskForecast(rows: { ts: number; disk_used?: number }[], total: number): string | null {
+  if (!(total > 0)) return null
+  const points = rows.filter((row): row is { ts: number; disk_used: number } => typeof row.disk_used === "number")
+  if (points.length < 2) return null
+  const first = points[0]
+  const last = points[points.length - 1]
+  const days = (last.ts - first.ts) / 86_400_000
+  if (!(days > 0)) return null
+  const slope = (last.disk_used - first.disk_used) / days
+  if (!(slope > 0)) return null
+  const remaining = total - last.disk_used
+  if (remaining <= 0) return "预计已满"
+  const left = remaining / slope
+  if (!Number.isFinite(left) || left > 3_650) return null
+  return `预计 ${Math.ceil(left)} 天后满`
+}

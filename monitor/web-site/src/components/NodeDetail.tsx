@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { ArrowDown, ArrowUp, Cable, Cpu, HardDrive, MemoryStick, Network } from "lucide-react"
 import {
   Area, AreaChart, Brush, CartesianGrid, ComposedChart, Line, LineChart, ResponsiveContainer,
@@ -6,20 +6,22 @@ import {
 } from "recharts"
 
 import { Card } from "@/components/ui/card"
-import { Chip, Segmented } from "@/components/ui/chip"
+import { Chip } from "@/components/ui/chip"
 import { Glyph } from "@/components/ui/glyph"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ChartFade, ChartPanel, CURSOR, GRID } from "@/components/ChartPanel"
 import { DetailHeader } from "@/components/detail/DetailHeader"
+import { LoadSection } from "@/components/detail/LoadSection"
 import { InfoGrid } from "@/components/detail/InfoGrid"
 import { MetricGrid } from "@/components/detail/MetricGrid"
 import { percentText } from "@/components/Meter"
 import { Figure } from "@/components/NodeCard"
 import { api, type Metrics, type Node } from "@/lib/api"
-import { lttb, samples } from "@/lib/downsample"
+import { pointsFor } from "@/lib/sampling"
+import { lttb } from "@/lib/downsample"
 import {
   axisBytes, axisTop, bytes, clockFor, despike,
-  percent, quarters, rate, RATE_FLOOR, rateAxis, tickClock, timeTicks, windows, withGaps,
+  percent, pingWindows, quarters, rate, RATE_FLOOR, rateAxis, tickClock, timeTicks, withGaps,
 } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
@@ -148,16 +150,6 @@ const PALETTE = [
   { stroke: "var(--color-chart-5)", dash: "6 3" },
 ]
 
-const TABS = [
-  { value: "resources", label: "资源" },
-  { value: "latency", label: "网络延迟" },
-] as const
-type Tab = (typeof TABS)[number]["value"]
-
-// Sockets in one hue each and processes in a dash: a process count is not a
-// socket, and on the same axis it would otherwise read as a third kind of
-// connection. The hues are the chart palette's first three steps, so a spike in
-// one of these panels is the same blue as a spike in CPU's.
 const CONNS = [
   { key: "tcp", label: "TCP", stroke: "var(--color-chart-1)", dash: undefined },
   { key: "udp", label: "UDP", stroke: "var(--color-chart-3)", dash: undefined },
@@ -559,21 +551,6 @@ export function Resources({ node, points, hours, budget, smooth, live }: {
 }
 
 /**
- * How many samples this screen can draw without aliasing: one per CSS pixel of
- * the panel the line lands in. The arithmetic -- and why device pixels were the
- * wrong unit -- is in `lib/downsample.ts`, where it can be tested without a
- * browser.
- *
- * Two columns from `lg` on the resource tab (Tailwind's 64rem) and one for the
- * latency chart, which spans the page. The 12 is `gap-3` in the grid below --
- * the only number here that lives somewhere else.
- */
-function budget(width: number, tab: Tab): number {
-  const cols = tab === "resources" && width >= 1024 ? 2 : 1
-  return samples(width, cols, 12, tab === "latency" ? 1200 : 720)
-}
-
-/**
  * `historyDays` is how far back the hub keeps history. Both tabs offer every
  * window within it: up to a day each ping is on the latency chart, and past it a
  * point is a bucket -- its median, the range its answers spanned and the share
@@ -587,16 +564,11 @@ export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
   nodes?: Node[]
   onOpen?: (id: number) => void
 }) {
-  const ranges = useMemo(() => windows(historyDays), [historyDays])
-  const [tab, setTab] = useState<Tab>("resources")
-  // Each tab keeps its own range: a 7-day trend and a 1-hour trace answer
-  // different questions.
-  const [picked, setPicked] = useState({ resources: 6, latency: 6 })
-  const hours = picked[tab]
+  const ranges = useMemo(() => pingWindows(historyDays), [historyDays])
+  const [hours, setHours] = useState(6)
   // Spikes clipped or not. `null` is "whatever this window wants", which is off
   // inside a day and on past it: a bucket is minutes wide there, and one bad
-  // minute inside it draws a spike as tall as the day's real shape. Pressing the
-  // chip pins the choice for as long as the page is open.
+  // minute inside it draws a spike as tall as the day's real shape.
   const [smoothPick, setSmoothPick] = useState<boolean | null>(null)
   const smooth = smoothPick ?? hours >= 24
   // Probes switched off. Hiding a slow one is what makes the fast ones readable,
@@ -604,77 +576,35 @@ export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
   const [hiddenProbes, setHiddenProbes] = useState<number[]>([])
   const [data, setData] = useState<{ metrics: Point[]; ping: PingPoint[]; probes: Probes; loss?: Loss } | null>(null)
   // Retained rather than folded into an empty result: a refused request and an
-  // empty window are different answers, and the hub has reason to refuse this one
-  // -- it caps how many history windows it builds concurrently. Rendered as an
-  // empty window, a 503 would misdirect the reader.
+  // empty window are different answers.
   const [failed, setFailed] = useState("")
   const [attempt, setAttempt] = useState(0)
-  // Where the brush has been dragged, so the axis reticks for the visible span
-  // rather than retaining the whole window's ticks.
+  // Where the brush has been dragged, so the axis reticks for the visible span.
   const [zoom, setZoom] = useState<[number, number] | null>(null)
   // Where the chart begins on screen, so its height can occupy the remainder.
   const [chartTop, setChartTop] = useState(0)
-  // The width the charts are drawn in, measured rather than derived from the
-  // viewport: the page column is what the panels get, and it is narrower than
-  // the window at every size. Zero until layout has run, which is also what
-  // keeps the first request from being made with a guess.
-  const page = useRef<HTMLDivElement | null>(null)
-  const [width, setWidth] = useState(0)
-  useLayoutEffect(() => {
-    const el = page.current
-    if (!el) return
-    const measure = () => {
-      // Sub-pixel jitter is not a resize: a scrollbar appearing and going again
-      // would otherwise restate the question and refetch the window.
-      const next = Math.round(el.clientWidth)
-      setWidth((was) => (was === next ? was : next))
-    }
-    measure()
-    const seen = new ResizeObserver(measure)
-    seen.observe(el)
-    return () => seen.disconnect()
-  }, [])
-
-  const points = budget(width, tab)
-  // What the last request asked, so a window that is merely being dragged wider
-  // is not refetched for a handful of pixels. Keyed on the question as well: a
-  // new tab, range or retry always asks, whatever the width says.
-  const asked = useRef({ key: "", points: 0 })
+  // Latency keeps its own time bucket (1m/2m/5m/10m/1h/4h); the load half has
+  // already moved to `LoadSection` and the same table.
+  const points = pointsFor(hours, "ping")
 
   useEffect(() => {
-    // Nothing measured yet: the effect runs again once it has been.
-    if (!points) return
-    const key = `${node.id}:${hours}:${tab}:${attempt}`
-    const same = key === asked.current.key
-    // A 15% swing is more than a redraw: at this density it is the difference
-    // between two columns and one, or a window on another monitor.
-    if (same && Math.abs(points - asked.current.points) < asked.current.points * 0.15) return
-    asked.current = { key, points }
-
     let active = true
-    // A different question must not keep drawing the old answer while the new
-    // one is in flight. A narrower screen asking for the same window is not a
-    // different question, and blanking the charts for it would flash the page.
-    if (!same) {
-      // oxlint-disable-next-line react/set-state-in-effect
-      setData(null)
-      // oxlint-disable-next-line react/set-state-in-effect
-      setZoom(null)
-      // oxlint-disable-next-line react/set-state-in-effect
-      setFailed("")
-    }
-    const series = tab === "latency" ? "ping" : "metrics"
+    // oxlint-disable-next-line react/set-state-in-effect
+    setData(null)
+    // oxlint-disable-next-line react/set-state-in-effect
+    setZoom(null)
+    // oxlint-disable-next-line react/set-state-in-effect
+    setFailed("")
     api<{ metrics: Point[]; ping: PingPoint[]; probes: Probes; loss?: Loss }>(
-      `/nodes/${node.id}/metrics?hours=${hours}&points=${points}&series=${series}`,
+      `/nodes/${node.id}/metrics?hours=${hours}&points=${points}&series=ping`,
     )
       .then((next) => { if (active) setData(next) })
       .catch((e: Error) => {
         if (active) { setFailed(e.message); setData({ metrics: [], ping: [], probes: {} }) }
       })
     return () => { active = false }
-  }, [node.id, hours, tab, attempt, points])
+  }, [node.id, hours, attempt, points])
 
-  const m = node.metrics
   // One series per probe that reported, labelled from the names the samples
   // arrived with. Memoised, as is the chart's row set below: the node prop
   // changes every few seconds as live metrics arrive, and rebuilding the chart's
@@ -758,7 +688,7 @@ export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
   }, [pingSeries])
 
   return (
-    <div ref={page} className="space-y-4">
+    <div className="space-y-4">
       <DetailHeader node={node} nodes={nodes} onBack={onBack} onOpen={onOpen} />
 
       {/* The note the operator wrote for visitors. The hub has sent this on
@@ -773,29 +703,27 @@ export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
       <MetricGrid node={node} />
       <InfoGrid node={node} />
 
-      {/* One row, two ends: what is drawn on the left, how it is drawn on the
-          right. The ranges wrap under the views on a phone rather than pushing
-          the switch off the row, and the whole line keeps its place between the
-          cards above and the charts below. */}
+      <LoadSection node={node} historyDays={historyDays} />
+
+      {/* The latency half is still the pre-rebuild chart; P5 replaces it with
+          the task cards and the fixed 320px plot. Its range already asks the
+          hub for a time bucket, not a pixel count. */}
+      <section className="space-y-3" aria-label="网络延迟">
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-          <Segmented label="视图" value={tab} items={TABS} onChange={setTab} />
-          {/* Wraps on a screen narrower than the seven windows of a year. */}
+          <h3 className="text-sm font-medium">网络延迟</h3>
           <div role="group" aria-label="时间范围" className="flex flex-wrap gap-1">
             {ranges.map((r) => (
               <Chip
                 key={r.hours}
                 pressed={hours === r.hours}
-                onClick={() => setPicked((all) => ({ ...all, [tab]: r.hours }))}
+                onClick={() => setHours(r.hours)}
               >
                 {r.label}
               </Chip>
             ))}
           </div>
         </div>
-        {/* One chip for both tabs: CPU is clipped by the same switch, so hiding
-            it on the resources tab would leave a state a reader cannot see or
-            change. */}
         <Chip
           pressed={smooth}
           onClick={() => setSmoothPick(!smooth)}
@@ -818,10 +746,9 @@ export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
             onClick={() => setAttempt((n) => n + 1)}
           >重试</button>
         </p>
-      ) : tab === "latency" ? (
-        pingSeries.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">这段时间没有延迟数据</p>
-        ) : (
+      ) : pingSeries.length === 0 ? (
+        <p className="py-8 text-center text-sm text-muted-foreground">这段时间没有延迟数据</p>
+      ) : (
           <Card className="min-w-0 gap-0 p-4">
             {/* An explicit pixel height on the column, so the chart can be
                 `flex-1` within it while the legend takes what it needs: four
@@ -961,12 +888,8 @@ export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
               )}
             </div>
           </Card>
-        )
-      ) : data.metrics.length === 0 ? (
-        <p className="py-8 text-center text-sm text-muted-foreground">这段时间没有历史数据</p>
-      ) : (
-        <Resources node={node} points={data.metrics} hours={hours} budget={points} smooth={smooth} live={m} />
       )}
+      </section>
     </div>
   )
 }

@@ -1,7 +1,91 @@
-import { useEffect, useState } from "react"
+import { useEffect, useLayoutEffect, useState } from "react"
+import type { RefObject } from "react"
 
 import { api } from "./api.ts"
 import { peakOf, type PeakRow } from "./detail.ts"
+import { pointsFor } from "./sampling.ts"
+
+/** A metrics row as the charts draw it: epoch milliseconds, bucket means and maxima. */
+export type MetricPoint = {
+  ts: number
+  cpu: number
+  mem_used: number
+  disk_used: number
+  net_rx: number
+  net_tx: number
+  /** The bucket's highest rate, never below its mean; absent from old hubs. */
+  net_rx_max?: number
+  net_tx_max?: number
+  /** The bucket's highest CPU; absent before hub 1.3.2. */
+  cpu_max?: number
+  swap_used?: number
+  tcp?: number
+  udp?: number
+  procs?: number
+  /** Minutes with a row in the bucket; absent from old hubs. */
+  minutes?: number
+}
+
+type HistoryState = {
+  key: string
+  rows: MetricPoint[]
+  step: number
+  error: string
+}
+
+/**
+ * The load charts' history: one request per range, with the point count coming
+ * from the time-bucket table rather than the panel's pixel width. The hub does
+ * the aggregation; this hook only carries the rows and distinguishes "loading"
+ * from "loaded empty".
+ */
+export function useMetricsHistory(nodeId: number, hours: number, enabled = true) {
+  const key = enabled && hours > 0 ? `${nodeId}:${hours}:${pointsFor(hours, "load")}` : ""
+  const [state, setState] = useState<HistoryState>({ key: "", rows: [], step: 0, error: "" })
+  const [attempt, setAttempt] = useState(0)
+
+  useEffect(() => {
+    if (!enabled || hours <= 0) return
+    let active = true
+    api<{ metrics?: MetricPoint[]; step?: number }>(
+      `/nodes/${nodeId}/metrics?hours=${hours}&points=${pointsFor(hours, "load")}&series=metrics`,
+    )
+      .then((answer) => {
+        const rows = (answer.metrics ?? []).map((row) => ({ ...row, ts: row.ts * 1000 }))
+        if (active) setState({ key, rows, step: answer.step ?? 0, error: "" })
+      })
+      .catch((error: Error) => {
+        if (active) setState({ key, rows: [], step: 0, error: error.message })
+      })
+    return () => {
+      active = false
+    }
+  }, [nodeId, hours, enabled, key, attempt])
+
+  const data = state.key === key ? state : null
+  return {
+    rows: data?.rows ?? [],
+    step: data?.step ?? 0,
+    error: data?.error ?? "",
+    loading: Boolean(enabled && hours > 0 && !data),
+    retry: () => setAttempt((n) => n + 1),
+  }
+}
+
+/** The CSS width of a chart grid, for the render-layer guard (not the request). */
+export function useElementWidth(ref: RefObject<HTMLElement | null>): number {
+  const [width, setWidth] = useState(0)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const measure = () => setWidth(Math.round(el.clientWidth))
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [ref])
+  return width
+}
 
 export type Peak = { rx: number; tx: number }
 
