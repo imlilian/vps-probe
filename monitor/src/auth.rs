@@ -1,7 +1,11 @@
-//! Sessions, the local emergency password, and GitHub single sign-on.
+//! Sessions, the local emergency password, and single sign-on.
 //!
-//! GitHub is the primary sign-in path. The local password exists so that a
-//! broken OAuth app or an unreachable github.com cannot lock the owner out.
+//! Two single sign-on paths sit beside the password and never replace it: GitHub
+//! for the common case, and a standard OIDC provider (Pocket-ID, Authentik,
+//! Authelia, Keycloak) for a self-hosted identity system. Each hides its button
+//! when its settings are empty, so a wrong or unreachable provider costs its own
+//! button and nothing else. The local password exists so that a broken OAuth app
+//! or an unreachable provider cannot lock the owner out.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -16,7 +20,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::Json;
 use chrono::Utc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
@@ -26,6 +30,11 @@ use crate::{App, Shown};
 
 pub const COOKIE: &str = "monitor_session";
 const STATE_COOKIE: &str = "monitor_oauth_state";
+/// The OIDC flow keeps its own pair rather than sharing the one above: a browser
+/// that starts GitHub sign-in and then OIDC would overwrite the first flow's
+/// state, killing a sign-in it had already begun.
+const OIDC_STATE_COOKIE: &str = "monitor_oidc_state";
+const OIDC_VERIFIER_COOKIE: &str = "monitor_oidc_verifier";
 const SESSION_DAYS: i64 = 14;
 /// Failed password attempts allowed per address before it is shut out.
 const MAX_ATTEMPTS: u32 = 5;
@@ -344,6 +353,291 @@ fn clear_state(app: &App, headers: &HeaderMap) -> String {
     set_cookie(STATE_COOKIE, "", 0, app.secure_cookies(headers))
 }
 
+/// The three endpoints of the provider, and nothing else: an id_token is not
+/// verified (see [`oidc_login`]), so no JWKS or issuer field is kept.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Discovery {
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub userinfo_endpoint: String,
+}
+
+/// Picks the three endpoints out of a discovery document. A separate function
+/// because it is the part that can be wrong in ways worth a test: a document
+/// missing one endpoint is refused by name rather than by "missing field ...".
+fn parse_discovery(body: &str) -> Result<Discovery> {
+    #[derive(Deserialize)]
+    struct Document {
+        authorization_endpoint: Option<String>,
+        token_endpoint: Option<String>,
+        userinfo_endpoint: Option<String>,
+    }
+    let document: Document = serde_json::from_str(body)
+        .with_context(|| format!("discovery document: {}", body.chars().take(200).collect::<String>()))
+        .context(Shown("身份系统的配置无法识别，检查 Issuer 是否填的是它的地址".into()))?;
+    let endpoint = |value: Option<String>, name: &str| match value.filter(|v| !v.trim().is_empty()) {
+        Some(value) => Ok(value),
+        None => Err(anyhow!("discovery document has no {name}"))
+            .context(Shown(format!("身份系统的配置里没有 {name}，它可能不是 OIDC 服务"))),
+    };
+    Ok(Discovery {
+        authorization_endpoint: endpoint(document.authorization_endpoint, "authorization_endpoint")?,
+        token_endpoint: endpoint(document.token_endpoint, "token_endpoint")?,
+        userinfo_endpoint: endpoint(document.userinfo_endpoint, "userinfo_endpoint")?,
+    })
+}
+
+/// `BASE64URL-NOPAD(SHA256(verifier))`, the S256 challenge of RFC 7636 §4.2.
+///
+/// The verifier never leaves the hub except back through the browser's own
+/// cookie, which is safe: it is worth nothing without the one-time code, and the
+/// code only ever reaches the hub.
+fn pkce_challenge(verifier: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+/// How long a fetched discovery document is reused. `/api/auth/oidc` answers
+/// anyone, so without this every click would be one outbound request: the hub
+/// would relay a flood at whatever provider it points to.
+const DISCOVERY_TTL: Duration = Duration::from_secs(3_600);
+/// How long a failed fetch is remembered. Long enough to stop a reload loop from
+/// hammering a dead provider; short enough that a provider coming back is picked
+/// up without a restart.
+const DISCOVERY_RETRY: Duration = Duration::from_secs(60);
+
+/// The last answer about one issuer, and when it may be asked again.
+#[derive(Debug)]
+pub struct Cached {
+    /// The issuer this answer belongs to. A different one makes it worthless.
+    issuer: String,
+    /// The document, or `None` when the last fetch failed.
+    discovery: Option<Discovery>,
+    /// The earliest moment another fetch may be made.
+    due: Instant,
+}
+
+/// What the cache says about a request, from [`decide`].
+#[derive(Debug, PartialEq)]
+enum Decision {
+    Fresh,
+    /// Inside a failed fetch's window: no request, no waiting.
+    Wait,
+    Fetch,
+}
+
+/// The cache rule, on its own so a test can hand it a clock instead of waiting an
+/// hour, and so the three branches are readable in one place.
+fn decide(cache: Option<&Cached>, issuer: &str, now: Instant) -> Decision {
+    let Some(cached) = cache else { return Decision::Fetch };
+    if cached.issuer != issuer {
+        return Decision::Fetch;
+    }
+    match (cached.discovery.is_some(), now < cached.due) {
+        // A document still inside its hour.
+        (true, true) => Decision::Fresh,
+        // A failure still inside its minute.
+        (false, true) => Decision::Wait,
+        // Either window has passed.
+        _ => Decision::Fetch,
+    }
+}
+
+/// The provider's endpoints, from the cache when they are still good.
+///
+/// The record is armed pessimistically before the request rather than after it:
+/// a burst of anonymous clicks then produces one outbound request instead of one
+/// each, which is the whole point of caching here. Success replaces the armed
+/// entry with the document and an hour; failure leaves it to expire in a minute.
+pub(crate) async fn discovery_for(app: &App) -> Result<Discovery> {
+    let Some(issuer) = app.db.get("oidc_issuer").filter(|v| !v.trim().is_empty()) else {
+        refuse!("没有配置 OIDC 登录");
+    };
+    // A trailing slash is common (Authentik's issuers end in one) and would
+    // otherwise produce a `//.well-known` path the provider does not serve.
+    let issuer = issuer.trim().trim_end_matches('/').to_owned();
+    let now = Instant::now();
+    {
+        let mut cache = app.oidc.lock().unwrap_or_else(|e| e.into_inner());
+        match decide(cache.as_ref(), &issuer, now) {
+            Decision::Fresh => {
+                if let Some(discovery) = cache.as_ref().and_then(|c| c.discovery.clone()) {
+                    return Ok(discovery);
+                }
+            }
+            Decision::Wait => refuse!("连不上身份系统，稍后再试"),
+            Decision::Fetch => {
+                *cache = Some(Cached { issuer: issuer.clone(), discovery: None, due: now + DISCOVERY_RETRY });
+            }
+        }
+    }
+
+    let url = format!("{issuer}/.well-known/openid-configuration");
+    let discovery = fetch_discovery(app, &url).await?;
+    let mut cache = app.oidc.lock().unwrap_or_else(|e| e.into_inner());
+    // Whatever arrived meanwhile was for this issuer -- the fetch above armed
+    // it -- so replacing it is safe unless the operator changed the issuer.
+    if cache.as_ref().is_some_and(|c| c.issuer == issuer) {
+        *cache =
+            Some(Cached { issuer, discovery: Some(discovery.clone()), due: Instant::now() + DISCOVERY_TTL });
+    }
+    Ok(discovery)
+}
+
+async fn fetch_discovery(app: &App, url: &str) -> Result<Discovery> {
+    let response = app
+        .http
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| anyhow::Error::from(e).context(Shown("连不上身份系统，稍后再试".into())))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(anyhow!("discovery request answered {status} for {url}")
+            .context(Shown("身份系统没有提供 OIDC 配置，检查 Issuer 是否填对了".into())));
+    }
+    let body = response
+        .text()
+        .await
+        .map_err(|e| anyhow::Error::from(e).context(Shown("连不上身份系统，稍后再试".into())))?;
+    parse_discovery(&body)
+}
+
+/// What a sign-in says when a request to the provider fails: unanswered is the
+/// hub's network, an answer that does not decode is the provider's.
+fn oidc_failed(e: reqwest::Error) -> anyhow::Error {
+    let shown = if e.is_decode() {
+        "身份系统的回复无法识别，稍后重新登录"
+    } else {
+        "hub 连不上身份系统，检查它的网络后重新登录"
+    };
+    anyhow::Error::from(e).context(Shown(shown.into()))
+}
+
+/// Step one of OIDC sign-in: discover the provider, then send the browser there
+/// with a state nonce and a PKCE challenge.
+///
+/// `--site` is required because both the authorize request and the token
+/// exchange must carry the same `redirect_uri`, and only the operator knows the
+/// address the provider will call. The panel's install commands refuse an
+/// address that is not an https domain for the same reason: an operator who
+/// configured one has already met the rule.
+pub async fn oidc_start(State(app): State<crate::Shared>, headers: HeaderMap) -> Response {
+    let Some(client_id) = app.db.get("oidc_client_id").filter(|v| !v.is_empty()) else {
+        return answer(StatusCode::PRECONDITION_FAILED, "没有配置 OIDC 登录");
+    };
+    if app.site.is_empty() {
+        return answer(
+            StatusCode::PRECONDITION_FAILED,
+            "OIDC 登录需要 hub 以 --site 启动：身份系统要按这个地址回调",
+        );
+    }
+    let discovery = match discovery_for(&app).await {
+        Ok(discovery) => discovery,
+        Err(e) => return oidc_sign_in_failed(&app, &headers, e),
+    };
+    let state = random_token();
+    let verifier = random_token();
+    let redirect = format!("{}/api/auth/oidc/callback", app.site);
+    // Some providers publish an authorization endpoint that already carries a
+    // query (Azure AD's policy parameter, for one); appending another `?` there
+    // would drop their own parameter.
+    let separator = if discovery.authorization_endpoint.contains('?') { '&' } else { '?' };
+    let url = format!(
+        "{}{separator}client_id={}&redirect_uri={}&response_type=code&scope=openid&state={}&code_challenge={}&code_challenge_method=S256",
+        discovery.authorization_endpoint,
+        urlencode(&client_id),
+        urlencode(&redirect),
+        state,
+        pkce_challenge(&verifier),
+    );
+    let secure = app.secure_cookies(&headers);
+    with_cookies(
+        Redirect::to(&url),
+        [
+            set_cookie(OIDC_STATE_COOKIE, &state, 600, secure),
+            set_cookie(OIDC_VERIFIER_COOKIE, &verifier, 600, secure),
+        ],
+    )
+}
+
+/// Step two: check the callback against the cookies issued in step one, exchange
+/// the code, and open a session.
+pub async fn oidc_callback(
+    State(app): State<crate::Shared>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+    Query(query): Query<Callback>,
+) -> Response {
+    // Refusals arrive in the query string, as with GitHub, and both are cleared
+    // whichever way this goes: a state cookie left behind would be a replay
+    // window, and the verifier one is single-use by construction.
+    if let Some(error) = &query.error {
+        let reason = query.error_description.as_deref().unwrap_or(error);
+        let shown = if error == "access_denied" {
+            "在身份系统上取消了授权"
+        } else {
+            "身份系统拒绝了这次登录，原因见 hub 日志"
+        };
+        return oidc_sign_in_failed(
+            &app,
+            &headers,
+            anyhow!("identity provider returned {error:?}: {reason:?}").context(Shown(shown.into())),
+        );
+    }
+    let state = query.state.as_deref().unwrap_or_default();
+    if state.is_empty() || cookie_value(&headers, OIDC_STATE_COOKIE).as_deref() != Some(state) {
+        return oidc_sign_in_failed(&app, &headers, anyhow!(Shown("登录已过期，请从登录页重新开始".into())));
+    }
+    // Without the verifier the token exchange cannot prove it was the browser
+    // that started this flow, so the callback is turned back rather than sent on
+    // without a `code_verifier`.
+    let Some(verifier) = cookie_value(&headers, OIDC_VERIFIER_COOKIE).filter(|v| !v.is_empty()) else {
+        return oidc_sign_in_failed(&app, &headers, anyhow!(Shown("登录已过期，请从登录页重新开始".into())));
+    };
+    let Some(code) = query.code.as_deref().filter(|c| !c.is_empty()) else {
+        return oidc_sign_in_failed(
+            &app,
+            &headers,
+            anyhow!(Shown("身份系统没有返回授权码，请重新登录".into())),
+        );
+    };
+    let user = match oidc_login(&app, code, &verifier).await {
+        Ok(user) => user,
+        Err(e) => return oidc_sign_in_failed(&app, &headers, e),
+    };
+    let session = match issue_session(&app, &headers) {
+        Ok(cookie) => cookie,
+        Err(e) => return oidc_sign_in_failed(&app, &headers, e),
+    };
+    crate::notify::signed_in(&app, &format!("OIDC {user}"), client_ip(&app, &headers, peer.ip()));
+    with_cookies(
+        Redirect::to("/admin/nodes"),
+        [clear_oidc_state(&app, &headers), clear_oidc_verifier(&app, &headers), session],
+    )
+}
+
+/// The GitHub one's counterpart, kept separate rather than parameterised: the
+/// warn prefix is what makes a log searchable by provider, and changing the
+/// shared function would change GitHub's lines.
+fn oidc_sign_in_failed(app: &App, headers: &HeaderMap, e: anyhow::Error) -> Response {
+    warn!("OIDC sign-in rejected: {e:#}");
+    let reason = e.downcast_ref::<Shown>().map_or(crate::api::INTERNAL, |shown| shown.0.as_str());
+    let target = format!("/admin/nodes?login_error={}", urlencode(reason));
+    with_cookies(
+        Redirect::to(&target),
+        [clear_oidc_state(app, headers), clear_oidc_verifier(app, headers), String::new()],
+    )
+}
+
+fn clear_oidc_state(app: &App, headers: &HeaderMap) -> String {
+    set_cookie(OIDC_STATE_COOKIE, "", 0, app.secure_cookies(headers))
+}
+
+fn clear_oidc_verifier(app: &App, headers: &HeaderMap) -> String {
+    set_cookie(OIDC_VERIFIER_COOKIE, "", 0, app.secure_cookies(headers))
+}
+
 /// Attaches several `Set-Cookie` headers to one response. An array of header
 /// tuples is unsuitable: axum applies those with `HeaderMap::insert`, so a
 /// second `Set-Cookie` replaces the first. Empty entries are skipped.
@@ -470,6 +764,141 @@ async fn github_login(app: &App, code: &str) -> Result<String> {
     }
     info!("GitHub sign-in accepted for {}", user.login);
     Ok(user.login)
+}
+
+/// Exchanges the code for a token, reads who it belongs to from the provider's
+/// userinfo endpoint, and checks that against the allow list.
+///
+/// The id_token is deliberately not verified. Verifying it means decoding a JWT,
+/// fetching JWKS and accepting the provider's choice of algorithm -- a new
+/// dependency and a great deal of code -- to prove something the hub already
+/// knows: the code arrived on a server-to-server TLS connection it opened itself,
+/// and only it holds the code. The cost of that choice is that `nonce` would have
+/// nothing to check it against, so the authorize request does not send one either;
+/// a nonce that is issued and never verified is decoration. What is left holding
+/// the flow together is the state cookie (the browser started it) and PKCE (the
+/// code is for this exchange).
+async fn oidc_login(app: &App, code: &str, verifier: &str) -> Result<String> {
+    let (Some(client_id), Some(_)) = (app.db.get("oidc_client_id"), app.db.get("oidc_issuer")) else {
+        refuse!("没有配置 OIDC 登录");
+    };
+    let allowed = allowed_logins(&app.db.get("oidc_allowed_users").unwrap_or_default());
+    if allowed.is_empty() {
+        // Without an allow list, any account on the provider could sign in.
+        refuse!("没有设置允许登录的 OIDC 用户");
+    }
+    // The exchange must repeat the exact `redirect_uri` of the authorize request,
+    // so a hub without `--site` has none to repeat.
+    if app.site.is_empty() {
+        refuse!("OIDC 登录需要 hub 以 --site 启动：身份系统要按这个地址回调");
+    }
+    let discovery = discovery_for(app).await?;
+
+    #[derive(Serialize)]
+    struct TokenForm<'a> {
+        grant_type: &'a str,
+        code: &'a str,
+        redirect_uri: &'a str,
+        code_verifier: &'a str,
+        client_id: &'a str,
+        /// Absent for a public client, which is a supported configuration: PKCE
+        /// is what protects the exchange, and a secret is what a confidential
+        /// client adds on top.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        client_secret: Option<&'a str>,
+    }
+    #[derive(Deserialize)]
+    struct TokenResponse {
+        access_token: Option<String>,
+        error: Option<String>,
+        error_description: Option<String>,
+    }
+    let redirect_uri = format!("{}/api/auth/oidc/callback", app.site);
+    let secret = app.db.get("oidc_client_secret").filter(|s| !s.is_empty());
+    let form = TokenForm {
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: &redirect_uri,
+        code_verifier: verifier,
+        client_id: &client_id,
+        client_secret: secret.as_deref(),
+    };
+    let token: TokenResponse = app
+        .http
+        .post(&discovery.token_endpoint)
+        .header(header::ACCEPT, "application/json")
+        .form(&form)
+        .send()
+        .await
+        .map_err(oidc_failed)?
+        .json()
+        .await
+        .map_err(oidc_failed)?;
+    let Some(access) = token.access_token else {
+        // Typically an expired code, a redirect_uri that does not match the one
+        // registered, or a secret the provider no longer accepts.
+        let reason = token.error_description.or(token.error).unwrap_or_else(|| "no access token".into());
+        return Err(anyhow!(reason)
+            .context(Shown("身份系统没有发放令牌，检查 Client ID/Secret 与回调地址后重新登录".into())));
+    };
+
+    #[derive(Deserialize)]
+    struct UserInfo {
+        sub: Option<String>,
+        preferred_username: Option<String>,
+    }
+    let response = app
+        .http
+        .get(&discovery.userinfo_endpoint)
+        .header(header::AUTHORIZATION, format!("Bearer {access}"))
+        .header(header::USER_AGENT, "probe-hub")
+        .send()
+        .await
+        .map_err(oidc_failed)?;
+    let status = response.status();
+    let body = response.text().await.map_err(oidc_failed)?;
+    // As with GitHub's user response: decoding an error page would report a
+    // missing field instead of the provider's actual answer.
+    let user: UserInfo = serde_json::from_str(&body)
+        .with_context(|| {
+            format!("userinfo response ({status}): {}", body.chars().take(200).collect::<String>())
+        })
+        .context(Shown(format!("身份系统没有返回用户信息（HTTP {}），重新登录再试", status.as_u16())))?;
+    let Some(sub) = user.sub.filter(|s| !s.trim().is_empty()) else {
+        refuse!("身份系统没有返回用户标识（sub）");
+    };
+    // The name is what the allow list holds and what the panel shows; `sub` is
+    // what the binding holds. A provider may send no name at all, in which case
+    // the identifier is the only thing to match on.
+    let name = user
+        .preferred_username
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| sub.clone())
+        .trim()
+        .to_lowercase();
+
+    if !allowed.contains(&name) {
+        // The list stays in the log and out of the reason: the reason travels back
+        // in a query string anyone can read.
+        warn!("OIDC user {} is not on the allowed list {allowed:?}", name);
+        refuse!("身份系统用户 {} 不在允许登录的名单里", name);
+    }
+    match app.db.bind_oidc(&name, &sub)? {
+        None => {
+            warn!("OIDC user {} was removed from the allowed list during sign-in", name);
+            refuse!("身份系统用户 {} 不在允许登录的名单里", name);
+        }
+        Some(bound) if bound != sub => {
+            warn!("OIDC user {} is account {sub}, but the name first signed in as account {bound}", name);
+            refuse!(
+                "身份系统用户 {} 已经不是第一次登录时的那个账号。如果账号确实删掉重建过，先把它从允许名单里删掉并保存，再加回来",
+                name
+            );
+        }
+        Some(_) => {}
+    }
+    info!("OIDC sign-in accepted for {}", name);
+    Ok(name)
 }
 
 /// The GitHub account each listed login belonged to when it first signed in,
@@ -693,6 +1122,175 @@ mod tests {
 
     fn shared() -> crate::Shared {
         std::sync::Arc::new(crate::App::for_test(crate::db::Db::open(":memory:").unwrap()))
+    }
+
+    /// The example of RFC 7636 appendix B, verbatim: a challenge that does not
+    /// match its verifier is a sign-in the provider refuses, so this is the one
+    /// place the encoding is pinned to the specification rather than to itself.
+    ///
+    /// (The plan quoted this verifier ending `...Ejno`; the RFC's ends `...EjXk`,
+    /// and only that one hashes to the expected challenge. The expectation below
+    /// is the RFC's, not the plan's.)
+    #[test]
+    fn the_pkce_challenge_matches_the_rfc_vector() {
+        assert_eq!(
+            pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+        // 64 hex characters, the shape `random_token` produces, is inside the
+        // 43..=128 the RFC allows.
+        let verifier = random_token();
+        assert_eq!(verifier.len(), 64);
+        let challenge = pkce_challenge(&verifier);
+        assert_eq!(challenge.len(), 43, "SHA-256 is 32 bytes, 43 characters unpadded");
+        assert!(
+            !challenge.contains('=') && !challenge.contains('+') && !challenge.contains('/'),
+            "{challenge}"
+        );
+    }
+
+    #[test]
+    fn a_discovery_document_yields_its_three_endpoints() {
+        let document = r#"{
+            "issuer": "https://id.example.com",
+            "authorization_endpoint": "https://id.example.com/authorize",
+            "token_endpoint": "https://id.example.com/token",
+            "userinfo_endpoint": "https://id.example.com/userinfo",
+            "scopes_supported": ["openid", "profile"],
+            "code_challenge_methods_supported": ["S256"]
+        }"#;
+        let discovery = parse_discovery(document).unwrap();
+        assert_eq!(
+            discovery,
+            Discovery {
+                authorization_endpoint: "https://id.example.com/authorize".into(),
+                token_endpoint: "https://id.example.com/token".into(),
+                userinfo_endpoint: "https://id.example.com/userinfo".into(),
+            }
+        );
+
+        // Each endpoint by name, so the operator knows which one is missing.
+        for (missing, named) in [
+            ("authorization_endpoint", "authorization_endpoint"),
+            ("token_endpoint", "token_endpoint"),
+            ("userinfo_endpoint", "userinfo_endpoint"),
+        ] {
+            let mut value: serde_json::Value = serde_json::from_str(document).unwrap();
+            value.as_object_mut().unwrap().remove(missing);
+            let shown = parse_discovery(&value.to_string())
+                .unwrap_err()
+                .downcast::<Shown>()
+                .map(|s| s.0)
+                .unwrap_or_default();
+            assert!(shown.contains(named), "{missing}: {shown}");
+        }
+
+        // An empty string is as missing as an absent key.
+        let blank = document.replace("https://id.example.com/token", "");
+        assert!(parse_discovery(&blank).is_err());
+
+        // A page that is not JSON at all: the message must not be serde's.
+        let refused = parse_discovery("<html>404</html>").unwrap_err();
+        assert_eq!(
+            refused.downcast_ref::<Shown>().map(|s| s.0.as_str()),
+            Some("身份系统的配置无法识别，检查 Issuer 是否填的是它的地址")
+        );
+    }
+
+    /// The three branches of the cache rule, with a clock handed in rather than
+    /// waited for: a document inside its hour is reused, a failure inside its
+    /// minute is not retried, and either window ending lets the next request
+    /// through.
+    #[test]
+    fn the_discovery_cache_reuses_answers_for_an_hour_and_failures_for_a_minute() {
+        let now = Instant::now();
+        let document = Discovery {
+            authorization_endpoint: "https://id.example.com/authorize".into(),
+            token_endpoint: "https://id.example.com/token".into(),
+            userinfo_endpoint: "https://id.example.com/userinfo".into(),
+        };
+        let found = Cached {
+            issuer: "https://id.example.com".into(),
+            discovery: Some(document),
+            due: now + DISCOVERY_TTL,
+        };
+        let failed =
+            Cached { issuer: "https://id.example.com".into(), discovery: None, due: now + DISCOVERY_RETRY };
+
+        // Nothing cached yet.
+        assert_eq!(decide(None, "https://id.example.com", now), Decision::Fetch);
+        // Inside the hour: no request, and the document is there to use.
+        assert_eq!(decide(Some(&found), "https://id.example.com", now), Decision::Fresh);
+        assert_eq!(decide(Some(&found), "https://id.example.com", now + DISCOVERY_TTL), Decision::Fetch);
+        // Inside the minute after a failure: no request, and no waiting either.
+        assert_eq!(decide(Some(&failed), "https://id.example.com", now), Decision::Wait);
+        assert_eq!(decide(Some(&failed), "https://id.example.com", now + DISCOVERY_RETRY), Decision::Fetch);
+        // A different issuer makes either answer worthless, whatever its age, and
+        // neither may be waited on: the entry belongs to the old address.
+        assert_eq!(decide(Some(&found), "https://other.example.com", now), Decision::Fetch);
+        assert_eq!(decide(Some(&failed), "https://other.example.com", now), Decision::Fetch);
+    }
+
+    /// A hub with no provider configured answers the button's URL with a refusal
+    /// rather than a redirect: nothing here may depend on the outside world.
+    #[tokio::test]
+    async fn the_oidc_entry_point_refuses_an_unconfigured_or_addressless_hub() {
+        let app = shared();
+        let res = oidc_start(State(app.clone()), HeaderMap::new()).await;
+        assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
+        assert!(res.headers().get(header::LOCATION).is_none());
+
+        // Configured, but the hub does not know the address the provider would
+        // call back on, which the exchange has to repeat verbatim.
+        app.db.set("oidc_issuer", "https://id.example.com").unwrap();
+        app.db.set("oidc_client_id", "monitor").unwrap();
+        let res = oidc_start(State(app), HeaderMap::new()).await;
+        assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
+        assert!(res.headers().get(header::LOCATION).is_none());
+    }
+
+    /// As with the GitHub callback: a callback the browser did not start is
+    /// turned back before anything is sent to the provider, and both cookies it
+    /// would have relied on are cleared on the way.
+    #[tokio::test]
+    async fn an_oidc_callback_the_browser_did_not_start_signs_nobody_in() {
+        let app = shared();
+        for (state, cookie) in
+            [(Some("abc"), None), (Some("abc"), Some("xyz")), (None, Some("abc")), (Some(""), Some(""))]
+        {
+            let mut headers = HeaderMap::new();
+            if let Some(cookie) = cookie {
+                headers.insert(header::COOKIE, format!("{OIDC_STATE_COOKIE}={cookie}").parse().unwrap());
+            }
+            let query =
+                Callback { code: Some("code".into()), state: state.map(Into::into), ..Default::default() };
+            let res = oidc_callback(State(app.clone()), peer(), headers, Query(query)).await;
+            let to = res.headers()[header::LOCATION].to_str().unwrap();
+            assert!(to.ends_with(&urlencode("登录已过期，请从登录页重新开始")), "{state:?} {cookie:?}: {to}");
+            let cleared: Vec<_> = res
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .map(|c| c.to_str().unwrap().to_owned())
+                .collect();
+            assert!(cleared.iter().any(|c| c.starts_with(OIDC_STATE_COOKIE)), "{cleared:?}");
+            assert!(cleared.iter().any(|c| c.starts_with(OIDC_VERIFIER_COOKIE)), "{cleared:?}");
+            assert!(!cleared.iter().any(|c| c.starts_with(&format!("{COOKIE}="))), "no session");
+        }
+    }
+
+    /// A state that matches but a verifier that is gone: the exchange cannot be
+    /// made to prove it is the same browser, so it is not attempted.
+    #[tokio::test]
+    async fn a_callback_without_its_verifier_is_turned_back() {
+        let app = shared();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, format!("{OIDC_STATE_COOKIE}=abc123").parse().unwrap());
+        let query =
+            Callback { code: Some("code".into()), state: Some("abc123".into()), ..Default::default() };
+        let res = oidc_callback(State(app), peer(), headers, Query(query)).await;
+        let to = res.headers()[header::LOCATION].to_str().unwrap();
+        assert!(to.ends_with(&urlencode("登录已过期，请从登录页重新开始")), "{to}");
     }
 
     fn peer() -> ConnectInfo<std::net::SocketAddr> {

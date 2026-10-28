@@ -79,6 +79,11 @@ pub struct App {
     pub site: String,
     /// Alerts on their way out; see `notify::send`.
     pub notes: tokio::sync::mpsc::Sender<notify::Note>,
+    /// The OIDC provider's endpoints, as last fetched, with the moment they may
+    /// be asked again. `/api/auth/oidc` is anonymous, so an uncached discovery
+    /// would make the hub a relay anyone can point at the provider; see
+    /// `auth::discovery_for`.
+    pub oidc: Mutex<Option<auth::Cached>>,
     /// The latest published tags, as last read from GitHub. Filled when the panel
     /// asks rather than on a timer, so a hub nobody opens makes no outbound
     /// request; see `api::versions`.
@@ -109,6 +114,7 @@ impl App {
                 .expect("http client"),
             site,
             notes,
+            oidc: Mutex::default(),
             releases: Mutex::default(),
         }
     }
@@ -622,6 +628,8 @@ async fn main() -> Result<()> {
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/github", get(auth::github_start))
         .route("/api/auth/github/callback", get(auth::github_callback))
+        .route("/api/auth/oidc", get(auth::oidc_start))
+        .route("/api/auth/oidc/callback", get(auth::oidc_callback))
         // Panel.
         .route("/api/nodes", post(api::create_node))
         .route("/api/register-window", post(api::open_register).delete(api::close_register))
