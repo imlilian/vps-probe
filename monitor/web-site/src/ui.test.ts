@@ -374,10 +374,10 @@ try {
   assert.match(page, /aria-label="切换节点"/, "and the fleet switcher is a select")
   assert.ok(page.includes(">在线<"), "the state is one word")
   assert.ok(!page.includes(">在线 9"), "and the uptime is not glued to it")
-  // Two controls are on: the load range and the latency range. The star, the
-  // live chip, the other ranges and the two 削峰 chips are off.
-  assert.equal(page.match(/aria-pressed="true"/g)?.length, 2, "one view and one range")
-  assert.equal(page.match(/aria-pressed="false"/g)?.length, 10, "star + live + other ranges + two 削峰")
+  // Three controls are on: the load range, the latency range and 全选. The
+  // star, the live chip, the other ranges, the 全不选 and the 削峰 chip are off.
+  assert.equal(page.match(/aria-pressed="true"/g)?.length, 3, "load range + latency range + 全选")
+  assert.equal(page.match(/aria-pressed="false"/g)?.length, 10, "star + live + other ranges + 全不选 + 削峰")
   // A public page never shows where the machine is: an operator's `ip` and
   // `hostname` are the panel's.
   const hidden = detail({ node: { ...fleet[1], ip: "203.0.113.7", hostname: "hk-02" } })

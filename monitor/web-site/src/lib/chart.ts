@@ -83,3 +83,21 @@ export function timeAxis(rows: { ts: number }[], hours: number) {
     ...AXIS,
   }
 }
+
+/** Probe colours in reading order: five hues solid, then the same five dashed. */
+export const PROBE_STYLES = [
+  { stroke: "var(--color-chart-1)", dash: undefined },
+  { stroke: "var(--color-chart-3)", dash: undefined },
+  { stroke: "var(--color-chart-2)", dash: undefined },
+  { stroke: "var(--color-chart-4)", dash: undefined },
+  { stroke: "var(--color-chart-5)", dash: undefined },
+  { stroke: "var(--color-chart-1)", dash: "6 3" },
+  { stroke: "var(--color-chart-3)", dash: "6 3" },
+  { stroke: "var(--color-chart-2)", dash: "6 3" },
+  { stroke: "var(--color-chart-4)", dash: "6 3" },
+  { stroke: "var(--color-chart-5)", dash: "6 3" },
+] as const
+
+export function probeStyle(index: number) {
+  return PROBE_STYLES[index % PROBE_STYLES.length]!
+}

@@ -1,29 +1,26 @@
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 import { ArrowDown, ArrowUp, Cable, Cpu, HardDrive, MemoryStick, Network } from "lucide-react"
 import {
-  Area, AreaChart, Brush, CartesianGrid, ComposedChart, Line, LineChart, ResponsiveContainer,
+  Area, AreaChart, CartesianGrid, ComposedChart, Line, LineChart, ResponsiveContainer,
   Tooltip, XAxis, YAxis, type DotItemDotProps,
 } from "recharts"
 
-import { Card } from "@/components/ui/card"
 import { Chip } from "@/components/ui/chip"
 import { Glyph } from "@/components/ui/glyph"
-import { Skeleton } from "@/components/ui/skeleton"
 import { ChartFade, ChartPanel, CURSOR, GRID } from "@/components/ChartPanel"
 import { DetailHeader } from "@/components/detail/DetailHeader"
+import { LatencySection } from "@/components/detail/LatencySection"
 import { LoadSection } from "@/components/detail/LoadSection"
 import { InfoGrid } from "@/components/detail/InfoGrid"
 import { MetricGrid } from "@/components/detail/MetricGrid"
 import { percentText } from "@/components/Meter"
 import { Figure } from "@/components/NodeCard"
-import { api, type Metrics, type Node } from "@/lib/api"
-import { metricsPath } from "@/lib/sampling"
+import type { Metrics, Node } from "@/lib/api"
 import { lttb } from "@/lib/downsample"
 import {
-  axisBytes, axisTop, bytes, clockFor, despike,
-  percent, pingWindows, quarters, rate, RATE_FLOOR, rateAxis, tickClock, timeTicks, withGaps,
+  axisBytes, axisTop, bytes, despike,
+  percent, quarters, rate, RATE_FLOOR, rateAxis, tickClock, timeTicks, withGaps,
 } from "@/lib/format"
-import { cn } from "@/lib/utils"
 
 type Point = {
   ts: number
@@ -43,28 +40,6 @@ type Point = {
   udp?: number
   procs?: number
 }
-// `latency` is the bucket's median round trip, null when every probe in it timed
-// out. `band` is the range its answers spanned, absent when they spanned nothing.
-// `loss` is the percentage that timed out, absent when none did.
-type PingPoint = {
-  task_id: number
-  ts: number
-  latency: number | null
-  band?: [number, number]
-  loss?: number
-}
-/** Probe names by id, sent alongside the samples they label. */
-type Probes = Record<string, string>
-/**
- * Proportion of the whole window each probe lost, by id, absent for probes that
- * lost nothing. Sent because it cannot be derived here: every bucket's `loss` is
- * already a percentage of that bucket, so the sample counts it was divided by are
- * unavailable. Averaging them would weight a bucket holding one sample equally
- * with one holding twelve, and the window's first and last buckets are partial
- * regardless of what the probe does.
- */
-type Loss = Record<string, number>
-
 const AXIS = { stroke: "currentColor", fontSize: 11, tickLine: false, axisLine: false }
 
 /**
@@ -131,24 +106,6 @@ const TOOLTIP = {
 // and thin the gridlines separately -- the CPU axis would lose its 30% gridline,
 // and a rate axis of 1 KB/s to 100 MB/s its 10 MB/s label and two gridlines.
 const VALUE_AXIS = { ...AXIS, width: 68, interval: 0 }
-
-// One style per series: the first five probes take the chart palette's five
-// hues, all of them solid. The dash only appears once the list wraps past five,
-// where it is the fallback that keeps a sixth series distinguishable from the
-// first -- at a sample a pixel apart, five dash patterns of their own read as
-// five textures rather than five lines, and hue is what separates them.
-const PALETTE = [
-  { stroke: "var(--color-chart-1)", dash: undefined },
-  { stroke: "var(--color-chart-3)", dash: undefined },
-  { stroke: "var(--color-chart-2)", dash: undefined },
-  { stroke: "var(--color-chart-4)", dash: undefined },
-  { stroke: "var(--color-chart-5)", dash: undefined },
-  { stroke: "var(--color-chart-1)", dash: "6 3" },
-  { stroke: "var(--color-chart-3)", dash: "6 3" },
-  { stroke: "var(--color-chart-2)", dash: "6 3" },
-  { stroke: "var(--color-chart-4)", dash: "6 3" },
-  { stroke: "var(--color-chart-5)", dash: "6 3" },
-]
 
 const CONNS = [
   { key: "tcp", label: "TCP", stroke: "var(--color-chart-1)", dash: undefined },
@@ -551,10 +508,9 @@ export function Resources({ node, points, hours, budget, smooth, live }: {
 }
 
 /**
- * `historyDays` is how far back the hub keeps history. Both tabs offer every
- * window within it: up to a day each ping is on the latency chart, and past it a
- * point is a bucket -- its median, the range its answers spanned and the share
- * lost -- which over a month shows a route's evening pattern a day cannot.
+ * The page's composition: header, optional note, the sixteen live figures, the
+ * four information cards, then the load and latency halves. Each half owns its
+ * range and its request; this component only places them.
  */
 export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
   node: Node
@@ -564,127 +520,6 @@ export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
   nodes?: Node[]
   onOpen?: (id: number) => void
 }) {
-  const ranges = useMemo(() => pingWindows(historyDays), [historyDays])
-  const [hours, setHours] = useState(6)
-  // Spikes clipped or not. `null` is "whatever this window wants", which is off
-  // inside a day and on past it: a bucket is minutes wide there, and one bad
-  // minute inside it draws a spike as tall as the day's real shape.
-  const [smoothPick, setSmoothPick] = useState<boolean | null>(null)
-  const smooth = smoothPick ?? hours >= 24
-  // Probes switched off. Hiding a slow one is what makes the fast ones readable,
-  // as the axis rescales to what remains.
-  const [hiddenProbes, setHiddenProbes] = useState<number[]>([])
-  const [data, setData] = useState<{ metrics: Point[]; ping: PingPoint[]; probes: Probes; loss?: Loss } | null>(null)
-  // Retained rather than folded into an empty result: a refused request and an
-  // empty window are different answers.
-  const [failed, setFailed] = useState("")
-  const [attempt, setAttempt] = useState(0)
-  // Where the brush has been dragged, so the axis reticks for the visible span.
-  const [zoom, setZoom] = useState<[number, number] | null>(null)
-  // Where the chart begins on screen, so its height can occupy the remainder.
-  const [chartTop, setChartTop] = useState(0)
-  // Latency keeps its own time bucket (1m/2m/5m/10m/1h/4h); the load half has
-  // already moved to `LoadSection` and the same table.
-  const path = metricsPath(node.id, hours, "ping")
-
-  useEffect(() => {
-    let active = true
-    // oxlint-disable-next-line react/set-state-in-effect
-    setData(null)
-    // oxlint-disable-next-line react/set-state-in-effect
-    setZoom(null)
-    // oxlint-disable-next-line react/set-state-in-effect
-    setFailed("")
-    api<{ metrics: Point[]; ping: PingPoint[]; probes: Probes; loss?: Loss }>(path)
-      .then((next) => { if (active) setData(next) })
-      .catch((e: Error) => {
-        if (active) { setFailed(e.message); setData({ metrics: [], ping: [], probes: {} }) }
-      })
-    return () => { active = false }
-  }, [path, attempt])
-
-  // One series per probe that reported, labelled from the names the samples
-  // arrived with. Memoised, as is the chart's row set below: the node prop
-  // changes every few seconds as live metrics arrive, and rebuilding the chart's
-  // data array on those renders would reset the brush.
-  const pingSeries = useMemo(
-    () =>
-      [...new Set((data?.ping ?? []).map((p) => p.task_id))]
-        .map((id) => {
-          // Timeouts are retained: dropping them would draw a probe losing half
-          // its packets as an unbroken line, and one that never answered not at
-          // all.
-          const points = (data?.ping ?? []).filter((p) => p.task_id === id)
-          // Taken from the hub rather than summed from the buckets above, each of
-          // which is already a percentage of its own bucket, so averaging them
-          // would report one lost round in thirteen as 50%. Left unrounded, since
-          // `Math.round` would render 0.28% and 0.00% as the same badge, and the
-          // absence of a badge denotes no loss.
-          const loss = data?.loss?.[id] ?? 0
-          return { id, name: data?.probes?.[id] ?? `探测 ${id}`, points, loss }
-        })
-        .filter((s) => s.points.length > 0),
-    [data],
-  )
-
-  const shownProbes = useMemo(
-    () => pingSeries.filter((s) => !hiddenProbes.includes(s.id)),
-    [pingSeries, hiddenProbes],
-  )
-  // Keyed on the full list, so a line keeps its shade when others are hidden.
-  const style = (id: number) => PALETTE[pingSeries.findIndex((p) => p.id === id) % PALETTE.length]
-
-  // The hub stamps every sample with its bucket rather than the second the probe
-  // finished, so probes reporting at the bucket's rate share rows instead of each
-  // contributing its own: a day of four probes is 717 rows rather than 2,868. A
-  // slower probe leaves gaps in its own column, which is what `connectNulls`
-  // addresses.
-  //
-  // Every probe and both versions of every sample are held here whether or not
-  // they are on screen: recharts resets the brush when the data array changes
-  // identity, and re-reads a controlled selection only when the index props
-  // change, which they do not. Hiding a probe or enabling despiking therefore
-  // selects a `dataKey` rather than rebuilding the array.
-  const pingRows = useMemo(() => {
-    const rows = new Map<
-      number,
-      { ts: number } & Record<string, number | [number, number] | null>
-    >()
-    for (const s of pingSeries) {
-      const windowSize = despikeWindow(s.points)
-      const smoothed = despike(s.points.map((p) => p.latency), windowSize)
-      // The band spans the same outliers as the line, and with one probe on
-      // screen it is what the axis is fitted to, so it is clipped alongside it
-      // rather than left to pull the axis back open. The latency fills the
-      // buckets that carry no band, keeping each filter's window dense.
-      const lo = despike(s.points.map((p) => p.band?.[0] ?? p.latency), windowSize)
-      const hi = despike(s.points.map((p) => p.band?.[1] ?? p.latency), windowSize)
-      s.points.forEach((p, i) => {
-        const row = rows.get(p.ts) ?? { ts: p.ts * 1_000 }
-        row[`t${s.id}`] = p.latency
-        row[`s${s.id}`] = smoothed[i]
-        row[`l${s.id}`] = p.loss ?? 0
-        // A bucket with a single answer carries no band and spans only that
-        // answer. Left null, `connectNulls` would bridge the hours between the
-        // few buckets that have one: 2 to 10 of 1,440 in a day, the widest gap
-        // 803 minutes, drawn as one large wedge.
-        row[`b${s.id}`] = p.band ?? (p.latency === null ? null : [p.latency, p.latency])
-        // Taken as the span of three filtered series rather than a pair: the two
-        // edges are filtered independently, so a bucket that answered slightly
-        // faster than usual can trip the low edge alone and come back above the
-        // high one -- [180, 178] against a line of 176, drawn backwards with the
-        // line outside it.
-        const [low, high] = [lo[i], hi[i]]
-        row[`c${s.id}`] =
-          low === null || high === null
-            ? null
-            : [Math.min(low, high, smoothed[i] ?? low), Math.max(low, high, smoothed[i] ?? high)]
-        rows.set(p.ts, row)
-      })
-    }
-    return [...rows.values()].sort((a, b) => a.ts - b.ts)
-  }, [pingSeries])
-
   return (
     <div className="space-y-4">
       <DetailHeader node={node} nodes={nodes} onBack={onBack} onOpen={onOpen} />
@@ -700,194 +535,8 @@ export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
 
       <MetricGrid node={node} />
       <InfoGrid node={node} />
-
       <LoadSection node={node} historyDays={historyDays} />
-
-      {/* The latency half is still the pre-rebuild chart; P5 replaces it with
-          the task cards and the fixed 320px plot. Its range already asks the
-          hub for a time bucket, not a pixel count. */}
-      <section className="space-y-3" aria-label="网络延迟">
-      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-          <h3 className="text-sm font-medium">网络延迟</h3>
-          <div role="group" aria-label="时间范围" className="flex flex-wrap gap-1">
-            {ranges.map((r) => (
-              <Chip
-                key={r.hours}
-                pressed={hours === r.hours}
-                onClick={() => setHours(r.hours)}
-              >
-                {r.label}
-              </Chip>
-            ))}
-          </div>
-        </div>
-        <Chip
-          pressed={smooth}
-          onClick={() => setSmoothPick(!smooth)}
-          title="按邻点中位数削去单点尖峰"
-        >
-          削峰
-        </Chip>
-      </div>
-
-      {!data ? (
-        <Card className="min-w-0 gap-0 p-4">
-          <Skeleton className="h-4 w-24" />
-          <Skeleton className="mt-3 h-40 w-full" />
-        </Card>
-      ) : failed ? (
-        <p className="py-8 text-center text-sm text-destructive" role="alert">
-          读取历史数据失败：{failed}
-          <button
-            className="ml-2 rounded-sm underline underline-offset-2 outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-            onClick={() => setAttempt((n) => n + 1)}
-          >重试</button>
-        </p>
-      ) : pingSeries.length === 0 ? (
-        <p className="py-8 text-center text-sm text-muted-foreground">这段时间没有延迟数据</p>
-      ) : (
-          <Card className="min-w-0 gap-0 p-4">
-            {/* An explicit pixel height on the column, so the chart can be
-                `flex-1` within it while the legend takes what it needs: four
-                probes are one row of chips on a desktop and two on a phone, so
-                any fixed reservation is wrong on one of them. */}
-            <div
-              // `+ scrollY`, because getBoundingClientRect is measured from the
-              // viewport and this callback runs on every render; a live node
-              // re-renders every two seconds, so a scrolled page would re-derive
-              // the height from a top that has moved.
-              ref={(el) => {
-                if (el) setChartTop(el.getBoundingClientRect().top + scrollY)
-              }}
-              style={
-                chartTop
-                  ? { height: `calc(100svh - ${Math.round(chartTop)}px - 1rem)` }
-                  : undefined
-              }
-              className="flex min-h-72 flex-col gap-3">
-              {/* `min-h-0` is what makes `flex-1` a real number rather than the
-                  content's own height: ResponsiveContainer reads its parent, and
-                  a flex child not told it may shrink reports whatever the SVG
-                  last was. The column above has a height in pixels, so this
-                  resolves at layout instead of coming back 0. */}
-              <div className="min-h-0 w-full flex-1 text-muted-foreground">
-                {shownProbes.length === 0 ? (
-                  <p className="py-8 text-center text-sm">没有选中任何探测</p>
-                ) : (
-                  <ResponsiveContainer>
-                    <ComposedChart data={pingRows}>
-                      <CartesianGrid {...GRID} />
-                      <XAxis
-                        {...timeAxis(
-                          pingRows,
-                          hours,
-                          Math.min(zoom?.[0] ?? 0, pingRows.length - 1),
-                          Math.min(zoom?.[1] ?? pingRows.length - 1, pingRows.length - 1),
-                        )}
-                      />
-                      {/* Not anchored at zero: these lines live in a narrow band
-                          far from it, and zero flattens every wobble. */}
-                      <YAxis unit="ms" width={52} domain={["auto", "auto"]} {...AXIS} />
-                      <Tooltip
-                        {...TOOLTIP}
-                        // The line is drawn from what answered, so without this a
-                        // bucket that lost most of its packets reads as normal.
-                        // `dataKey` is `t7`/`s7`; the loss sits at `l7`.
-                        //
-                        // Rounded because a clipped sample carries the median of
-                        // an even window, which falls between two of the whole
-                        // milliseconds the hub stores.
-                        formatter={(v, name, item) => {
-                          const loss = Number(item?.payload?.[`l${String(item.dataKey).slice(1)}`] ?? 0)
-                          return [`${Math.round(Number(v))} ms${loss > 0 ? ` · 丢 ${loss}%` : ""}`, name]
-                        }}
-                      />
-                      {/* Behind the line, the range that bucket's answers
-                          spanned -- Smokeping's "smoke". At the day window a
-                          bucket moves 63 ms at the 90th percentile against the
-                          25 ms the trend moves, so a line alone draws the smaller
-                          of the two.
-
-                          Only with one probe on screen: rendered for four, the
-                          bands overlap into a fog and their extremes drag the
-                          axis from 165-385 out to 140-420. */}
-                      {shownProbes.length === 1 &&
-                        shownProbes.map((s) => (
-                          <Area
-                            key={`band${s.id}`}
-                            dataKey={`${smooth ? "c" : "b"}${s.id}`}
-                            stroke="none"
-                            fill={style(s.id).stroke}
-                            fillOpacity={0.16}
-                            isAnimationActive={false}
-                            tooltipType="none"
-                            legendType="none"
-                            connectNulls
-                          />
-                        ))}
-                      {shownProbes.map((s) => (
-                        <Line
-                          key={s.id}
-                          dataKey={`${smooth ? "s" : "t"}${s.id}`}
-                          name={s.name}
-                          stroke={style(s.id).stroke}
-                          strokeDasharray={style(s.id).dash}
-                          {...SERIES}
-                          connectNulls
-                        />
-                      ))}
-                      {/* Drag either handle to zoom into a stretch of the trend. */}
-                      <Brush
-                        dataKey="ts"
-                        height={22}
-                        travellerWidth={8}
-                        tickFormatter={clockFor(hours)}
-                        className="fill-muted"
-                        stroke="var(--color-muted-foreground)"
-                        onChange={(r) => setZoom([r.startIndex ?? 0, r.endIndex ?? pingRows.length - 1])}
-                      />
-                    </ComposedChart>
-                  </ResponsiveContainer>
-                )}
-              </div>
-
-              {/* Under the chart: what it covers is picked at the top, what is
-                  drawn in it is picked here. Recharts paints the brush into the
-                  same SVG as the axis, so this is as close beneath as HTML
-                  sits. */}
-              {(pingSeries.length > 1 || pingSeries.some((s) => s.loss > 0)) && (
-                <div role="group" aria-label="探测" className="flex flex-wrap items-center justify-center gap-1.5">
-                  {pingSeries.map((s) => {
-                    const shown = !hiddenProbes.includes(s.id)
-                    return (
-                      <Chip
-                        key={s.id}
-                        pressed={shown}
-                        aria-label={`${s.name}，${shown ? "已显示" : "已隐藏"}；按下${shown ? "隐藏" : "显示"}`}
-                        className={cn(!shown && "opacity-50")}
-                        onClick={() =>
-                          setHiddenProbes((h) => (shown ? [...h, s.id] : h.filter((id) => id !== s.id)))
-                        }
-                      >
-                        <Swatch stroke={style(s.id).stroke} dash={style(s.id).dash} />
-                        {s.name}
-                        {/* The line is only what answered, so a probe dropping
-                            half its packets draws like a healthy one. */}
-                        {s.loss > 0 && (
-                          <span className="tnum text-muted-foreground">
-                            丢 {s.loss < 1 ? "<1" : Math.round(s.loss)}%
-                          </span>
-                        )}
-                      </Chip>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-          </Card>
-      )}
-      </section>
+      <LatencySection node={node} historyDays={historyDays} />
     </div>
   )
 }

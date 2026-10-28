@@ -3,6 +3,7 @@ import type { RefObject } from "react"
 
 import { api } from "./api.ts"
 import { peakOf, type PeakRow } from "./detail.ts"
+import type { PingPoint } from "./pingDetail.ts"
 import { metricsPath, pointsFor } from "./sampling.ts"
 
 /** A metrics row as the charts draw it: epoch milliseconds, bucket means and maxima. */
@@ -63,6 +64,71 @@ export function useMetricsHistory(nodeId: number, hours: number, enabled = true)
   const data = state.key === key ? state : null
   return {
     rows: data?.rows ?? [],
+    step: data?.step ?? 0,
+    error: data?.error ?? "",
+    loading: Boolean(enabled && hours > 0 && !data),
+    retry: () => setAttempt((n) => n + 1),
+  }
+}
+
+export type PingAnswer = {
+  rows: PingPoint[]
+  probes: Record<string, string>
+  loss: Record<string, number>
+  step: number
+  error: string
+  loading: boolean
+  retry: () => void
+}
+
+/**
+ * The latency half's history: one request, `points` from the ping bucket table.
+ * Timestamps are normalized to milliseconds and the hub's window loss is passed
+ * through untouched -- it is the only figure computed from sample counts, and
+ * averaging per-bucket percentages would lose exactly that.
+ */
+export function usePingHistory(nodeId: number, hours: number, enabled = true): PingAnswer {
+  const key = enabled && hours > 0 ? `${nodeId}:${hours}:${metricsPath(nodeId, hours, "ping")}` : ""
+  const [state, setState] = useState<{
+    key: string
+    rows: PingPoint[]
+    probes: Record<string, string>
+    loss: Record<string, number>
+    step: number
+    error: string
+  }>({ key: "", rows: [], probes: {}, loss: {}, step: 0, error: "" })
+  const [attempt, setAttempt] = useState(0)
+
+  useEffect(() => {
+    if (!enabled || hours <= 0) return
+    let active = true
+    api<{ ping?: PingPoint[]; probes?: Record<string, string>; loss?: Record<string, number>; step?: number }>(
+      metricsPath(nodeId, hours, "ping"),
+    )
+      .then((answer) => {
+        if (!active) return
+        setState({
+          key,
+          rows: (answer.ping ?? []).map((row) => ({ ...row, ts: row.ts * 1000 })),
+          probes: answer.probes ?? {},
+          loss: answer.loss ?? {},
+          step: answer.step ?? 0,
+          error: "",
+        })
+      })
+      .catch((error: Error) => {
+        if (active) setState({ key, rows: [], probes: {}, loss: {}, step: 0, error: error.message })
+      })
+    return () => {
+      active = false
+    }
+  }, [nodeId, hours, enabled, key, attempt])
+
+  const data = state.key === key ? state : null
+  return {
+    rows: data?.rows ?? [],
+    probes: data?.probes ?? {},
+    loss: data?.loss ?? {},
     step: data?.step ?? 0,
     error: data?.error ?? "",
     loading: Boolean(enabled && hours > 0 && !data),
