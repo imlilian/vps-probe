@@ -11,7 +11,7 @@ export function ChartLegend({ items, hidden, onToggle, label }: {
   label: string
 }) {
   return (
-    <div role="group" aria-label={label} className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+    <div role="group" aria-label={label} className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5">
       {items.map((item) => {
         const shown = !hidden.includes(item.key)
         return (

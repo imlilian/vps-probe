@@ -63,6 +63,14 @@ type Spec = {
   profiles?: Record<number, Profile>
   /** A note an operator would write for visitors; most nodes have none. */
   publicRemark?: string
+  /**
+   * A stretch of the window where the node was silent, as fractions of the
+   * window. Exercises the gap/line-break path that an always-on sample never
+   * shows.
+   */
+  historyGap?: [number, number]
+  /** A hub before 1.4.1: history omits swap, sockets, processes and peaks. */
+  legacy?: boolean
   online: boolean
 }
 
@@ -114,6 +122,9 @@ const SPECS: Spec[] = [
     price: 89, currency: "USD", cycle: "monthly", expiresIn: 143, trafficLimit: 2000 * GiB, trafficMode: "sum",
     monthUsed: 0.55, rxBase: 9.4 * MiB, txBase: 3.1 * MiB,
     cpuBase: 68, cpuAmp: 14, memPct: 0.71, diskPct: 0.62,
+    // A ten-hour maintenance window in the seven-day view: the line must break,
+    // not draw a straight segment through the silence.
+    historyGap: [0.42, 0.48],
     tcp: 634, udp: 51, procs: 341, uptime: 7 * 86400, probes: [1, 2, 3],
     profiles: { 1: "lossy" }, online: true,
   },
@@ -147,6 +158,8 @@ const SPECS: Spec[] = [
     price: 0, cycle: "once", expiresIn: null, trafficLimit: 100 * GiB, trafficMode: "up",
     monthUsed: 0.97, rxBase: 0.4 * MiB, txBase: 3.2 * MiB,
     cpuBase: 13, cpuAmp: 6, memPct: 0.38, diskPct: 0.58,
+    // A hub from before 1.4.1: no swap/socket/process history and no peaks.
+    legacy: true,
     tcp: 57, udp: 9, procs: 121, uptime: 19 * 86400,
     // One probe: a single column, not a row of empty cells.
     probes: [1], profiles: { 1: "flaky" }, online: true,
@@ -228,19 +241,31 @@ function liveMetrics(spec: Spec, nowMs: number) {
   // Two waves per figure: a slow one that makes a card read differently from
   // its neighbour, and a fast one that keeps the numbers moving between polls.
   const wave = (period: number, phase: number) => Math.sin(m / period + spec.id * 1.7 + phase)
+  // A day is 1,440 minutes; the short waves above are in the same arbitrary
+  // radian scale, so the daily cycle needs its own phase term. Without it the
+  // 7d/30d averages are flat lines, which is not what a real machine does.
+  const daily = (phase: number) => Math.sin(((m % 1_440) / 1_440) * 2 * Math.PI + spec.id * 1.7 + phase)
   const jitter = (key: number, spread: number) => spread * (noise(spec.id, m, key) - 0.5)
 
-  const cpu = round2(clamp(spec.cpuBase + spec.cpuAmp * (0.65 * wave(19, 0.3) + 0.35 * wave(3.7, 1.9)) + jitter(1, 8), 0.3, 100))
+  const cpu = round2(clamp(
+    spec.cpuBase + spec.cpuAmp * (0.55 * wave(19, 0.3) + 0.25 * wave(3.7, 1.9) + 0.35 * daily(0.4)) + jitter(1, 8),
+    0.3,
+    100,
+  ))
   const cores = spec.cores
   const load: [number, number, number] = [
     round2((cpu / 100) * cores * 1.15),
     round2((cpu / 100) * cores * (0.82 + 0.06 * wave(7, 2))),
     round2((cpu / 100) * cores * (0.61 + 0.09 * wave(31, 4))),
   ]
-  const mem_used = Math.round(clamp(spec.mem * (spec.memPct + 0.03 * wave(140, 0.8) + jitter(2, 0.012)), 0, spec.mem))
+  const mem_used = Math.round(clamp(spec.mem * (spec.memPct + 0.03 * wave(140, 0.8) + 0.025 * daily(1.1) + jitter(2, 0.012)), 0, spec.mem))
   const swap_total = spec.id === 5 ? 0 : Math.round(spec.mem / 4)
   const net = (base: number, key: number) =>
-    Math.round(base * clamp(0.55 + 0.8 * Math.abs(wave(7, key * 1.3)) + 0.3 * (noise(spec.id, t, key) - 0.5), 0.02, 3))
+    Math.round(base * clamp(
+      0.55 + 0.5 * Math.abs(wave(7, key * 1.3)) + 0.35 * (0.5 + 0.5 * daily(key * 1.7)) + 0.2 * (noise(spec.id, t, key) - 0.5),
+      0.02,
+      3,
+    ))
 
   return {
     uptime: Math.max(0, Math.floor((nowMs - (BOOT[spec.id] ?? nowMs)) / 1000)),
@@ -255,9 +280,9 @@ function liveMetrics(spec: Spec, nowMs: number) {
     net_rx: net(spec.rxBase, 4),
     net_tx: net(spec.txBase, 5),
     ...traffic(spec),
-    tcp: Math.round(spec.tcp * (0.8 + 0.4 * noise(spec.id, m, 6))),
-    udp: Math.round(spec.udp * (0.7 + 0.6 * noise(spec.id, m, 7))),
-    procs: Math.round(spec.procs * (0.94 + 0.12 * noise(spec.id, m, 8))),
+    tcp: Math.round(spec.tcp * (0.8 + 0.4 * noise(spec.id, m, 6) + 0.08 * daily(2.2))),
+    udp: Math.round(spec.udp * (0.7 + 0.6 * noise(spec.id, m, 7) + 0.08 * daily(2.7))),
+    procs: Math.round(spec.procs * (0.94 + 0.12 * noise(spec.id, m, 8) + 0.05 * daily(3.1))),
   }
 }
 
@@ -287,7 +312,7 @@ export function nodeList(nowMs = Date.now()) {
       mem_total: spec.mem,
       swap_total: metrics?.swap_total ?? 0,
       disk_total: spec.disk,
-      agent_version: "1.4.2",
+      agent_version: spec.legacy ? "1.2.0" : "1.4.2",
       price: spec.price,
       currency: spec.currency ?? "CNY",
       billing_cycle: spec.cycle,
@@ -323,12 +348,20 @@ function planUsage(spec: Spec, rx: number, tx: number): number {
   }
 }
 
-/** The window a request is answered with, matching `api::span`. */
+/**
+ * The window a request is answered with, matching `api::span`: `points` is
+ * clamped, the unit is a minute up to seven days and an hour past it, and the
+ * window opens at the bucket boundary at or before `now - hours`.
+ */
 function spanOf(hours: number, points: number, nowMs: number) {
-  const step = Math.max(60, Math.ceil((hours * 3600) / points / 60) * 60)
+  const budget = Math.min(1_440, Math.max(60, points))
+  const hourly = hours > 7 * 24
+  const unit = hourly ? 3_600 : 60
+  const step = Math.max(unit, Math.ceil((hours * 3_600) / budget / unit) * unit)
   const now = Math.floor(nowMs / 1000)
   const newest = Math.floor(now / step) * step
-  return { step, newest, since: newest - (points - 1) * step }
+  const since = Math.floor((now - hours * 3_600) / step) * step
+  return { step, newest, since }
 }
 
 /** The round-trip a healthy line to `country` takes from Shanghai, in ms. */
@@ -420,28 +453,76 @@ export function history(id: number, series: "metrics" | "ping", hours: number, p
   const empty: Window = { metrics: [], ping: [], probes: {}, loss: {}, step }
   if (!spec || !spec.online) return empty
 
-  const buckets = Math.max(1, Math.round((newest - since) / step) + 1)
+  const buckets = Math.max(1, Math.floor((newest - since) / step) + 1)
+  const now = Math.floor(nowMs / 1000)
+  const inGap = (ts: number) => {
+    if (!spec.historyGap) return false
+    const at = (ts - since) / (hours * 3_600)
+    return at >= spec.historyGap[0] && at <= spec.historyGap[1]
+  }
   if (series === "metrics") {
+    // A bucket is an average (and a maximum) of the minutes inside it, not the
+    // instantaneous value at its start. Sampling only the start would alias the
+    // mock's short waves into a sawtooth on the 7d/30d views -- exactly the
+    // artifact the detail page is trying to avoid.
     const rows = Array.from({ length: buckets }, (_, i) => {
       const ts = since + i * step
-      const m = liveMetrics(spec, ts * 1000)
-      return {
-        ts,
-        cpu: m.cpu,
-        mem_used: m.mem_used,
-        disk_used: m.disk_used,
-        net_rx: m.net_rx,
-        net_tx: m.net_tx,
-        net_rx_max: Math.round(m.net_rx * 1.9),
-        net_tx_max: Math.round(m.net_tx * 1.9),
-        cpu_max: Math.min(100, round2(m.cpu * 1.6)),
-        minutes: Math.min(step / 60, 60),
-        swap_used: m.swap_used,
-        tcp: m.tcp,
-        udp: m.udp,
-        procs: m.procs,
+      if (inGap(ts)) return null
+      let n = 0
+      let cpu = 0
+      let mem = 0
+      let disk = 0
+      let rx = 0
+      let tx = 0
+      let swap = 0
+      let tcp = 0
+      let udp = 0
+      let procs = 0
+      let cpuMax = 0
+      let rxMax = 0
+      let txMax = 0
+      for (let minute = 0; minute < step / 60; minute++) {
+        const at = ts + minute * 60
+        if (at > now) break
+        const m = liveMetrics(spec, at * 1000)
+        n++
+        cpu += m.cpu
+        mem += m.mem_used
+        disk += m.disk_used
+        rx += m.net_rx
+        tx += m.net_tx
+        swap += m.swap_used
+        tcp += m.tcp
+        udp += m.udp
+        procs += m.procs
+        cpuMax = Math.max(cpuMax, m.cpu)
+        rxMax = Math.max(rxMax, m.net_rx)
+        txMax = Math.max(txMax, m.net_tx)
       }
-    })
+      if (!n) return null
+      const base: Record<string, number> = {
+        ts,
+        cpu: round2(cpu / n),
+        mem_used: Math.round(mem / n),
+        disk_used: Math.round(disk / n),
+        net_rx: Math.round(rx / n),
+        net_tx: Math.round(tx / n),
+      }
+      if (spec.legacy) return base
+      return {
+        ...base,
+        net_rx_max: rxMax,
+        net_tx_max: txMax,
+        cpu_max: Math.min(100, round2(cpuMax)),
+        // The minutes with a row in the bucket, which is what the hourly tier
+        // uses to weight a partial bucket.
+        minutes: n,
+        swap_used: Math.round(swap / n),
+        tcp: Math.round(tcp / n),
+        udp: Math.round(udp / n),
+        procs: Math.round(procs / n),
+      }
+    }).filter((row): row is Record<string, number> => row !== null)
     return { ...empty, metrics: rows }
   }
 
@@ -454,6 +535,7 @@ export function history(id: number, series: "metrics" | "ping", hours: number, p
     const key = String(task)
     for (let i = 0; i < buckets; i++) {
       const ts = since + i * step
+      if (inGap(ts)) continue
       const answers: number[] = []
       let loss = 0
       let total = 0
