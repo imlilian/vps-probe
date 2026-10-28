@@ -245,6 +245,12 @@
       radial-gradient(ellipse 80% 55% at 76% 80%, var(--glow-c), transparent 66%),
       linear-gradient(180deg, var(--page-top), var(--page-bottom));
     background-size: 100% 900px, 100% 1100px, 100% 1200px, 100% 100%;
+    /* The violet is anchored to the BOTTOM of the document (`0 100%`), not to
+       its top: it is the one wash that belongs to the end of the page, and a
+       1200px tile hung from the top put it wherever 960px happened to fall --
+       behind the cards on a short list, mid-page on a long one, and nowhere
+       near the footer either way. */
+    background-position: 0 0, 0 0, 0 100%, 0 0;
     background-repeat: no-repeat, no-repeat, no-repeat, no-repeat;
     background-attachment: scroll, scroll, scroll, scroll;
   }

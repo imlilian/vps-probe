@@ -35,7 +35,11 @@ export function VisitorFooter({ ip, ua, today }: {
   const date = today ?? new Date()
   const day = date.toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })
   return (
-    <footer className="mt-auto border-t border-border-soft">
+    // No hairline across the top. The page's ground is one continuous wash, and
+    // a rule drawn over it turned the colophon into a separate white strip: the
+    // pixels either side are the same colour, so the line was the entire
+    // "seam". Space does the separating instead.
+    <footer className="mt-auto">
       {/* Centred and allowed to wrap: on a phone these four facts need two lines,
           and a row that wraps while centred stays one block of text. The
           separators go at that width -- an orphaned `·` at the end of a line is
