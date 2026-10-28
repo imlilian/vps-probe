@@ -578,8 +578,11 @@ fn current<T>(app: &App, full: bool, read: impl FnOnce(&mut Frame) -> T) -> T {
     if !(0..SNAPSHOT_TTL_MS).contains(&now.saturating_sub(frame.at)) {
         let nodes = visible_nodes(app, full).unwrap_or_default();
         // `admin` is included so the panel's first fetch and its stream share one
-        // cached frame.
-        let json = json!({"nodes": nodes, "admin": full}).to_string().into();
+        // cached frame. `at` is the millisecond this frame was built, and it is
+        // what the detail page stamps a live sample with: the newest points then
+        // sit on the same clock as the history buckets behind them -- the hub's,
+        // not whichever clock the browser happens to keep.
+        let json = json!({"nodes": nodes, "admin": full, "at": now}).to_string().into();
         *frame = Frame { at: now, json, gzip: None };
     }
     read(frame)
@@ -3321,6 +3324,31 @@ mod tests {
             .unwrap();
         assert_eq!(unpacked, public.as_str(), "the gzipped frame is the same frame");
         assert_eq!(live_gzip(&app).as_ptr(), live_gzip(&app).as_ptr(), "compressed once per frame");
+    }
+
+    /// The page draws its realtime trace on the hub's clock: the frame says
+    /// when it was built, and a reused frame keeps saying the same.
+    #[test]
+    fn the_frame_says_when_it_was_built() {
+        let app = app();
+        node(&app, "open", true);
+
+        let first: Value = serde_json::from_str(live_snapshot(&app, false).as_str()).unwrap();
+        let at = first["at"].as_i64().expect("the frame carries the millisecond it was built");
+        let now = Utc::now().timestamp_millis();
+        assert!((now - at).abs() < 5_000, "stamped when it was built, not when it is read");
+        assert_eq!(first["nodes"][0]["name"], "open", "and the frame is still the node list");
+
+        // Reused inside the TTL: the same bytes, so the same moment.
+        let held: Value = serde_json::from_str(live_snapshot(&app, false).as_str()).unwrap();
+        assert_eq!(held["at"], json!(at), "a reused frame keeps the moment it was built");
+
+        // A rebuild carries a later one. The stamp has millisecond resolution, so
+        // the clock has to move before the second frame is built.
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        app.snapshot.lock().unwrap()[0].at = 0;
+        let rebuilt: Value = serde_json::from_str(live_snapshot(&app, false).as_str()).unwrap();
+        assert!(rebuilt["at"].as_i64().unwrap() > at, "a rebuilt frame is stamped again");
     }
 
     #[test]

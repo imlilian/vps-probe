@@ -89,10 +89,11 @@ function attachSocket(server: ViteDevServer) {
     }
     // Frames carry the same body as `/api/nodes`, uncompressed: the page
     // appends `?gzip` and decodes only what arrives as binary, so text passes
-    // straight through, exactly as a hub without the parameter answers.
+    // straight through, exactly as a hub without the parameter answers. `at` is
+    // the millisecond the frame was built, as the real one sends it.
     const push = () => {
       if (socket.destroyed) return stop()
-      socket.write(frame(JSON.stringify({ nodes: nodeList() })))
+      socket.write(frame(JSON.stringify({ nodes: nodeList(), at: Date.now() })))
     }
     timer = setInterval(push, PUSH_MS)
     push()
@@ -128,7 +129,7 @@ export function demoHub(): Plugin {
             ip: "203.0.113.42",
           })
         }
-        if (url.pathname === "/api/nodes") return sendJson(res, { nodes: nodeList() })
+        if (url.pathname === "/api/nodes") return sendJson(res, { nodes: nodeList(), at: Date.now() })
 
         const match = url.pathname.match(/^\/api\/nodes\/(\d+)\/metrics$/)
         if (match) {

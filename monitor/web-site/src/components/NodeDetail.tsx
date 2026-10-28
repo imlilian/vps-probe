@@ -10,8 +10,10 @@ import { MetricGrid } from "@/components/detail/MetricGrid"
  * four information cards, then the load and latency halves. Each half owns its
  * range and its request; this component only places them.
  */
-export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
+export function NodeDetail({ node, at = 0, historyDays, onBack, nodes = [], onOpen }: {
   node: Node
+  /** The millisecond the hub built the frame carrying `node`; 0 when it does not say. */
+  at?: number
   historyDays: number
   onBack: () => void
   /** The public fleet, already ordered, for the header's switcher. */
@@ -34,7 +36,7 @@ export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
 
       <MetricGrid node={node} />
       <InfoGrid node={node} />
-      <LoadSection node={node} historyDays={historyDays} />
+      <LoadSection node={node} at={at} historyDays={historyDays} />
       <LatencySection node={node} historyDays={historyDays} />
     </div>
   )

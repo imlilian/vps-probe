@@ -19,6 +19,20 @@ export type LiveRow = {
 /** Five minutes at the stream's two-second cadence. */
 export const LIVE_CAP = 150
 
+/**
+ * Where a pushed sample belongs on the time axis: the millisecond the hub built
+ * the frame, or the browser's clock for a hub that does not say.
+ *
+ * The history rows arrive stamped by the hub, so borrowing the browser's clock
+ * for the newest samples mixes two clocks on one axis -- a visitor a minute
+ * behind draws a line that runs backwards into the seeded buckets, and the
+ * dedupe below then eats the first samples instead of appending them. A hub
+ * from before the field falls back, which is the old behaviour exactly.
+ */
+export function frameStamp(at: number): number {
+  return Number.isFinite(at) && at > 0 ? at : Date.now()
+}
+
 /** A history bucket in the shape a live row uses; the timestamps are both ms. */
 export function toLive(row: {
   ts: number
@@ -72,8 +86,18 @@ export function appendLive(rows: LiveRow[], metrics: Metrics, ts: number): LiveR
  * The five-minute trace behind the 实时 range. The node prop is a new object on
  * every push, so the effect appends on each render that actually carries a
  * sample; the state carries the node id so switching machines starts empty.
+ *
+ * Passed `metrics` of null it does nothing at all: the historical ranges draw
+ * buckets from the hub and have no use for a live buffer, and filling one behind
+ * their back re-renders the six charts every two seconds for nothing.
  */
-export function useLiveSamples(nodeId: number, metrics: Metrics | null, seed: LiveRow[] = []): LiveRow[] {
+export function useLiveSamples(
+  nodeId: number,
+  metrics: Metrics | null,
+  /** The frame's own millisecond, from the hub; 0 when it does not send one. */
+  at = 0,
+  seed: LiveRow[] = [],
+): LiveRow[] {
   const [state, setState] = useState<{ id: number; rows: LiveRow[] }>({ id: nodeId, rows: [] })
 
   useEffect(() => {
@@ -82,9 +106,9 @@ export function useLiveSamples(nodeId: number, metrics: Metrics | null, seed: Li
     setState((prev) => {
       const base = prev.id === nodeId ? prev.rows : []
       const seeded = seed.length ? mergeSeed(base, seed) : base
-      return { id: nodeId, rows: metrics ? appendLive(seeded, metrics, Date.now()) : seeded }
+      return { id: nodeId, rows: metrics ? appendLive(seeded, metrics, frameStamp(at)) : seeded }
     })
-  }, [nodeId, metrics, seed])
+  }, [nodeId, metrics, at, seed])
 
   return state.id === nodeId ? state.rows : []
 }

@@ -55,7 +55,7 @@ export default function App() {
   const { mode, choose: chooseTheme } = useTheme()
   const [me, setMe] = useState<Me | null>(null)
   const [meError, setMeError] = useState("")
-  const { nodes, error, closed } = useNodes()
+  const { nodes, at, error, closed } = useNodes()
   const [open, go] = useNodeRoute()
   // Which card was pressed on the way to a node page. A card is a `role="button"`
   // that unmounts when its page opens, so the browser drops focus back to `body`
@@ -169,6 +169,7 @@ export default function App() {
             <Suspense fallback={<Skeleton className="h-96" />}>
               <NodeDetail
                 node={selected}
+                at={at}
                 historyDays={me.history_days ?? 7}
                 onBack={() => go(null)}
                 nodes={sorted}

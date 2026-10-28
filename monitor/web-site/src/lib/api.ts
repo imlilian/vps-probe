@@ -181,11 +181,23 @@ const frameText = (data: string | Blob) =>
   typeof data === "string" ? data : new Response(data.stream().pipeThrough(new DecompressionStream("gzip"))).text()
 
 /**
+ * One pushed frame: the nodes, and the millisecond the hub built it.
+ *
+ * `at` is what makes a live sample's place on the time axis the hub's answer
+ * rather than the browser's guess: the history rows are stamped by the hub, and
+ * a visitor whose clock is a minute off would otherwise draw today's samples a
+ * minute away from yesterday's buckets. Absent on a hub that predates it.
+ */
+export type Frame = { nodes: Node[]; at?: number }
+
+/**
  * Live node list. Uses the WebSocket the hub pushes every two seconds, falling
  * back to polling if it cannot be established.
  */
 export function useNodes() {
   const [nodes, setNodes] = useState<Node[] | null>(null)
+  /** When the hub built the frame `nodes` came in; 0 when it does not say. */
+  const [at, setAt] = useState(0)
   const [error, setError] = useState<string | null>(null)
   // Set when the hub answers 401: the status page has been closed to anonymous
   // callers since this tab loaded. The hub also ends the stream, so this surfaces
@@ -199,9 +211,10 @@ export function useNodes() {
     let retry: ReturnType<typeof setTimeout> | null = null
     let silent: ReturnType<typeof setTimeout> | null = null
 
-    const receive = (list: Node[]) => {
-      const safe = safeNodes(list)
+    const receive = (frame: Frame) => {
+      const safe = safeNodes(frame.nodes ?? [])
       setNodes(safe)
+      setAt(typeof frame.at === "number" && Number.isFinite(frame.at) ? frame.at : 0)
       setError(null)
       setClosed(false)
     }
@@ -211,9 +224,9 @@ export function useNodes() {
     let epoch = 0
     const fetchOnce = () => {
       const started = epoch
-      return api<{ nodes: Node[] }>("/nodes")
+      return api<Frame>("/nodes")
         .then((d) => {
-          if (started === epoch) receive(d.nodes)
+          if (started === epoch) receive(d)
         })
         .catch((e: Error) => {
           if (started !== epoch) return
@@ -263,10 +276,10 @@ export function useNodes() {
       opened.onmessage = (event) => {
         decoded = decoded
           .then(async () => {
-            const nodes = JSON.parse(await frameText(event.data)).nodes
+            const frame = JSON.parse(await frameText(event.data)) as Frame
             if (opened.readyState !== WebSocket.OPEN) return
             watch()
-            receive(nodes)
+            receive(frame)
             // The stream has returned; the poll was only covering for it.
             if (poll) {
               clearInterval(poll)
@@ -316,5 +329,5 @@ export function useNodes() {
     }
   }, [])
 
-  return { nodes, error, closed }
+  return { nodes, at, error, closed }
 }
