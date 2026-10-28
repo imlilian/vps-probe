@@ -13,6 +13,27 @@ import { cycleMonths, daysUntil } from "./format.ts"
 import { toUSD } from "./rates.ts"
 
 /**
+ * This period's usage as the plan meters it. The hub computes it; the switch
+ * below serves only a hub from before `month_used`. Lives here rather than in
+ * the node card because the detail page's quota card asks the same question and
+ * must get the same answer.
+ */
+export function monthUsage(node: Node): number {
+  if (typeof node.month_used === "number") return node.month_used
+  const { month_rx: rx, month_tx: tx } = node
+  switch (node.traffic_mode) {
+    case "up":
+      return tx
+    case "down":
+      return rx
+    case "max":
+      return Math.max(rx, tx)
+    default:
+      return rx + tx
+  }
+}
+
+/**
  * Days left on a plan, on the hub's calendar when it sends one.
  *
  * Exported because the list's expiry sort asks the same question of the same

@@ -341,70 +341,66 @@ try {
   // offers. Its charts need effects and a viewport, so what is asserted here is
   // everything above them -- and the one field that must not be here at all.
   const { NodeDetail, Connections } = await server.ssrLoadModule("/src/components/NodeDetail.tsx")
-  const { windows } = await server.ssrLoadModule("/src/lib/format.ts")
   const detail = (props: Record<string, unknown> = {}) =>
     renderToString(createElement(NodeDetail, {
       node: fleet[1], historyDays: 7, onBack() {}, ...props,
     }))
 
   const page = detail()
-  // A figure and its unit stay together on a phone: the cell broke "↑ 4.53 GB"
-  // after the number and left the unit alone on the next line.
-  assert.match(page, /\d\u00a0(?:B|KB|MB|GB|TB)/, "the unit is glued to its figure")
-  for (const want of ["香港-CN2-02", "全部节点", "系统", "CPU", "内存 / 硬盘", "架构", "今日流量", "续费"]) {
-    assert.ok(page.includes(want), `missing ${want}`)
+  // Sixteen figures: the price, the four live resources, what is queued, and
+  // what the machine has moved. The labels are the contract; the formatting is
+  // asserted on the few that have a non-obvious unit.
+  for (const label of [
+    "节点价格", "月均支出", "剩余时间", "剩余价值",
+    "CPU 使用率", "内存使用率", "交换内存", "硬盘使用率",
+    "系统负载", "进程数", "连接数", "运行时间",
+    "实时上行", "实时下行", "累计流量", "流量配额",
+  ]) {
+    assert.ok(page.includes(`text-muted-foreground">${label}</span>`), `missing the ${label} card`)
   }
+  for (const title of ["硬件信息", "系统信息", "存储信息", "网络信息"]) {
+    assert.ok(page.includes(`>${title}</h3>`), `missing the ${title} card`)
+  }
+  // The figure and its unit are separate tokens now: `59.90` at the figure
+  // weight and `月` a step down, rather than one string split at a space.
+  assert.match(page, /font-semibold tnum break-keep sm:text-2xl">¥59\.90<\/span><span class="[^"]*text-2xs[^"]*">\/ 月<\/span>/, "price and period")
+  assert.ok(page.includes("¥13.98"), "remaining value is prorated in the node's currency")
+  assert.match(page, />7<\/span><span class="[^"]*text-2xs[^"]*">天<\/span>/, "seven days left")
+  assert.ok(page.includes("CPU Mark"), "the CPU's public benchmark is one link away")
+  assert.ok(page.includes("高端服务器级"), "EPYC 7B13 is an A/consumer-context server tier")
   // React separates a text child from an expression with a comment.
   assert.match(page, /agent <!-- -->1\.4\.2/)
-  // The heading says the state in one word; the uptime moved into the figures
-  // below when the header stopped being a card. The way back is an icon now,
-  // named for a screen reader rather than spelled out.
-  assert.ok(page.includes(">在线<"), "the state is one word")
-  assert.ok(!page.includes(">在线 9"), "and the uptime is not glued to it")
   assert.match(page, /aria-label="返回全部节点"/, "the way back is an icon button")
   assert.match(page, /aria-label="切换节点"/, "and the fleet switcher is a select")
-  // Six cells of the spec sheet, so the hairline grid divides into rows of two,
-  // three and six.
-  assert.equal(page.match(/bg-card-2 px-3 py-2\.5/g)?.length, 6)
-  // Six figures above it, which is the question the page is opened with. The
-  // spec sheet has its own card and a heading now, a step down from these.
-  for (const label of ["CPU", "内存", "硬盘", "负载", "连接", "今日流量"]) {
-    assert.ok(page.includes(`text-2xs text-muted-foreground">${label}</span>`), `missing the ${label} figure`)
-  }
-  assert.equal(page.match(/rounded-lg border border-border-soft bg-card-2 px-3 py-2"/g)?.length, 6, "six tiles")
-  assert.ok(page.includes(">规格<"), "the spec sheet is a card with a heading")
-  // Figure and unit are set apart on the tiles too: `18` at full weight, `%` a
-  // step down, which is the rule the cards and footnotes already follow.
-  assert.match(
-    page,
-    /font-semibold text-foreground text-lg leading-none">\d+(?:\.\d+)?<\/span><span class="ml-1 text-2xs[^"]*">%/,
-    "a percentage's sign sits a step down",
-  )
-  // Two views, one of them on, and every window the hub keeps history for. The
-  // 削峰 chip sits on both tabs now -- CPU is clipped by the same switch -- and
-  // is off at six hours.
-  assert.ok(page.includes('aria-label="视图"'))
-  assert.equal(page.match(/aria-pressed="true"/g)?.length, 1 + 1, "one view and one range")
-  assert.equal(page.match(/aria-pressed="false"/g)?.length, 1 + (windows(7).length - 1) + 2, "plus 削峰 and the star")
+  assert.ok(page.includes(">在线<"), "the state is one word")
+  assert.ok(!page.includes(">在线 9"), "and the uptime is not glued to it")
+  // Two controls are on: the resources view and the six-hour range. The star,
+  // the other view, the other three ranges and the 削峰 chip are off.
+  assert.equal(page.match(/aria-pressed="true"/g)?.length, 2, "one view and one range")
+  assert.equal(page.match(/aria-pressed="false"/g)?.length, 6, "star + other view + other ranges + 削峰")
   // A public page never shows where the machine is: an operator's `ip` and
   // `hostname` are the panel's.
   const hidden = detail({ node: { ...fleet[1], ip: "203.0.113.7", hostname: "hk-02" } })
   assert.ok(!hidden.includes("203.0.113.7"), "the address stays in the panel")
   assert.ok(!hidden.includes("hk-02"), "and so does the hostname")
-  // The note written for visitors. The hub has sent `public_remark` on every
-  // frame since the monorepo merge and this page drew the panel-only `remark`
-  // instead: a visitor saw no note at all, and a signed-in one saw a note that
-  // was never meant for them.
+  // The note written for visitors.
   assert.ok(page.includes("上海移动方向近期丢包偏高"), "the public note reaches the visitor")
   const panelNote = detail({ node: { ...fleet[1], public_remark: "", remark: "恢复密码在 1Password" } })
   assert.ok(panelNote.includes("恢复密码在 1Password"), "a hub without one falls back to the panel's")
-  // No renewal date is words on the page rather than `∞`, which is a meter's
-  // mark for "no ceiling".
+  // No renewal date is words on the page rather than `∞`.
   const undated = detail({ node: { ...fleet[1], expires_at: null, expires_in: null } })
-  assert.ok(undated.includes("不限期"), "an undated machine says so in words")
+  assert.ok(undated.includes("永久"), "an undated machine says so in words")
+  // Free, no cap and no swap are three different absences.
+  const freeNode = detail({ node: { ...fleet[1], price: 0, billing_cycle: "once" } })
+  assert.ok(freeNode.includes("免费"), "a free machine says 免费")
+  assert.ok(freeNode.includes("无"), "and has no remaining value")
+  const uncapped = detail({ node: { ...fleet[1], traffic_limit: 0 } })
+  assert.ok(uncapped.includes("∞"), "no traffic cap is infinity")
+  const noSwap = detail({ node: { ...fleet[1], swap_total: 0, metrics: { ...fleet[1]!.metrics!, swap_total: 0 } } })
+  assert.ok(noSwap.includes("没有 Swap"), "a machine without swap says so in the tooltip")
   // The flag is the node's identity here, as on the card.
   assert.match(page, /alt="HK"/)
-  console.log("the detail page names the machine, hides its address and offers both views")
+  console.log("the detail page names the machine, shows sixteen figures and hides its address")
 
   // The connection panel on its own, fed the hub's own answer: the legend is the
   // readout, so each chip carries the count the machine is at now -- the live

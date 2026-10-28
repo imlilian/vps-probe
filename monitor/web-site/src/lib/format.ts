@@ -83,7 +83,9 @@ export function uptimeShort(seconds: number): string {
 /** Whole days until a date, negative once it has passed. */
 export function daysUntil(date?: string | null): number | null {
   if (!date) return null
-  const target = new Date(`${date}T00:00:00`).getTime()
+  // The hub writes a full ISO timestamp on some paths and a bare date on
+  // others; `2027-03-17T00:00:00Z` appended to `T00:00:00` is not a date.
+  const target = new Date(`${date.slice(0, 10)}T00:00:00`).getTime()
   if (Number.isNaN(target)) return null
   return Math.ceil((target - Date.now()) / 86400000)
 }

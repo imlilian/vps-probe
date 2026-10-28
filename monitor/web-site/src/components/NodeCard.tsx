@@ -11,6 +11,7 @@ import { Card } from "@/components/ui/card"
 import { FlowTag } from "@/components/Flow"
 import { Glyph } from "@/components/ui/glyph"
 import { percentText, RESOURCE_TONES } from "@/components/Meter"
+import { monthUsage } from "@/lib/stats"
 import { PingPanel } from "@/components/PingPanel"
 import type { Node } from "@/lib/api"
 import {
@@ -18,6 +19,8 @@ import {
   splitUnit, uptimeShort,
 } from "@/lib/format"
 import { cn } from "@/lib/utils"
+
+export { monthUsage }
 
 // Emitted as files and fetched on first use, so a page carries only the flags its
 // nodes are in rather than all 265. vite.config.ts keeps them from being inlined
@@ -43,25 +46,6 @@ const DISTROS: [string, SimpleIcon][] = [
   ["centos", siCentos], ["rocky", siRockylinux], ["almalinux", siAlmalinux], ["red hat", siRedhat],
   ["fedora", siFedora], ["arch", siArchlinux], ["opensuse", siOpensuse],
 ]
-
-/**
- * This period's usage as the plan meters it. The hub computes it; the switch
- * below serves only a hub from before `month_used`.
- */
-export function monthUsage(node: Node): number {
-  if (typeof node.month_used === "number") return node.month_used
-  const { month_rx: rx, month_tx: tx } = node
-  switch (node.traffic_mode) {
-    case "up":
-      return tx
-    case "down":
-      return rx
-    case "max":
-      return Math.max(rx, tx)
-    default:
-      return rx + tx
-  }
-}
 
 /** `MAX`/`SUM`/`UP`/`DOWN`: how the plan counts, in the width of a tag. */
 const MODE_LABEL: Record<string, string> = { up: "UP", down: "DOWN", max: "MAX", sum: "SUM" }
@@ -143,7 +127,7 @@ export function Country({ node }: { node: Node }) {
  * shows on hover. Mixed toward white on the dark theme, where AlmaLinux's black
  * and CentOS's navy would otherwise vanish.
  */
-function OsIcon({ os }: { os: string }) {
+export function OsMark({ os, className }: { os: string; className?: string }) {
   const name = os.toLowerCase()
   const icon = DISTROS.find(([key]) => name.includes(key))?.[1] ?? siLinux
   return (
@@ -151,12 +135,16 @@ function OsIcon({ os }: { os: string }) {
       viewBox="0 0 24 24"
       role="img"
       style={{ "--brand": `#${icon.hex}` } as CSSProperties}
-      className="size-3 shrink-0 distro-mark"
+      className={cn("shrink-0 distro-mark", className ?? "size-3")}
     >
       <title>{osName(os)}</title>
       <path d={icon.path} />
     </svg>
   )
+}
+
+function OsIcon({ os }: { os: string }) {
+  return <OsMark os={os} />
 }
 
 /** Uptime, as a capsule: `92d 4h` needs no verb in any language. */
