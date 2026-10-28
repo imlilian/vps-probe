@@ -207,9 +207,9 @@ export default function App() {
       </main>
 
       {/* The address is the hub's answer, so it follows `me`: the footer draws
-          its four local facts on the first frame and gains the fifth when it
-          arrives, rather than holding the whole line back for it. */}
-      <VisitorFooter authed={me.authed} ip={me.ip} />
+          its own facts on the first frame and gains the address when it arrives,
+          rather than holding the whole line back for it. */}
+      <VisitorFooter ip={me.ip} />
     </div>
   )
 }

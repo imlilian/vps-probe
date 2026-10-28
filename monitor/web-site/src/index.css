@@ -121,27 +121,33 @@
   /* Two lifts rather than one. A card is `card` at rest and `raise` under the
      pointer, and each is two shadows: a 1px contact shadow, then a wide, weak
      one that stands the card off the page. One shadow deep enough to read does
-     the work of a border and makes a grid of eight cards look punched out. */
-  --elev-card: light-dark(
-    0 1px 2px oklch(0.208 0.042 265.755 / 3%),
-    0 4px 12px -8px oklch(0.208 0.042 265.755 / 5%)
-  ), light-dark(
-    0 1px 2px oklch(0 0 0 / 25%),
-    0 6px 18px -12px oklch(0 0 0 / 45%)
-  );
-  --elev-raise: light-dark(
-    0 2px 6px oklch(0.208 0.042 265.755 / 4%),
-    0 12px 28px -18px oklch(0.208 0.042 265.755 / 10%)
-  ), light-dark(
-    0 2px 6px oklch(0 0 0 / 30%),
-    0 14px 28px -16px oklch(0 0 0 / 55%)
-  );
+     the work of a border and makes a grid of eight cards look punched out.
+     `light-dark()` goes in the *colour* slot of each shadow, not around the
+     whole shadow: it takes colours, and `light-dark(0 1px 2px c, 0 4px 12px c)`
+     is not one -- it survives as a custom property and then fails when
+     substituted, which left every `shadow-card` in the app resolving to `none`
+     and every card flat. The two sides share a geometry and differ in alpha,
+     which is what carries a shadow on a dark page anyway. */
+  --elev-card:
+    0 1px 2px light-dark(oklch(0.208 0.042 265.755 / 3%), oklch(0 0 0 / 25%)),
+    0 4px 12px -8px light-dark(oklch(0.208 0.042 265.755 / 5%), oklch(0 0 0 / 45%));
+  --elev-raise:
+    0 2px 6px light-dark(oklch(0.208 0.042 265.755 / 4%), oklch(0 0 0 / 30%)),
+    0 12px 28px -18px light-dark(oklch(0.208 0.042 265.755 / 10%), oklch(0 0 0 / 55%));
 
-  /* Two cold washes spilling from the top corners, at Horizon's strength
-     (#467ee60b / #199fb006) rather than ours (7% / 5%). With the dot grid gone
-     these are the only texture on the page, so they have to stay quiet. */
-  --glow-a: light-dark(oklch(0.623 0.214 259.815 / 6%), oklch(0.623 0.214 259.815 / 8%));
-  --glow-b: light-dark(oklch(0.704 0.14 182.503 / 4%), oklch(0.704 0.14 182.503 / 5%));
+  /* Three washes: blue from the top left, teal from the top right, violet rising
+     from the bottom. Three because the reference page has three -- its glass
+     mode washes blue, teal and violet (`--glass-wash-1..3`, 25%/18%/20%) -- and
+     it is not a picture: that theme ships an empty `backgroundImage` setting and
+     its stylesheet references no `url()` at all.
+     Stronger than the reference's own 4% and 2% (#467ee60b / #199fb006): those
+     sit behind translucent panels over a greyer ground, while here the wash
+     shows only in the gutters of a card grid on slate-50 -- at 4%, blue-500
+     moved a channel by one step and read as no wash at all. The colour has
+     nowhere to go but those gutters, so that is where it is put. */
+  --glow-a: light-dark(oklch(0.623 0.214 259.815 / 17%), oklch(0.623 0.214 259.815 / 16%)); /* blue-500 */
+  --glow-b: light-dark(oklch(0.704 0.14 182.503 / 12%), oklch(0.704 0.14 182.503 / 11%)); /* cyan-400 */
+  --glow-c: light-dark(oklch(0.606 0.25 292.717 / 15%), oklch(0.606 0.25 292.717 / 13%)); /* violet-500 */
 }
 
 /* Pinned by `useTheme`. After the :root block so it wins on equal specificity;
@@ -224,17 +230,19 @@
   html { scrollbar-gutter: stable; }
   body {
     @apply bg-background text-foreground antialiased;
-    /* The base is a shallow vertical wash, then two wide ellipses hanging off
-       the top corners. No dot grid: the cards are the texture now. The first
+    /* The base is a shallow vertical wash, then three wide ellipses: two hanging
+       off the top corners and one rising from the bottom right, which is where
+       the third hue lives. No dot grid: the cards are the texture now. The first
        layer stretches over the whole document so a long page keeps its light;
        the washes are sized in pixels so they fade out before the fold. */
     background-image:
       linear-gradient(180deg, var(--page-top), var(--page-bottom)),
-      radial-gradient(ellipse 80% 50% at 8% -10%, var(--glow-a), transparent 65%),
-      radial-gradient(ellipse 55% 40% at 96% 12%, var(--glow-b), transparent 60%);
-    background-size: 100% 100%, 100% 900px, 100% 1100px;
-    background-repeat: no-repeat, no-repeat, no-repeat;
-    background-attachment: scroll, scroll, scroll;
+      radial-gradient(ellipse 85% 62% at 6% 8%, var(--glow-a), transparent 70%),
+      radial-gradient(ellipse 62% 48% at 98% 22%, var(--glow-b), transparent 66%),
+      radial-gradient(ellipse 80% 55% at 76% 80%, var(--glow-c), transparent 66%);
+    background-size: 100% 100%, 100% 900px, 100% 1100px, 100% 1200px;
+    background-repeat: no-repeat, no-repeat, no-repeat, no-repeat;
+    background-attachment: scroll, scroll, scroll, scroll;
   }
   ::selection { @apply bg-brand/20; }
 }

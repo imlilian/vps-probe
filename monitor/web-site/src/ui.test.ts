@@ -27,9 +27,13 @@ try {
     }))
 
   const live = bar({})
-  for (const want of ["测试站点", "MONITOR", "实时连接", "主题：跟随系统", "主题：明亮", "主题：深色", "/admin/", "登录"]) {
+  for (const want of ["测试站点", "实时连接", "主题：跟随系统", "主题：明亮", "主题：深色", "/admin/", "登录"]) {
     assert.ok(live.includes(want), `missing ${want}`)
   }
+  // The mark and the name, and nothing after them: `/ MONITOR` named the
+  // software on a page whose only subject is the operator's own fleet.
+  assert.ok(live.includes('src="/favicon.svg"'), "the mark sits in front of the name")
+  assert.ok(!live.includes("MONITOR") && !live.includes("> / <"), "and nothing trails it")
   // The count of online nodes left the header for the summary: `7/9` in the
   // corner and `7 / 9` in a card forty pixels below are one fact twice.
   assert.ok(!live.includes("7/9"), "the header no longer counts the fleet")
@@ -43,18 +47,17 @@ try {
   assert.ok(bar({ mode: "dark" }).includes("主题：深色"))
   console.log("the theme slider offers all three stops and marks one")
 
-  // The footer: who is reading, from what, and when. The address only appears
-  // when the hub sent one -- a hub predating the field draws four items, not
-  // five with a hole.
+  // The footer: from what, and when. The address only appears when the hub sent
+  // one -- a hub predating the field draws three items, not four with a hole.
   const { VisitorFooter } = await server.ssrLoadModule("/src/components/VisitorFooter.tsx")
   const edge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0"
   const footer = (props: Record<string, unknown>) =>
     renderToString(createElement(VisitorFooter, {
-      authed: false, ua: edge, today: new Date(2026, 9, 28), ...props,
+      ua: edge, today: new Date(2026, 9, 28), ...props,
     }))
 
   const withIp = footer({ ip: "2605:52c0:2:3de2:be24:11ab" })
-  for (const want of ["访客", "感谢访问", "Windows", "Edge", "2605:52c0:2:3de2:be24:11ab", "2026年10月28日"]) {
+  for (const want of ["Windows", "Edge", "2605:52c0:2:3de2:be24:11ab", "2026年10月28日"]) {
     assert.ok(withIp.includes(want), `missing ${want}`)
   }
   assert.ok(withIp.includes("<footer"), "it is a footer")
@@ -62,8 +65,11 @@ try {
   assert.ok(!withIp.includes("Chrome"), "Edge is not read as Chrome")
   assert.ok(footer({}).includes("2026年10月28日"), "the date survives without an address")
   assert.ok(!footer({}).includes("2605:"), "no address, no empty slot")
-  assert.ok(footer({ authed: true }).includes("管理员"), "a signed-in reader is named as one")
-  console.log("the footer names the reader, the system, the browser and the day")
+  // The visitor's own label went with the left-hand block: the page no longer
+  // tells a reader who they are, only what they are reading it on.
+  assert.ok(!withIp.includes("感谢访问") && !withIp.includes("访客"), "no self-description")
+  assert.ok(withIp.includes("justify-center"), "one centred line, not two edges")
+  console.log("the footer gives the system, the browser, the address and the day")
 
   // A broken stream says so on the pill, which is the only thing in the bar a
   // visitor can look at before the figures below.
@@ -220,6 +226,12 @@ try {
   const withExpired = renderToString(createElement(Overview, { nodes: overdue }))
   assert.ok(withExpired.includes("1 台已过期"), "the expired node is counted on its own")
   assert.ok(!withExpired.includes("2 台 30 天内到期"), "and not folded into the 30-day count")
+  // The two flow tiles pin their rows to the bottom of the fixed box: 14px rows
+  // under an 18px label read as a caption glued to the title, so the slack the
+  // box already had is given back as air above the first row instead.
+  assert.equal(overview.match(/class="mt-auto"/g)?.length, 2, "the two flow bodies sit at the bottom")
+  // A tile is not a link, but it answers the pointer: five of them, one rule.
+  assert.equal(overview.match(/hover:-translate-y-0\.5/g)?.length, 5, "every tile lifts on hover")
   // Two flow tiles, four rows: the arrow and its two letters, then the figure.
   assert.equal(overview.match(/>RX</g)?.length, 2, "one RX row per flow tile")
   assert.equal(overview.match(/>TX</g)?.length, 2, "and one TX")
@@ -232,7 +244,7 @@ try {
   assert.ok(!overview.includes("US$"))
   // One height for every tile, whatever it holds: the box is what gives the
   // figure its air, and a traffic card with no note must not be shorter.
-  assert.equal(overview.match(/min-h-27/g)?.length, 5)
+  assert.equal(overview.match(/min-h-29/g)?.length, 5)
   // Five into two columns is one cell over, so the last tile takes the row rather
   // than leaving half a card of paper beside it.
   assert.match(overview, /col-span-2 sm:col-span-1[^>]*>[\s\S]*剩余价值/)

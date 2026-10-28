@@ -64,13 +64,11 @@ export function TopBar({ siteName, authed, error, closed, mode, onMode, onHome }
           {/* The hub stamps this path with the icon the operator uploaded, or
               with the theme's own if they uploaded none. */}
           <img src="/favicon.svg" alt="" className="size-7 shrink-0 rounded-lg shadow-sm ring-1 ring-foreground/10" />
+          {/* The mark and the name, and nothing after it. `/ MONITOR` used to sit
+              here as the brand's full form; it named the software on a page whose
+              only job is the operator's own fleet, and the badge's boxed capitals
+              took the eye that the name should have had. */}
           <span className="truncate text-sm font-bold tracking-tight">{siteName}</span>
-          {/* The separator and the badge are the brand's full form: a page whose
-              tab is 40px wide still gets the name alone. */}
-          <span aria-hidden className="hidden font-light text-border sm:inline">/</span>
-          <span className="hidden shrink-0 rounded border bg-card-2 px-1.5 py-0.5 text-2xs font-semibold tracking-widest text-muted-foreground sm:inline">
-            MONITOR
-          </span>
         </button>
 
         <div className="flex w-full items-center justify-end gap-2 xs:ml-auto xs:w-auto xs:gap-3">

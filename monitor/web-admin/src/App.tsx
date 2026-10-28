@@ -158,16 +158,34 @@ export default function App() {
         <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur">
           <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
             {/* The site name is the way back to the status page, as on the
-                public page's own header. */}
-            <a href="/" className="font-semibold transition-opacity hover:opacity-70">
-              {me.site_name || "Monitor"}
+                public page's own header -- with the mark in front of it, the same
+                way that header carries its own. `/admin/favicon.svg` is the icon
+                this panel's tab already shows: the hub stamps it with the
+                operator's upload when there is one, and serves the three-bar mark
+                in `public/` when there is not. */}
+            <a
+              href="/"
+              className="flex min-w-0 items-center gap-2.5 font-semibold transition-opacity hover:opacity-70"
+            >
+              <img
+                src="/admin/favicon.svg"
+                alt=""
+                className="size-7 shrink-0 rounded-lg shadow-sm ring-1 ring-foreground/10"
+              />
+              {/* `min-w-0` here and `truncate` on the name: a long site name used
+                  to push the controls off a phone's bar, and the name gave way a
+                  character at a time. */}
+              <span className="truncate">{me.site_name || "Monitor"}</span>
             </a>
-            <span className="text-xs text-muted-foreground">后台</span>
+            <span className="shrink-0 text-xs text-muted-foreground">后台</span>
             <div className="flex-1" />
             {/* The status page is a separate app, so this is a navigation. */}
+            {/* The label goes below `sm`, where the bar has no room for it: the
+                icon still says "leaves this app", and the tooltip and the
+                accessible name stay whole. */}
             <Button variant="ghost" size="sm" asChild>
-              <a href="/">
-                <ExternalLink /> 状态面板
+              <a href="/" aria-label="状态面板" title="状态面板">
+                <ExternalLink /> <span className="hidden sm:inline">状态面板</span>
               </a>
             </Button>
             <Button variant="ghost" size="icon" onClick={toggleTheme} title="切换主题">
