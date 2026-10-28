@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react"
+import { useId, useMemo, useRef, useState } from "react"
 import { Activity, Cable, Cpu, HardDrive, MemoryStick, Network } from "lucide-react"
 import {
   Area, CartesianGrid, ComposedChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -11,7 +11,7 @@ import {
 } from "@/lib/chart"
 import { detailBytes, detailRate, diskForecast } from "@/lib/detail"
 import { decimate } from "@/lib/downsample"
-import { axisBytes, despike, quarters, RATE_FLOOR, rateAxis, withGaps } from "@/lib/format"
+import { axisBytes, despike, despikeWindow, quarters, RATE_FLOOR, rateAxis, withGaps } from "@/lib/format"
 import { useElementWidth, type MetricPoint } from "@/lib/history"
 import { renderBudget } from "@/lib/sampling"
 
@@ -35,12 +35,8 @@ function Num({ value, unit }: { value: string; unit?: string }) {
   )
 }
 
-/** A despike window in samples, by the bucket's duration rather than a count. */
-function windowFor(rows: { ts: number }[]): number {
-  let step = Infinity
-  for (let i = 1; i < rows.length; i++) step = Math.min(step, rows[i].ts - rows[i - 1].ts)
-  return Math.min(15, Math.max(3, Math.round(420_000 / step) | 1))
-}
+/** Every series of a panel switched off: a sentence rather than a pair of empty axes. */
+const NO_SERIES = "没有选中任何序列"
 
 function useHidden() {
   const [hidden, setHidden] = useState<string[]>([])
@@ -52,6 +48,7 @@ function useHidden() {
 
 function CpuPanel({ node, rows, hours, smooth, budget }: { node: Node; rows: ChartRow[]; hours: number; smooth: boolean; budget: number }) {
   const { hidden, toggle } = useHidden()
+  const fade = useId().replace(/:/g, "")
   const hasPeak = rows.some((r) => (r.cpu_max ?? 0) > 0)
   const data = useMemo(() => decimate(rows, budget, [
     (row) => row.cpu,
@@ -59,7 +56,7 @@ function CpuPanel({ node, rows, hours, smooth, budget }: { node: Node; rows: Cha
   ]), [rows, budget, hasPeak])
   const chart = useMemo(() => {
     if (!smooth) return data
-    const cleaned = despike(data.map((r) => ("cpu" in r ? r.cpu : null)), windowFor(data))
+    const cleaned = despike(data.map((r) => ("cpu" in r ? r.cpu : null)), despikeWindow(data))
     return data.map((r, i) => ({ ...r, cpu_s: cleaned[i] }))
   }, [data, smooth])
   const live = node.metrics
@@ -67,6 +64,7 @@ function CpuPanel({ node, rows, hours, smooth, budget }: { node: Node; rows: Cha
     { key: "cpu", label: "CPU", color: COLOR.cpu },
     ...(hasPeak ? [{ key: "peak", label: "峰值", color: COLOR.cpu, dash: "6 3" }] : []),
   ]
+  const empty = hidden.includes("cpu") && (!hasPeak || hidden.includes("peak"))
 
   return (
     <ChartCard
@@ -75,28 +73,32 @@ function CpuPanel({ node, rows, hours, smooth, budget }: { node: Node; rows: Cha
       title="CPU"
       note={live ? <Num value={live.cpu.toFixed(1)} unit="%" /> : <span>—</span>}
       legend={<ChartLegend label="CPU 曲线" items={items} hidden={hidden} onToggle={toggle} />}
+      empty={empty ? NO_SERIES : undefined}
     >
-      <ResponsiveContainer>
-        <ComposedChart data={chart}>
-          <ChartFade id="fade-cpu" color={COLOR.cpu} />
-          <CartesianGrid {...GRID} />
-          <XAxis {...timeAxis(chart, hours)} />
-          <YAxis domain={[0, 100]} ticks={CPU_TICKS} unit="%" {...VALUE_AXIS} />
-          <Tooltip {...TOOLTIP} formatter={(value, name) => [`${Number(value).toFixed(1)}%`, name]} />
-          {!hidden.includes("cpu") && (
-            <Area dataKey={smooth ? "cpu_s" : "cpu"} name="CPU" stroke={COLOR.cpu} fill="url(#fade-cpu)" {...LINE} />
-          )}
-          {hasPeak && !hidden.includes("peak") && (
-            <Line dataKey="cpu_max" name="峰值" stroke={COLOR.cpu} {...PEAK} />
-          )}
-        </ComposedChart>
-      </ResponsiveContainer>
+      {!empty && (
+        <ResponsiveContainer>
+          <ComposedChart data={chart}>
+            <ChartFade id={fade} color={COLOR.cpu} />
+            <CartesianGrid {...GRID} />
+            <XAxis {...timeAxis(chart, hours)} />
+            <YAxis domain={[0, 100]} ticks={CPU_TICKS} unit="%" {...VALUE_AXIS} />
+            <Tooltip {...TOOLTIP} formatter={(value, name) => [`${Number(value).toFixed(1)}%`, name]} />
+            {!hidden.includes("cpu") && (
+              <Area dataKey={smooth ? "cpu_s" : "cpu"} name="CPU" stroke={COLOR.cpu} fill={`url(#${fade})`} {...LINE} />
+            )}
+            {hasPeak && !hidden.includes("peak") && (
+              <Line dataKey="cpu_max" name="峰值" stroke={COLOR.cpu} {...PEAK} />
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      )}
     </ChartCard>
   )
 }
 
 function MemoryPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]; hours: number; budget: number }) {
   const { hidden, toggle } = useHidden()
+  const fade = useId().replace(/:/g, "")
   const hasSwap = node.swap_total > 0 && rows.some((r) => "swap_used" in r)
   const data = useMemo(() => decimate(rows, budget, [
     (row) => row.mem_used,
@@ -125,34 +127,38 @@ function MemoryPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow
         </span>
       ) : <span>—</span>}
       legend={<ChartLegend label="内存曲线" items={items} hidden={hidden} onToggle={toggle} />}
+      empty={items.every((item) => hidden.includes(item.key)) ? NO_SERIES : undefined}
     >
-      <ResponsiveContainer>
-        <ComposedChart data={data}>
-          <ChartFade id="fade-mem" color={COLOR.mem} />
-          <CartesianGrid {...GRID} />
-          <XAxis {...timeAxis(data, hours)} />
-          <YAxis domain={[0, node.mem_total]} ticks={quarters(node.mem_total)} tickFormatter={axisBytes} {...VALUE_AXIS} />
-          <Tooltip {...TOOLTIP} formatter={(value) => detailBytes(Number(value))} />
-          {!hidden.includes("memTotal") && (
-            <Line dataKey="mem_total" name="RAM 总量" stroke={COLOR.memTotal} {...DERIVED} />
-          )}
-          {hasSwap && !hidden.includes("swapTotal") && (
-            <Line dataKey="swap_total" name="Swap 总量" stroke={COLOR.swapTotal} {...DERIVED} />
-          )}
-          {!hidden.includes("mem") && (
-            <Area dataKey="mem_used" name="RAM" stroke={COLOR.mem} fill="url(#fade-mem)" {...LINE} />
-          )}
-          {hasSwap && !hidden.includes("swap") && (
-            <Line dataKey="swap_used" name="Swap" stroke={COLOR.swap} {...LINE} />
-          )}
-        </ComposedChart>
-      </ResponsiveContainer>
+      {items.some((item) => !hidden.includes(item.key)) && (
+        <ResponsiveContainer>
+          <ComposedChart data={data}>
+            <ChartFade id={fade} color={COLOR.mem} />
+            <CartesianGrid {...GRID} />
+            <XAxis {...timeAxis(data, hours)} />
+            <YAxis domain={[0, node.mem_total]} ticks={quarters(node.mem_total)} tickFormatter={axisBytes} {...VALUE_AXIS} />
+            <Tooltip {...TOOLTIP} formatter={(value) => detailBytes(Number(value))} />
+            {!hidden.includes("memTotal") && (
+              <Line dataKey="mem_total" name="RAM 总量" stroke={COLOR.memTotal} {...DERIVED} />
+            )}
+            {hasSwap && !hidden.includes("swapTotal") && (
+              <Line dataKey="swap_total" name="Swap 总量" stroke={COLOR.swapTotal} {...DERIVED} />
+            )}
+            {!hidden.includes("mem") && (
+              <Area dataKey="mem_used" name="RAM" stroke={COLOR.mem} fill={`url(#${fade})`} {...LINE} />
+            )}
+            {hasSwap && !hidden.includes("swap") && (
+              <Line dataKey="swap_used" name="Swap" stroke={COLOR.swap} {...LINE} />
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      )}
     </ChartCard>
   )
 }
 
 function DiskPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]; hours: number; budget: number }) {
   const { hidden, toggle } = useHidden()
+  const fade = useId().replace(/:/g, "")
   const data = useMemo(() => decimate(rows, budget, [(row) => row.disk_used]), [rows, budget])
   const live = node.metrics
   const items: LegendItem[] = [
@@ -172,22 +178,25 @@ function DiskPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]
         </span>
       ) : <span>—</span>}
       legend={<ChartLegend label="磁盘曲线" items={items} hidden={hidden} onToggle={toggle} />}
+      empty={items.every((item) => hidden.includes(item.key)) ? NO_SERIES : undefined}
     >
-      <ResponsiveContainer>
-        <ComposedChart data={data}>
-          <ChartFade id="fade-disk" color={COLOR.disk} />
-          <CartesianGrid {...GRID} />
-          <XAxis {...timeAxis(data, hours)} />
-          <YAxis domain={[0, node.disk_total]} ticks={quarters(node.disk_total)} tickFormatter={axisBytes} {...VALUE_AXIS} />
-          <Tooltip {...TOOLTIP} formatter={(value) => detailBytes(Number(value))} />
-          {!hidden.includes("diskTotal") && (
-            <Line dataKey="disk_total" name="磁盘总量" stroke={COLOR.diskTotal} {...DERIVED} />
-          )}
-          {!hidden.includes("disk") && (
-            <Area dataKey="disk_used" name="磁盘已用" stroke={COLOR.disk} fill="url(#fade-disk)" {...LINE} />
-          )}
-        </ComposedChart>
-      </ResponsiveContainer>
+      {items.some((item) => !hidden.includes(item.key)) && (
+        <ResponsiveContainer>
+          <ComposedChart data={data}>
+            <ChartFade id={fade} color={COLOR.disk} />
+            <CartesianGrid {...GRID} />
+            <XAxis {...timeAxis(data, hours)} />
+            <YAxis domain={[0, node.disk_total]} ticks={quarters(node.disk_total)} tickFormatter={axisBytes} {...VALUE_AXIS} />
+            <Tooltip {...TOOLTIP} formatter={(value) => detailBytes(Number(value))} />
+            {!hidden.includes("diskTotal") && (
+              <Line dataKey="disk_total" name="磁盘总量" stroke={COLOR.diskTotal} {...DERIVED} />
+            )}
+            {!hidden.includes("disk") && (
+              <Area dataKey="disk_used" name="磁盘已用" stroke={COLOR.disk} fill={`url(#${fade})`} {...LINE} />
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      )}
     </ChartCard>
   )
 }
@@ -226,32 +235,35 @@ function NetworkPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRo
         </span>
       ) : <span>—</span>}
       legend={<ChartLegend label="网络曲线" items={items} hidden={hidden} onToggle={toggle} />}
+      empty={items.every((item) => hidden.includes(item.key)) ? NO_SERIES : undefined}
     >
-      <ResponsiveContainer>
-        <ComposedChart data={data}>
-          <CartesianGrid {...GRID} />
-          <XAxis {...timeAxis(data, hours)} />
-          <YAxis
-            scale="log"
-            domain={domain}
-            ticks={ticks}
-            tickFormatter={axisBytes}
-            unit="/s"
-            {...AXIS}
-            width={80}
-            interval={0}
-          />
-          <Tooltip {...TOOLTIP} formatter={(value) => detailRate(Number(value))} />
-          {hasPeak && !hidden.includes("downMax") && (
-            <Line dataKey="net_rx_max" name="下载峰值" stroke={COLOR.down} {...PEAK} />
-          )}
-          {hasPeak && !hidden.includes("upMax") && (
-            <Line dataKey="net_tx_max" name="上传峰值" stroke={COLOR.up} {...PEAK} />
-          )}
-          {!hidden.includes("down") && <Line dataKey="net_rx" name="下载" stroke={COLOR.down} {...LINE} />}
-          {!hidden.includes("up") && <Line dataKey="net_tx" name="上传" stroke={COLOR.up} {...LINE} />}
-        </ComposedChart>
-      </ResponsiveContainer>
+      {items.some((item) => !hidden.includes(item.key)) && (
+        <ResponsiveContainer>
+          <ComposedChart data={data}>
+            <CartesianGrid {...GRID} />
+            <XAxis {...timeAxis(data, hours)} />
+            <YAxis
+              scale="log"
+              domain={domain}
+              ticks={ticks}
+              tickFormatter={axisBytes}
+              unit="/s"
+              {...AXIS}
+              width={80}
+              interval={0}
+            />
+            <Tooltip {...TOOLTIP} formatter={(value) => detailRate(Number(value))} />
+            {hasPeak && !hidden.includes("downMax") && (
+              <Line dataKey="net_rx_max" name="下载峰值" stroke={COLOR.down} {...PEAK} />
+            )}
+            {hasPeak && !hidden.includes("upMax") && (
+              <Line dataKey="net_tx_max" name="上传峰值" stroke={COLOR.up} {...PEAK} />
+            )}
+            {!hidden.includes("down") && <Line dataKey="net_rx" name="下载" stroke={COLOR.down} {...LINE} />}
+            {!hidden.includes("up") && <Line dataKey="net_tx" name="上传" stroke={COLOR.up} {...LINE} />}
+          </ComposedChart>
+        </ResponsiveContainer>
+      )}
     </ChartCard>
   )
 }
@@ -272,17 +284,20 @@ function ConnectionsPanel({ node, rows, hours, budget }: { node: Node; rows: Cha
       title="网络连接"
       note={live ? <span>TCP {live.tcp} · UDP {live.udp}</span> : <span>—</span>}
       legend={<ChartLegend label="连接曲线" items={items} hidden={hidden} onToggle={toggle} />}
+      empty={items.every((item) => hidden.includes(item.key)) ? NO_SERIES : undefined}
     >
-      <ResponsiveContainer>
-        <LineChart data={data}>
-          <CartesianGrid {...GRID} />
-          <XAxis {...timeAxis(data, hours)} />
-          <YAxis domain={[0, "auto"]} allowDecimals={false} {...VALUE_AXIS} />
-          <Tooltip {...TOOLTIP} formatter={(value) => Math.round(Number(value))} />
-          {!hidden.includes("tcp") && <Line dataKey="tcp" name="TCP" stroke={COLOR.tcp} {...LINE} />}
-          {!hidden.includes("udp") && <Line dataKey="udp" name="UDP" stroke={COLOR.udp} {...LINE} />}
-        </LineChart>
-      </ResponsiveContainer>
+      {items.some((item) => !hidden.includes(item.key)) && (
+        <ResponsiveContainer>
+          <LineChart data={data}>
+            <CartesianGrid {...GRID} />
+            <XAxis {...timeAxis(data, hours)} />
+            <YAxis domain={[0, "auto"]} allowDecimals={false} {...VALUE_AXIS} />
+            <Tooltip {...TOOLTIP} formatter={(value) => Math.round(Number(value))} />
+            {!hidden.includes("tcp") && <Line dataKey="tcp" name="TCP" stroke={COLOR.tcp} {...LINE} />}
+            {!hidden.includes("udp") && <Line dataKey="udp" name="UDP" stroke={COLOR.udp} {...LINE} />}
+          </LineChart>
+        </ResponsiveContainer>
+      )}
     </ChartCard>
   )
 }
@@ -311,6 +326,15 @@ function ProcessPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRo
 }
 
 /**
+ * The grid below is `md:grid-cols-2` with `gap-4`, and the render budget needs
+ * the width of *one panel*. Two constants rather than two literals in the middle
+ * of an expression: a breakpoint or gap change is then one line, next to the
+ * class it mirrors.
+ */
+const TWO_COLUMNS = 768
+const GAP = 16
+
+/**
  * The six load panels over one row set. The hub already returned time buckets;
  * this only breaks the line where the node was silent, then hands each panel
  * its own colour and axis. It never averages the buckets again.
@@ -325,7 +349,7 @@ export function LoadCharts({ node, rows, hours, smooth, live = false }: {
 }) {
   const grid = useRef<HTMLDivElement>(null)
   const width = useElementWidth(grid)
-  const panelWidth = width > 0 ? (width >= 768 ? (width - 16) / 2 : width) : 0
+  const panelWidth = width > 0 ? (width >= TWO_COLUMNS ? (width - GAP) / 2 : width) : 0
   const budget = panelWidth > 0 ? renderBudget(panelWidth) : Number.POSITIVE_INFINITY
   const chart = useMemo(() => (live ? rows : withGaps(rows)).map((row) => (
     "mem_used" in row

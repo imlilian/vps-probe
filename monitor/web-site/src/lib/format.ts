@@ -273,30 +273,10 @@ export function tickClock(ticks: number[], hours: number): (ms: number) => strin
   return ticks.length > 0 && ticks.every(midnight) ? MMDD.format : clockFor(hours)
 }
 
-// Round chart windows, in hours: up to a week they are drawn from minute rows,
-// past it from the hub's hourly tier.
-const WINDOWS = [1, 6, 24, 168, 720, 2160]
-
-/**
- * The chart windows offered for a hub keeping `days` of history, which `/api/me`
- * reports as `history_days`: the round windows shorter than it, then the whole
- * of it. A window past it would be narrowed by the hub without saying so, and
- * drawn under a label claiming more than it holds. A round window the whole
- * exceeds by less than a quarter is left out, as it would sit beside a tab of
- * nearly the same width: 30 and 31 days, 90 and 92.
- */
-export function windows(days: number): { hours: number; label: string }[] {
-  const whole = Math.max(1, Math.floor(days)) * 24
-  return [...WINDOWS.filter((h) => h * 1.25 <= whole), whole].map((hours) => ({
-    hours,
-    label: hours < 24 ? `${hours} 小时` : hours === 8760 ? "1 年" : `${hours / 24} 天`,
-  }))
-}
-
 // The detail page's load chart stops at a month. Past that the buckets are
 // hours wide and a line is a trend, not a reading; the four presets plus the
-// whole of the retained window are the useful stops. Kept separate from
-// `WINDOWS` because the list page's own summary still uses that ladder.
+// whole of the retained window are the useful stops. The list page has no chart
+// and therefore no ladder of its own -- these two are the only ones left.
 const LOAD_WINDOWS = [4, 24, 168, 720]
 const PING_WINDOWS = [1, 6, 12, 24, 168, 720]
 
@@ -504,6 +484,22 @@ export function rateAxis(low: number, high: number): { domain: [number, number];
  * A null is a timeout rather than a high reading, so it is neither replaced nor
  * counted towards what its neighbours are compared against.
  */
+/**
+ * The Hampel window, in samples, for a series drawn at its own bucket width:
+ * wide enough to span about seven minutes either side, clamped to 3..15 and
+ * forced odd so the sample being tested always sits in the middle of an odd
+ * count and is compared against neighbours rather than against itself alone.
+ *
+ * Shared by the load and latency charts: two copies of this drifted apart once
+ * already, and the value is not a taste -- it is a duration divided by the
+ * bucket, and the bucket is the hub's.
+ */
+export function despikeWindow(points: readonly { ts: number }[], span = 420_000): number {
+  let step = Infinity
+  for (let i = 1; i < points.length; i++) step = Math.min(step, points[i]!.ts - points[i - 1]!.ts)
+  return Math.min(15, Math.max(3, Math.round(span / step) | 1))
+}
+
 export function despike(values: (number | null)[], window = 7, sigmas = 3): (number | null)[] {
   const half = window >> 1
   // ponytail: the window is re-collected per sample. A day of one probe is 1,438

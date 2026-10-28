@@ -8,7 +8,7 @@
     "dev:mock": "vite --mode mock",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test": "node src/lib/format.test.ts && node dev/demoData.test.ts && node src/lib/detail.test.ts && node src/lib/cpu.test.ts && node src/lib/sampling.test.ts && node src/lib/live.test.ts && node src/lib/pingDetail.test.ts && node src/lib/rates.test.ts && node src/lib/api.test.ts && node src/lib/ping.test.ts && node src/lib/stats.test.ts && node src/lib/sort.test.ts && node src/lib/downsample.test.ts && node src/lib/ua.test.ts && node src/ui.test.ts",
+    "test": "node src/lib/format.test.ts && node dev/demoData.test.ts && node src/lib/detail.test.ts && node src/lib/cpu.test.ts && node src/lib/sampling.test.ts && node src/lib/live.test.ts && node src/lib/pingDetail.test.ts && node src/lib/history.test.ts && node src/lib/rates.test.ts && node src/lib/api.test.ts && node src/lib/ping.test.ts && node src/lib/stats.test.ts && node src/lib/sort.test.ts && node src/lib/downsample.test.ts && node src/lib/ua.test.ts && node src/ui.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

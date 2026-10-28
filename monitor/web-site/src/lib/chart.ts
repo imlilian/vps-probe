@@ -85,7 +85,7 @@ export function timeAxis(rows: { ts: number }[], hours: number) {
 }
 
 /** Probe colours in reading order: five hues solid, then the same five dashed. */
-export const PROBE_STYLES = [
+const PROBE_STYLES = [
   { stroke: "var(--color-chart-1)", dash: undefined },
   { stroke: "var(--color-chart-3)", dash: undefined },
   { stroke: "var(--color-chart-2)", dash: undefined },

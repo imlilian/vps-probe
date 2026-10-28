@@ -20,8 +20,6 @@ import {
 } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
-export { monthUsage }
-
 // Emitted as files and fetched on first use, so a page carries only the flags its
 // nodes are in rather than all 265. vite.config.ts keeps them from being inlined
 // into the bundle as data URLs. The simplified set, because this theme is

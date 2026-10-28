@@ -4,8 +4,9 @@
 //
 // Nothing imports it, so the bundle never includes it.
 import {
-  axisBytes, axisTop, bytes, cpuName, cycle, cycleSuffix, daysUntil, despike, money, moneyParts, osName, pair, percent,
-  loadWindows, pingWindows, quarters, RATE_FLOOR, rateAxis, sinceSeen, splitUnit, tickClock, timeTicks, uptime, windows, withGaps,
+  axisBytes, axisTop, bytes, cpuName, cycle, cycleSuffix, daysUntil, despike, despikeWindow, money, moneyParts, osName,
+  pair, percent, loadWindows, pingWindows, quarters, RATE_FLOOR, rateAxis, sinceSeen, splitUnit, tickClock, timeTicks,
+  uptime, withGaps,
 } from "./format.ts"
 
 let failed = 0
@@ -123,19 +124,6 @@ eq(RATE_FLOOR, 1024, "底是 1 KB/s")
   eq(tickClock(timeTicks(to - day, to), 24)(october + 6 * 3_600_000), "06:00", "一天之内只写时刻")
 }
 
-// windows: the round windows shorter than the history kept, then all of it.
-{
-  const hours = (days: number) => windows(days).map((w) => w.hours)
-  eq(hours(7), [1, 6, 24, 168], "保留一周与原来的四档相同")
-  eq(hours(30), [1, 6, 24, 168, 720], "默认 30 天")
-  eq(hours(90), [1, 6, 24, 168, 720, 2160], "保留 90 天")
-  eq(windows(365).at(-1), { hours: 8760, label: "1 年" }, "一年")
-  eq(windows(45).at(-1), { hours: 1080, label: "45 天" }, "不在取整档位上的保留期作为最后一档")
-  eq(hours(92), [1, 6, 24, 168, 720, 2208], "紧挨保留期的整档位不单列")
-  eq(hours(8), [1, 6, 24, 192], "8 天不再并列 7 天")
-  eq(windows(1).map((w) => w.label), ["1 小时", "6 小时", "1 天"], "一天")
-}
-
 // loadWindows / pingWindows: the detail page's stops, capped at a month.
 {
   const hours = (list: { hours: number }[]) => list.map((w) => w.hours)
@@ -187,6 +175,18 @@ eq(uptime(2 * 86400 + 5 * 3600), "2 天 5 小时", "超过一天不再写分钟"
   eq(despike([180, 180, 181, 180, 2000, 180, 180, 181, 180])[4], 180, "平直线路上的尖峰同样被削掉")
   // 下限不能低到把正常抖动也当成尖峰：整毫秒的数据里 1 ms 的起伏是常态。
   eq(despike([180, 181, 180, 180, 181, 180, 180]), [180, 181, 180, 180, 181, 180, 180], "1 ms 抖动原样保留")
+}
+
+// despikeWindow：窗口按「桶宽」算而不是点数。七分钟左右的邻域，夹在 3..15 且为奇数。
+{
+  const minute = Array.from({ length: 20 }, (_, i) => ({ ts: i * 60_000 }))
+  eq(despikeWindow(minute), 7, "一分钟桶：七分钟邻域")
+  const hour = Array.from({ length: 20 }, (_, i) => ({ ts: i * 3_600_000 }))
+  eq(despikeWindow(hour), 3, "一小时桶：落到下限 3，仍能比较左右邻点")
+  const tenMinute = Array.from({ length: 20 }, (_, i) => ({ ts: i * 600_000 }))
+  eq(despikeWindow(tenMinute), 3, "十分钟桶比七分钟邻域宽，落回下限 3")
+  eq(despikeWindow([]), 3, "没有相邻点可用时取最小奇数窗口")
+  eq(despikeWindow([{ ts: 1 }]), 3, "单点同理")
 }
 
 // 旧 hub 存名称，新 hub 把其余长度存成 `<n>m`；两种写法同一个长度读法一致。

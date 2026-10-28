@@ -1,4 +1,4 @@
-import { despike } from "./format.ts"
+import { despike, despikeWindow } from "./format.ts"
 
 /** A latency bucket as the hub sends it, after the timestamps were made ms. */
 export type PingPoint = {
@@ -97,13 +97,6 @@ export function interpolateShortGaps(points: PingPoint[], stepMs: number): PingP
   return out
 }
 
-/** The Hampel window in samples, by the bucket's duration. */
-function windowFor(points: { ts: number }[]): number {
-  let step = Infinity
-  for (let i = 1; i < points.length; i++) step = Math.min(step, points[i]!.ts - points[i - 1]!.ts)
-  return Math.min(15, Math.max(3, Math.round(420_000 / step) | 1))
-}
-
 export type LatencyRow = { ts: number } & Record<string, number | [number, number] | null>
 
 /**
@@ -116,7 +109,7 @@ export function buildLatencyRows(series: ProbeSeries[], smooth: boolean, stepMs:
   const rows = new Map<number, LatencyRow>()
   for (const probe of series) {
     const points = interpolateShortGaps(probe.points, stepMs)
-    const window = windowFor(points)
+    const window = despikeWindow(points)
     const line = smooth ? despike(points.map((point) => point.latency), window) : points.map((point) => point.latency)
     const low = smooth ? despike(points.map((point) => point.band?.[0] ?? point.latency), window) : []
     const high = smooth ? despike(points.map((point) => point.band?.[1] ?? point.latency), window) : []

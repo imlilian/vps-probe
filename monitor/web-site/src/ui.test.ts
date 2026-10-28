@@ -383,10 +383,11 @@ try {
   const hidden = detail({ node: { ...fleet[1], ip: "203.0.113.7", hostname: "hk-02" } })
   assert.ok(!hidden.includes("203.0.113.7"), "the address stays in the panel")
   assert.ok(!hidden.includes("hk-02"), "and so does the hostname")
-  // The note written for visitors.
+  // The note written for visitors, and only that one: `remark` is the panel's
+  // own, and this page must not be the place that could publish it.
   assert.ok(page.includes("上海移动方向近期丢包偏高"), "the public note reaches the visitor")
   const panelNote = detail({ node: { ...fleet[1], public_remark: "", remark: "恢复密码在 1Password" } })
-  assert.ok(panelNote.includes("恢复密码在 1Password"), "a hub without one falls back to the panel's")
+  assert.ok(!panelNote.includes("恢复密码在 1Password"), "a panel note never reaches the page")
   // No renewal date is words on the page rather than `∞`.
   const undated = detail({ node: { ...fleet[1], expires_at: null, expires_in: null } })
   assert.ok(undated.includes("永久"), "an undated machine says so in words")

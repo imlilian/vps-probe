@@ -1,31 +1,12 @@
 /// <reference types="node" />
-// The charts draw at most one sample per CSS pixel, and the hub's rounding is
-// only half of that promise: a hub from before `points`, or a response already
-// in flight when the window narrowed, still lands at a day of minutes. These
-// pin the second gate -- and, above all, that thinning never invents a line
-// across an outage or flattens a spike.
+// The request draws its points from a time-bucket table, so a normal range
+// arrives at 144-240 rows and fits any panel. These pin the *render* gate
+// instead: a hub from before `points`, or a response already in flight when the
+// window narrowed, still lands at a day of minutes. Above all, that thinning
+// never invents a line across an outage or flattens a spike.
 import assert from "node:assert/strict"
 
-import { decimate, lttb, samples } from "./downsample.ts"
-
-// What the screen asks the hub for, in the unit the line is drawn in. These are
-// the numbers P1 turns on: a 24h window must not arrive in more samples than
-// the panel has pixels.
-{
-  // 1440-wide window, page column 1352, two panels sharing it across a 12px gap.
-  assert.equal(samples(1352, 2, 12, 720), 670, "a desktop's half-width panel")
-  // The same window on the latency tab, which spans the column, capped at what
-  // the hub answers fastest.
-  assert.equal(samples(1352, 1, 12, 1200), 1200)
-  // A phone: one column, 360 CSS pixels of panel.
-  assert.equal(samples(360, 1, 12, 720), 360, "one sample per pixel, not two per device pixel")
-  // Narrower than the floor still asks for the floor, or a spike falls between
-  // two samples.
-  assert.equal(samples(200, 1, 12, 720), 240)
-  // Nothing measured yet is not a request.
-  assert.equal(samples(0, 2, 12, 720), 0)
-  console.log("the budget is one sample per CSS pixel")
-}
+import { decimate, lttb } from "./downsample.ts"
 
 type Row = { ts: number; cpu?: number | null; rx?: number | null }
 

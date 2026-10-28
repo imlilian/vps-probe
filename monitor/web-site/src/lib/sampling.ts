@@ -48,9 +48,19 @@ export function renderBudget(panelWidth: number): number {
 
 /**
  * The one place the history URL is assembled. `series` is metrics for load and
- * ping for latency; the point count is always the time-bucket table's, never a
- * panel width. Keeping it here makes the request auditable from a test.
+ * ping for latency; the point count is the time-bucket table's unless a caller
+ * states one, never a panel width. Keeping it here makes the request auditable
+ * from a test.
+ *
+ * `points` is the exception for a figure that does not need the table: the
+ * network card's 24-hour peak is a maximum of the hub's own bucket maxima, so
+ * hourly buckets cannot miss it and a finer grid only costs rows.
  */
-export function metricsPath(nodeId: number, hours: number, kind: SamplingKind): string {
-  return `/nodes/${nodeId}/metrics?hours=${hours}&points=${pointsFor(hours, kind)}&series=${kind === "load" ? "metrics" : "ping"}`
+export function metricsPath(
+  nodeId: number,
+  hours: number,
+  kind: SamplingKind,
+  points = pointsFor(hours, kind),
+): string {
+  return `/nodes/${nodeId}/metrics?hours=${hours}&points=${points}&series=${kind === "load" ? "metrics" : "ping"}`
 }

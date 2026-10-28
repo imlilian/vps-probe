@@ -4,7 +4,7 @@ import type { RefObject } from "react"
 import { api } from "./api.ts"
 import { peakOf, type PeakRow } from "./detail.ts"
 import type { PingPoint } from "./pingDetail.ts"
-import { metricsPath, pointsFor } from "./sampling.ts"
+import { metricsPath } from "./sampling.ts"
 
 /** A metrics row as the charts draw it: epoch milliseconds, bucket means and maxima. */
 export type MetricPoint = {
@@ -27,46 +27,131 @@ export type MetricPoint = {
   minutes?: number
 }
 
-type HistoryState = {
-  key: string
-  rows: MetricPoint[]
+type MetricsAnswer = { metrics?: MetricPoint[]; step?: number }
+type PingAnswerBody = {
+  ping?: PingPoint[]
+  probes?: Record<string, string>
+  loss?: Record<string, number>
+  step?: number
+}
+type PeakAnswer = { metrics?: PeakRow[] }
+
+type MetricsState = { url: string; rows: MetricPoint[]; step: number; error: string }
+type PingState = {
+  url: string
+  rows: PingPoint[]
+  probes: Record<string, string>
+  loss: Record<string, number>
   step: number
   error: string
+}
+
+/**
+ * History answers are shared, not repeated.
+ *
+ * A hub runs four history scans at a time for the whole machine (its
+ * `HISTORY_SLOTS`), and one visit to a node's page asks for two of them before
+ * the first paint. Two readers on one node would therefore sit on the whole
+ * gate, and a third would be told to come back later. The answers are the same
+ * for every reader and change by the bucket, so one request is kept for half a
+ * minute and handed to everyone who asks for the same URL meanwhile -- a second
+ * visitor, a range switched away from and back, a remount of the page.
+ *
+ * A failed request is not kept: the retry button must reach the hub.
+ */
+const AGE = 30_000
+/** Two dozen windows: a node's five load ranges, six ping ranges, its peaks. */
+const HELD = 24
+const answers = new Map<string, { at: number; value: unknown }>()
+/** One request per URL while it is in flight, however many callers ask. */
+const pending = new Map<string, Promise<unknown>>()
+
+function hold(url: string, value: unknown) {
+  answers.delete(url)
+  answers.set(url, { at: Date.now(), value })
+  while (answers.size > HELD) {
+    const oldest = answers.keys().next()
+    if (oldest.done) break
+    answers.delete(oldest.value)
+  }
+}
+
+/** What is already known, without a request: the render-time half of the cache. */
+export function historyPeek<T>(url: string, age = AGE): T | undefined {
+  const held = answers.get(url)
+  return held && Date.now() - held.at < age ? held.value as T : undefined
+}
+
+export function historyGet<T>(url: string, age = AGE): Promise<T> {
+  const held = historyPeek<T>(url, age)
+  if (held !== undefined) return Promise.resolve(held)
+  const running = pending.get(url)
+  if (running) return running as Promise<T>
+  const request = api<T>(url)
+    .then((value) => {
+      hold(url, value)
+      return value
+    })
+    .finally(() => {
+      pending.delete(url)
+    })
+  pending.set(url, request)
+  return request
+}
+
+/** A hub answer as the charts read it: epoch milliseconds, and a missing step as none. */
+function toMetrics(answer: MetricsAnswer): { rows: MetricPoint[]; step: number } {
+  return {
+    rows: (answer.metrics ?? []).map((row) => ({ ...row, ts: row.ts * 1000 })),
+    step: answer.step ?? 0,
+  }
+}
+
+function toPing(answer: PingAnswerBody) {
+  return {
+    rows: (answer.ping ?? []).map((row) => ({ ...row, ts: row.ts * 1000 })),
+    probes: answer.probes ?? {},
+    loss: answer.loss ?? {},
+    step: answer.step ?? 0,
+  }
 }
 
 /**
  * The load charts' history: one request per range, with the point count coming
  * from the time-bucket table rather than the panel's pixel width. The hub does
  * the aggregation; this hook only carries the rows and distinguishes "loading"
- * from "loaded empty".
+ * from "loaded empty". A range switched back to within the cache's age draws at
+ * once -- no skeleton, and no second scan behind the gate.
  */
 export function useMetricsHistory(nodeId: number, hours: number, enabled = true) {
-  const key = enabled && hours > 0 ? `${nodeId}:${hours}:${pointsFor(hours, "load")}` : ""
-  const [state, setState] = useState<HistoryState>({ key: "", rows: [], step: 0, error: "" })
+  const url = enabled && hours > 0 ? metricsPath(nodeId, hours, "load") : ""
+  const [state, setState] = useState<MetricsState>(() => {
+    const held = url ? historyPeek<MetricsAnswer>(url) : undefined
+    return held ? { url, ...toMetrics(held), error: "" } : { url: "", rows: [], step: 0, error: "" }
+  })
   const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
-    if (!enabled || hours <= 0) return
+    if (!url) return
     let active = true
-    api<{ metrics?: MetricPoint[]; step?: number }>(metricsPath(nodeId, hours, "load"))
+    historyGet<MetricsAnswer>(url)
       .then((answer) => {
-        const rows = (answer.metrics ?? []).map((row) => ({ ...row, ts: row.ts * 1000 }))
-        if (active) setState({ key, rows, step: answer.step ?? 0, error: "" })
+        if (active) setState({ url, ...toMetrics(answer), error: "" })
       })
       .catch((error: Error) => {
-        if (active) setState({ key, rows: [], step: 0, error: error.message })
+        if (active) setState({ url, rows: [], step: 0, error: error.message })
       })
     return () => {
       active = false
     }
-  }, [nodeId, hours, enabled, key, attempt])
+  }, [url, attempt])
 
-  const data = state.key === key ? state : null
+  const data = state.url === url ? state : null
   return {
     rows: data?.rows ?? [],
     step: data?.step ?? 0,
     error: data?.error ?? "",
-    loading: Boolean(enabled && hours > 0 && !data),
+    loading: Boolean(url) && !data,
     retry: () => setAttempt((n) => n + 1),
   }
 }
@@ -88,50 +173,38 @@ export type PingAnswer = {
  * averaging per-bucket percentages would lose exactly that.
  */
 export function usePingHistory(nodeId: number, hours: number, enabled = true): PingAnswer {
-  const key = enabled && hours > 0 ? `${nodeId}:${hours}:${metricsPath(nodeId, hours, "ping")}` : ""
-  const [state, setState] = useState<{
-    key: string
-    rows: PingPoint[]
-    probes: Record<string, string>
-    loss: Record<string, number>
-    step: number
-    error: string
-  }>({ key: "", rows: [], probes: {}, loss: {}, step: 0, error: "" })
+  const url = enabled && hours > 0 ? metricsPath(nodeId, hours, "ping") : ""
+  const [state, setState] = useState<PingState>(() => {
+    const held = url ? historyPeek<PingAnswerBody>(url) : undefined
+    return held
+      ? { url, ...toPing(held), error: "" }
+      : { url: "", rows: [], probes: {}, loss: {}, step: 0, error: "" }
+  })
   const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
-    if (!enabled || hours <= 0) return
+    if (!url) return
     let active = true
-    api<{ ping?: PingPoint[]; probes?: Record<string, string>; loss?: Record<string, number>; step?: number }>(
-      metricsPath(nodeId, hours, "ping"),
-    )
+    historyGet<PingAnswerBody>(url)
       .then((answer) => {
-        if (!active) return
-        setState({
-          key,
-          rows: (answer.ping ?? []).map((row) => ({ ...row, ts: row.ts * 1000 })),
-          probes: answer.probes ?? {},
-          loss: answer.loss ?? {},
-          step: answer.step ?? 0,
-          error: "",
-        })
+        if (active) setState({ url, ...toPing(answer), error: "" })
       })
       .catch((error: Error) => {
-        if (active) setState({ key, rows: [], probes: {}, loss: {}, step: 0, error: error.message })
+        if (active) setState({ url, rows: [], probes: {}, loss: {}, step: 0, error: error.message })
       })
     return () => {
       active = false
     }
-  }, [nodeId, hours, enabled, key, attempt])
+  }, [url, attempt])
 
-  const data = state.key === key ? state : null
+  const data = state.url === url ? state : null
   return {
     rows: data?.rows ?? [],
     probes: data?.probes ?? {},
     loss: data?.loss ?? {},
     step: data?.step ?? 0,
     error: data?.error ?? "",
-    loading: Boolean(enabled && hours > 0 && !data),
+    loading: Boolean(url) && !data,
     retry: () => setAttempt((n) => n + 1),
   }
 }
@@ -153,41 +226,41 @@ export function useElementWidth(ref: RefObject<HTMLElement | null>): number {
 
 export type Peak = { rx: number; tx: number }
 
-// A day's peak moves slowly enough that five minutes is fresh. The detail page
-// can mount this card again after a route change, and a second request for the
-// same node would spend one of the hub's four history slots for a figure that
-// has not changed.
-const TTL = 5 * 60_000
-const CACHE = new Map<number, { at: number; value: Peak }>()
+// A day's peak moves slowly enough that five minutes is fresh. It lives in the
+// shared cache above, under the same URL, so two cards or two visits cost one
+// request rather than one each.
+const PEAK_AGE = 5 * 60_000
+const peakUrl = (nodeId: number) => metricsPath(nodeId, 24, "load", 24)
+
+/** The peak already known for a node: one hour per bucket is enough for a max. */
+function peakOfUrl(url: string): Peak | null {
+  const held = historyPeek<PeakAnswer>(url, PEAK_AGE)
+  return held ? peakOf(held.metrics ?? []) : null
+}
 
 /**
  * The highest transfer rate each way over the last day, for the network card's
- * third line. One hour per bucket is enough for a maximum: the hub's
- * `net_*_max` is itself a maximum of maxima, so a finer grid cannot raise it.
- * Failure is silent -- the line simply does not appear.
+ * third line. Twenty-four one-hour buckets: the hub's `net_*_max` is itself a
+ * maximum of maxima, so a finer grid cannot raise it. Failure is silent -- the
+ * line simply does not appear.
  */
 export function useDayPeak(nodeId: number): Peak | null {
+  const url = peakUrl(nodeId)
   // The state is tagged with the node it belongs to, so a switch to another
   // machine reads as "no peak yet" without a synchronous setState in the
   // effect; a cached answer is read during render instead.
   const [state, setState] = useState<{ id: number; peak: Peak | null }>(() => ({
     id: nodeId,
-    peak: CACHE.get(nodeId)?.value ?? null,
+    peak: peakOfUrl(url),
   }))
-  const cached = CACHE.get(nodeId)
-  const current = cached && Date.now() - cached.at < TTL
-    ? cached.value
-    : state.id === nodeId ? state.peak : null
+  const current = peakOfUrl(url) ?? (state.id === nodeId ? state.peak : null)
 
   useEffect(() => {
-    const hit = CACHE.get(nodeId)
-    if (hit && Date.now() - hit.at < TTL) return
+    if (peakOfUrl(url)) return
     let active = true
-    api<{ metrics?: PeakRow[] }>(`/nodes/${nodeId}/metrics?hours=24&points=24&series=metrics`)
+    historyGet<PeakAnswer>(url, PEAK_AGE)
       .then((answer) => {
-        const next = peakOf(answer.metrics ?? [])
-        if (next) CACHE.set(nodeId, { at: Date.now(), value: next })
-        if (active) setState({ id: nodeId, peak: next })
+        if (active) setState({ id: nodeId, peak: peakOf(answer.metrics ?? []) })
       })
       .catch(() => {
         if (active) setState({ id: nodeId, peak: null })
@@ -195,7 +268,7 @@ export function useDayPeak(nodeId: number): Peak | null {
     return () => {
       active = false
     }
-  }, [nodeId])
+  }, [nodeId, url])
 
   return current
 }

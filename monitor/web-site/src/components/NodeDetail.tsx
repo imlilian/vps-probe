@@ -22,13 +22,14 @@ export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
     <div className="space-y-4">
       <DetailHeader node={node} nodes={nodes} onBack={onBack} onOpen={onOpen} />
 
-      {/* The note the operator wrote for visitors. The hub has sent this on
-          every frame since the monorepo merge and nothing rendered it, while
-          the panel-only `remark` was drawn here instead: a visitor saw no note
-          at all, and a signed-in one saw a note written for themselves. The
-          public one wins; `remark` is the fallback for a hub that predates it. */}
-      {(node.public_remark || node.remark) && (
-        <p className="rounded-lg bg-card-2 px-3 py-2 text-sm whitespace-pre-wrap">{node.public_remark || node.remark}</p>
+      {/* The note the operator wrote *for visitors*, and nothing else. `remark`
+          is the panel's own and the hub keeps it out of every public frame, but
+          reading it here would make this page the one place that could publish
+          it -- one hub change, or one proxy that merges the two frames, and
+          "恢复密码在 1Password" is on the internet. A hub old enough to have no
+          `public_remark` simply shows no note. */}
+      {node.public_remark && (
+        <p className="rounded-lg bg-card-2 px-3 py-2 text-sm whitespace-pre-wrap">{node.public_remark}</p>
       )}
 
       <MetricGrid node={node} />

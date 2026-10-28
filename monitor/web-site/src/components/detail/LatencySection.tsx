@@ -134,7 +134,7 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
                   <span className="min-w-0 flex-1">
                     <span className="flex min-w-0 items-center gap-1.5">
                       <span className="truncate text-sm font-semibold">{stat.name}</span>
-                      <span className="ml-auto shrink-0 text-muted-foreground" title={info} aria-label={info}>
+                      <span className="ml-auto shrink-0 text-muted-foreground" role="img" title={info} aria-label={info}>
                         <Info size={14} aria-hidden />
                       </span>
                     </span>

@@ -103,7 +103,12 @@ export function DetailHeader({ node, nodes, onBack, onOpen }: {
           value={node.id}
           aria-label="切换节点"
           disabled={onOpen == null}
-          onChange={(event) => onOpen?.(Number(event.target.value))}
+          onChange={(event) => {
+            // The select is the reader's to tamper with; a value that is not a
+            // node id would route the page to /node/NaN and strand it there.
+            const id = Number(event.target.value)
+            if (Number.isInteger(id)) onOpen?.(id)
+          }}
           className="h-7 max-w-32 truncate rounded-md border-0 bg-transparent px-1 text-xs text-foreground outline-none sm:max-w-44"
         >
           {list.map((item) => (

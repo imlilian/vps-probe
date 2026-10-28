@@ -1,12 +1,12 @@
 /// <reference types="node" />
 // Largest-Triangle-Three-Buckets, over rows that may contain a hole.
 //
-// The chart asks the hub for one sample per CSS pixel, and the hub rounds that
-// up into whole minutes, so the response is already within the budget. This is
-// the second gate: the frontend ships independently of the hub, and a hub that
-// predates `points` -- or a response already in flight when the window was
-// dragged narrower -- still arrives at 1,440 rows. Rendering is where the
-// invariant has to hold, so it is enforced here rather than assumed of the wire.
+// The request no longer asks for a sample per CSS pixel: `sampling.ts` asks for
+// time buckets, so the hub answers with 144-240 rows whatever the screen is
+// wide, and those fit any panel. This module is the *render* gate instead -- it
+// catches what the request cannot promise: a hub that predates `points`, a
+// response already in flight when the window was dragged narrower, or a phone
+// narrow enough that even 144 rows are more than the panel can show.
 //
 // A hole is not a null in the data but a row with only `ts`: `withGaps` inserts
 // one where the node was silent, and recharts reads its missing fields as a
@@ -14,28 +14,6 @@
 // pick that reached across one would draw a line through an outage.
 
 export type Point = { ts: number }
-
-/**
- * How many samples a panel of `width` CSS pixels should be handed: one per
- * pixel, split across `cols` columns with `gap` between them, and never more
- * than the hub will answer.
- *
- * A line is measured in CSS pixels, so that is the unit a window has to arrive
- * in. Asking for `innerWidth × devicePixelRatio` counts the pixels the line is
- * *rasterized* into instead: a 1440-wide retina panel asked for 2,880, the hub
- * capped at 1,440, and those landed in a 670-pixel column at 2.15 samples per
- * pixel -- a band of noise rather than a line. More dots per inch do not make
- * this sharper; they make it denser.
- *
- * The 240 floor keeps a phone's window from arriving in so few samples that a
- * short spike is dropped between two of them, at the cost of a slight overlap
- * on the narrowest screen; the ceiling is what the hub promises, not the panel.
- */
-export function samples(width: number, cols: number, gap: number, ceiling: number): number {
-  if (!(width > 0) || cols < 1) return 0
-  const panel = (width - (cols - 1) * gap) / cols
-  return Math.min(ceiling, Math.max(240, Math.round(panel)))
-}
 
 /**
  * The triangle test needs a number per row. `null` and `undefined` both mean
