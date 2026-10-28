@@ -1105,6 +1105,45 @@ impl Db {
         Ok(Some(id.to_owned()))
     }
 
+    /// Stores the OIDC allow list and drops the bindings of the names it no
+    /// longer lists, both or neither. The names are the IdP's, so what a removal
+    /// leaves behind is a binding to a `sub` that a re-created user does not
+    /// carry: an entry kept here would refuse the new account for good.
+    pub fn set_oidc_allowed(&self, list: &str) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let ids = setting(&tx, crate::auth::OIDC_IDS)?.unwrap_or_default();
+        put_setting(&tx, "oidc_allowed_users", list)?;
+        put_setting(&tx, crate::auth::OIDC_IDS, &crate::auth::keep_listed(&ids, list))?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The `sub` the OIDC name is bound to, binding it when it has none; `None`
+    /// when the allow list no longer names it. Read under the writer lock again:
+    /// a save that removed the name during the token exchange would otherwise be
+    /// followed by a binding the removal was meant to clear.
+    pub fn bind_oidc(&self, name: &str, sub: &str) -> Result<Option<String>> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let list = setting(&tx, "oidc_allowed_users")?.unwrap_or_default();
+        if !crate::auth::allowed_logins(&list).iter().any(|l| l == name) {
+            return Ok(None);
+        }
+        let ids = setting(&tx, crate::auth::OIDC_IDS)?.unwrap_or_default();
+        if let Some(bound) = crate::auth::bound_id(&ids, name) {
+            return Ok(Some(bound.to_owned()));
+        }
+        let pair = format!("{name}:{sub}");
+        put_setting(
+            &tx,
+            crate::auth::OIDC_IDS,
+            &if ids.is_empty() { pair } else { format!("{ids},{pair}") },
+        )?;
+        tx.commit()?;
+        Ok(Some(sub.to_owned()))
+    }
+
     // ---- nodes ----
 
     pub fn nodes(&self) -> Result<Vec<Node>> {
@@ -2833,6 +2872,36 @@ mod tests {
         assert_eq!(
             db.bind_github("alice", "2").unwrap().as_deref(),
             Some("2"),
+            "removed and re-added binds afresh"
+        );
+    }
+
+    /// The same rules for OIDC, where the binding is to the one identifier the
+    /// IdP promises not to reuse. A name deleted there can be handed to someone
+    /// else, while the `sub` cannot, so a mismatch is refused rather than
+    /// rebound -- and removing the name is what clears it.
+    #[test]
+    fn an_allowed_name_stays_bound_to_the_subject_it_first_signed_in_as() {
+        let db = db();
+        db.set_oidc_allowed(" Alice, ,bob,").unwrap();
+        assert_eq!(db.bind_oidc("alice", "sub-1").unwrap().as_deref(), Some("sub-1"), "first sign-in binds");
+        assert_eq!(
+            db.bind_oidc("alice", "sub-2").unwrap().as_deref(),
+            Some("sub-1"),
+            "another account under the name"
+        );
+        assert_eq!(db.bind_oidc("bob", "sub-3").unwrap().as_deref(), Some("sub-3"));
+        assert_eq!(db.bind_oidc("carol", "sub-4").unwrap(), None, "a name the list does not carry");
+        db.set_oidc_allowed("ALICE ").unwrap();
+        assert_eq!(db.get(crate::auth::OIDC_IDS).as_deref(), Some("alice:sub-1"), "case and spaces keep it");
+        db.set_oidc_allowed("bob").unwrap();
+        // The pruned binding is what lets a re-created user in again: bob's went
+        // with the save that stopped naming him.
+        assert_eq!(db.get(crate::auth::OIDC_IDS).as_deref(), Some(""));
+        db.set_oidc_allowed("alice,bob").unwrap();
+        assert_eq!(
+            db.bind_oidc("alice", "sub-9").unwrap().as_deref(),
+            Some("sub-9"),
             "removed and re-added binds afresh"
         );
     }

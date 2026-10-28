@@ -815,6 +815,21 @@ pub(crate) fn https_domain(site: &str) -> Option<reqwest::Url> {
     .then_some(url)
 }
 
+/// The OIDC issuer as a URL the hub can append a discovery path to, or `None`
+/// when the value is not one.
+///
+/// A path is allowed and kept: Authentik publishes tenants under
+/// `https://host/application/o/<slug>/`, and the discovery document sits beneath
+/// whatever the issuer names. A query or fragment is refused because the append
+/// would place the path after it, where neither the server nor the hub would
+/// read it.
+pub(crate) fn issuer_url(issuer: &str) -> Option<reqwest::Url> {
+    if !(issuer.starts_with("http://") || issuer.starts_with("https://")) {
+        return None;
+    }
+    reqwest::Url::parse(issuer).ok().filter(|u| u.query().is_none() && u.fragment().is_none())
+}
+
 /// Whether the browser sending this request is on an https domain entry, which
 /// is the only address the panel may build install commands from.
 ///
@@ -982,6 +997,17 @@ pub async fn me(
     let mut answered = Json(json!({
         "authed": authed(&app, &headers),
         "github": app.db.get("github_client_id").is_some_and(|v| !v.is_empty()),
+        // Every sign-in path stands on its own: an empty setting hides that
+        // button and nothing else, so a broken IdP cannot lock the owner out.
+        "oidc": app.db.get("oidc_issuer").is_some_and(|v| !v.is_empty())
+            && app.db.get("oidc_client_id").is_some_and(|v| !v.is_empty()),
+        // The button's label, defaulted here so the panel carries no fallback of
+        // its own.
+        "oidc_name": app
+            .db
+            .get("oidc_provider_name")
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "OIDC".into()),
         "site_name": app.db.get("site_name").unwrap_or_else(|| "Monitor".into()),
         "public_page": app.public_page(),
         // How far back a chart may reach, so the page offers only windows the hub
@@ -1480,12 +1506,16 @@ pub async fn delete_ping_task(_: Admin, State(app): State<Shared>, Path(id): Pat
 }
 
 /// Settings the panel may read. Secrets are deliberately excluded: the client can
-/// set the GitHub secret but never read it back.
+/// set the GitHub or OIDC secret but never read it back.
 const READABLE_SETTINGS: &[&str] = &[
     "site_name",
     "public_page",
     "github_client_id",
     "github_allowed_users",
+    "oidc_issuer",
+    "oidc_client_id",
+    "oidc_allowed_users",
+    "oidc_provider_name",
     "retention_days",
     "github_proxy",
     "update_notice",
@@ -1960,6 +1990,12 @@ pub async fn settings(
         "github_secret_set".into(),
         json!(app.db.get("github_client_secret").is_some_and(|v| !v.is_empty())),
     );
+    // Same shape for the OIDC secret, which is optional: a public client with
+    // PKCE has none, and the token exchange then sends no secret at all.
+    out.insert(
+        "oidc_secret_set".into(),
+        json!(app.db.get("oidc_client_secret").is_some_and(|v| !v.is_empty())),
+    );
     // Whether there is a password at all, which decides two things in the panel:
     // a change asks for the current one only when it exists, and a restore needs
     // it to confirm. Never the hash itself, which is why this is a flag.
@@ -2013,11 +2049,24 @@ fn setting_error(key: &str, value: &Value) -> Option<String> {
         }
         "admin_password" if value.len() < 12 => Some("密码至少 12 位".into()),
         "admin_password" => None,
+        // Empty turns OIDC off. A value has to be a base URL the hub can append
+        // `/.well-known/openid-configuration` to, so it needs a scheme it can
+        // speak and nothing after the path: a query or fragment there would be
+        // swallowed by that append without a word. A path is allowed -- Authentik
+        // puts one in its issuer.
+        "oidc_issuer" if !value.is_empty() && !issuer_url(value).is_some() => {
+            Some("身份系统地址要以 http:// 或 https:// 开头，且不能带 ? 或 #".into())
+        }
+        // The sign-in button's own label. A long one wraps the button and pushes
+        // the emergency password form off the card.
+        "oidc_provider_name" if value.chars().count() > 16 => Some("按钮名称最多 16 个字".into()),
         "origin_cdn_only" if !matches!(value, "" | "on" | "off") => {
             Some("源站只允许 CDN 访问：取值是 on 或 off".into())
         }
         k if k.starts_with("notify_") => crate::notify::setting_error(k, value),
-        k if READABLE_SETTINGS.contains(&k) || k == "github_client_secret" => None,
+        k if READABLE_SETTINGS.contains(&k) || k == "github_client_secret" || k == "oidc_client_secret" => {
+            None
+        }
         _ => Some(format!("没有这个设置项：{key}")),
     }
 }
@@ -2069,6 +2118,8 @@ pub async fn save_settings(
         }
         let saved = match key.as_str() {
             "github_allowed_users" => app.db.set_github_allowed(value),
+            // Both savers also prune bindings, so neither may go through `set`.
+            "oidc_allowed_users" => app.db.set_oidc_allowed(value),
             _ => app.db.set(key, value),
         };
         if let Err(e) = saved {
@@ -4010,6 +4061,63 @@ mod tests {
         for secret in ["super-secret", "bot-secret", "url-secret", "header-secret"] {
             assert!(!body.to_string().contains(secret), "{secret}");
         }
+    }
+
+    /// The issuer is where `/.well-known/openid-configuration` is appended to, so
+    /// what it accepts is the shape of a base URL -- with the path Authentik
+    /// needs, and without the query or fragment that append would swallow.
+    #[test]
+    fn an_issuer_is_accepted_only_when_discovery_can_be_appended_to_it() {
+        for ok in
+            ["", "https://id.example.com", "http://127.0.0.1:1411", "https://host/application/o/monitor/"]
+        {
+            assert_eq!(setting_error("oidc_issuer", &json!(ok)), None, "{ok}");
+        }
+        for bad in [
+            "id.example.com",
+            "//id.example.com",
+            "ftp://id.example.com",
+            "https://id.example.com/?tenant=1",
+            "https://id.example.com/#issuer",
+        ] {
+            assert!(setting_error("oidc_issuer", &json!(bad)).is_some(), "{bad}");
+        }
+    }
+
+    /// The label sits inside a button, so it is measured in characters rather
+    /// than bytes: sixteen of either language is the whole of the room.
+    #[test]
+    fn the_oidc_button_label_fits_in_a_button() {
+        assert_eq!(setting_error("oidc_provider_name", &json!("Pocket ID")), None);
+        assert_eq!(setting_error("oidc_provider_name", &json!("一二三四五六七八九十一二三四五六")), None);
+        assert!(
+            setting_error("oidc_provider_name", &json!("一二三四五六七八九十一二三四五六七")).is_some(),
+            "seventeen characters must be refused"
+        );
+    }
+
+    /// The OIDC secret is write-only like GitHub's, and optional: a public client
+    /// with PKCE has none, so the panel must be able to save an empty one.
+    #[tokio::test]
+    async fn the_oidc_secret_is_reported_as_set_and_never_handed_back() {
+        let app = app();
+        app.db.set("oidc_issuer", "https://id.example.com").unwrap();
+        app.db.set("oidc_client_id", "monitor").unwrap();
+        app.db.set("oidc_client_secret", "oidc-super-secret").unwrap();
+        app.db.set("oidc_allowed_users", "alice").unwrap();
+        app.db.set("oidc_provider_name", "Pocket ID").unwrap();
+
+        let Json(body) =
+            settings(Admin, axum::extract::State(std::sync::Arc::new(app)), peer(), HeaderMap::new()).await;
+        assert_eq!(body["oidc_issuer"], "https://id.example.com");
+        assert_eq!(body["oidc_client_id"], "monitor");
+        assert_eq!(body["oidc_allowed_users"], "alice");
+        assert_eq!(body["oidc_provider_name"], "Pocket ID");
+        assert_eq!(body["oidc_secret_set"], true);
+        assert!(body.get("oidc_client_secret").is_none());
+        assert!(!body.to_string().contains("oidc-super-secret"));
+        // Empty is a valid value for this key, and travels to the store as such.
+        assert_eq!(setting_error("oidc_client_secret", &json!("")), None);
     }
 
     /// What every error response is held to: text written for the reader passes

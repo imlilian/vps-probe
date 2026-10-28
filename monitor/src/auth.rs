@@ -477,6 +477,14 @@ async fn github_login(app: &App, code: &str) -> Result<String> {
 /// account leaves its login free for anyone to register.
 pub const GITHUB_IDS: &str = "github_user_ids";
 
+/// The OIDC `sub` each listed name first signed in as, as `name:sub` pairs.
+///
+/// The list names what the IdP calls people, and a name there can be deleted
+/// and given to someone else. The `sub` cannot: it is the one thing the IdP
+/// promises to keep pointing at the same account, which is why the binding is
+/// kept against it rather than against the name.
+pub const OIDC_IDS: &str = "oidc_user_ids";
+
 /// The logins of the allow list, in the case GitHub ignores.
 pub fn allowed_logins(list: &str) -> Vec<String> {
     list.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect()
