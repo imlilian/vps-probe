@@ -6,7 +6,7 @@
 // across an outage or flattens a spike.
 import assert from "node:assert/strict"
 
-import { lttb, samples } from "./downsample.ts"
+import { decimate, lttb, samples } from "./downsample.ts"
 
 // What the screen asks the hub for, in the unit the line is drawn in. These are
 // the numbers P1 turns on: a 24h window must not arrive in more samples than
@@ -121,4 +121,34 @@ const cpu = (row: Row) => row.cpu
   assert.ok(out.some((row) => row.ts === 2 && row.cpu === null), "and it is kept")
   assert.ok(out.length <= 40 + 3, "at no more than its own run's floor")
   console.log("an empty reading is a break, not a value")
+}
+
+// The guard is only for an answer still denser than the panel: it divides the
+// budget between the series, keeps the ends and the peaks, and never exceeds
+// the budget by more than one floor per series.
+{
+  const rows: Row[] = Array.from({ length: 10_080 }, (_, i) => ({
+    ts: i * 60_000,
+    cpu: 10 + (i % 7),
+    rx: 1_000 + (i % 11),
+  }))
+  rows[5_000]!.cpu = 96
+  rows[7_000]!.rx = 90_000
+  const out = decimate(rows, 600, [(row) => row.cpu, (row) => row.rx])
+  assert.ok(out.length <= 600 + 4, "two series stay within the guard")
+  assert.equal(out[0]!.ts, rows[0]!.ts, "the first point is kept")
+  assert.equal(out.at(-1)!.ts, rows.at(-1)!.ts, "the last point is kept")
+  assert.ok(out.some((row) => row.cpu === 96), "the CPU peak survives")
+  assert.ok(out.some((row) => row.rx === 90_000), "the network peak survives")
+  console.log("the decimation guard keeps every series' peak")
+}
+{
+  const rows = [...run(120), hole(1_700_009_000), ...run(120).map((row) => ({ ...row, ts: row.ts + 20_000 }))]
+  const out = decimate(rows, 60, cpu)
+  assert.ok(out.some((row) => row.ts === 1_700_009_000), "a hole is still a hole")
+  assert.ok(out.length <= 64, "and the guard stays near budget")
+}
+{
+  const rows = run(50)
+  assert.deepEqual(decimate(rows, 100, cpu), rows, "a window inside the guard is untouched")
 }

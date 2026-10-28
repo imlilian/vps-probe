@@ -3,7 +3,7 @@ import type { RefObject } from "react"
 
 import { api } from "./api.ts"
 import { peakOf, type PeakRow } from "./detail.ts"
-import { pointsFor } from "./sampling.ts"
+import { metricsPath, pointsFor } from "./sampling.ts"
 
 /** A metrics row as the charts draw it: epoch milliseconds, bucket means and maxima. */
 export type MetricPoint = {
@@ -47,9 +47,7 @@ export function useMetricsHistory(nodeId: number, hours: number, enabled = true)
   useEffect(() => {
     if (!enabled || hours <= 0) return
     let active = true
-    api<{ metrics?: MetricPoint[]; step?: number }>(
-      `/nodes/${nodeId}/metrics?hours=${hours}&points=${pointsFor(hours, "load")}&series=metrics`,
-    )
+    api<{ metrics?: MetricPoint[]; step?: number }>(metricsPath(nodeId, hours, "load"))
       .then((answer) => {
         const rows = (answer.metrics ?? []).map((row) => ({ ...row, ts: row.ts * 1000 }))
         if (active) setState({ key, rows, step: answer.step ?? 0, error: "" })

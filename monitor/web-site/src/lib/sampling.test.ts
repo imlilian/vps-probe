@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 
-import { bucketFor, pointsFor, renderBudget } from "./sampling.ts"
+import { bucketFor, metricsPath, pointsFor, renderBudget } from "./sampling.ts"
 
 const load = (hours: number) => [pointsFor(hours, "load"), bucketFor(hours, "load")]
 const ping = (hours: number) => [pointsFor(hours, "ping"), bucketFor(hours, "ping")]
@@ -27,5 +27,9 @@ for (const [hours, kind] of [[4, "load"], [24, "load"], [168, "load"], [720, "lo
 assert.equal(bucketFor(5, "load"), 600, "未知范围取下一档，不会更细")
 assert.equal(renderBudget(636), 477, "0.75 点/px 兜底")
 assert.equal(renderBudget(328), 246, "360px 面板的兜底")
+
+assert.equal(metricsPath(2, 168, "load"), "/nodes/2/metrics?hours=168&points=168&series=metrics", "7 天负载请求")
+assert.equal(metricsPath(2, 720, "load"), "/nodes/2/metrics?hours=720&points=180&series=metrics", "30 天负载请求")
+assert.equal(metricsPath(2, 6, "ping"), "/nodes/2/metrics?hours=6&points=180&series=ping", "6 小时延迟请求")
 
 console.log("sampling: time buckets cover every range and stay under 240 points")

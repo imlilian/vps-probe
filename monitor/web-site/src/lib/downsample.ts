@@ -148,3 +148,49 @@ export function lttb<T extends Point>(rows: readonly T[], threshold: number, val
 
   return [...keep].sort((a, b) => a - b).map((i) => rows[i])
 }
+
+/**
+ * The render-layer guard: thin a row set to `budget` while keeping every
+ * series' shape.
+ *
+ * `lttb` alone takes a union of what each series would keep, which is right for
+ * preserving peaks but can land at several times the budget. `decimate` gives
+ * each series its own share first, then adds the endpoints, holes and each
+ * series' maximum. It is only used when the time buckets still exceed what the
+ * panel can draw -- an old hub, or a very narrow screen -- not on every range.
+ */
+export function decimate<T extends Point>(rows: readonly T[], budget: number, values: Value<T> | Value<T>[]): T[] {
+  const all = Array.isArray(values) ? values : [values]
+  if (!(budget > 0) || rows.length <= budget) return rows.slice()
+
+  const usable = all.filter((value) => rows.some((row) => {
+    const v = value(row)
+    return v != null && Number.isFinite(v)
+  }))
+  if (!usable.length) return rows.slice(0, budget)
+
+  const per = Math.max(3, Math.floor((budget - 2) / usable.length))
+  const index = new Map<number, number>()
+  rows.forEach((row, i) => index.set(row.ts, i))
+  const keep = new Set<number>()
+
+  for (const value of usable) {
+    for (const row of lttb(rows, per, value)) {
+      const i = index.get(row.ts)
+      if (i !== undefined) keep.add(i)
+    }
+    let top = -Infinity
+    let at = -1
+    rows.forEach((row, i) => {
+      const v = value(row)
+      if (v != null && Number.isFinite(v) && v > top) {
+        top = v
+        at = i
+      }
+    })
+    if (at >= 0) keep.add(at)
+  }
+  for (const run of segments(rows, usable)) if ("hole" in run) keep.add(run.hole)
+
+  return [...keep].sort((a, b) => a - b).map((i) => rows[i]!)
+}

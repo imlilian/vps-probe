@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { Activity, Cable, Cpu, HardDrive, MemoryStick, Network } from "lucide-react"
 import {
   Area, CartesianGrid, ComposedChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -10,8 +10,10 @@ import {
   AXIS, COLOR, CPU_TICKS, DERIVED, GRID, LINE, PEAK, TOOLTIP, VALUE_AXIS, timeAxis,
 } from "@/lib/chart"
 import { detailBytes, detailRate, diskForecast } from "@/lib/detail"
+import { decimate } from "@/lib/downsample"
 import { axisBytes, despike, quarters, RATE_FLOOR, rateAxis, withGaps } from "@/lib/format"
-import type { MetricPoint } from "@/lib/history"
+import { useElementWidth, type MetricPoint } from "@/lib/history"
+import { renderBudget } from "@/lib/sampling"
 
 import { ChartCard } from "./ChartCard"
 import { ChartLegend, type LegendItem } from "./ChartLegend"
@@ -48,14 +50,18 @@ function useHidden() {
   }
 }
 
-function CpuPanel({ node, rows, hours, smooth }: { node: Node; rows: ChartRow[]; hours: number; smooth: boolean }) {
+function CpuPanel({ node, rows, hours, smooth, budget }: { node: Node; rows: ChartRow[]; hours: number; smooth: boolean; budget: number }) {
   const { hidden, toggle } = useHidden()
-  const chart = useMemo(() => {
-    if (!smooth) return rows
-    const cleaned = despike(rows.map((r) => ("cpu" in r ? r.cpu : null)), windowFor(rows))
-    return rows.map((r, i) => ({ ...r, cpu_s: cleaned[i] }))
-  }, [rows, smooth])
   const hasPeak = rows.some((r) => (r.cpu_max ?? 0) > 0)
+  const data = useMemo(() => decimate(rows, budget, [
+    (row) => row.cpu,
+    ...(hasPeak ? [(row: ChartRow) => row.cpu_max] : []),
+  ]), [rows, budget, hasPeak])
+  const chart = useMemo(() => {
+    if (!smooth) return data
+    const cleaned = despike(data.map((r) => ("cpu" in r ? r.cpu : null)), windowFor(data))
+    return data.map((r, i) => ({ ...r, cpu_s: cleaned[i] }))
+  }, [data, smooth])
   const live = node.metrics
   const items: LegendItem[] = [
     { key: "cpu", label: "CPU", color: COLOR.cpu },
@@ -89,9 +95,13 @@ function CpuPanel({ node, rows, hours, smooth }: { node: Node; rows: ChartRow[];
   )
 }
 
-function MemoryPanel({ node, rows, hours }: { node: Node; rows: ChartRow[]; hours: number }) {
+function MemoryPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]; hours: number; budget: number }) {
   const { hidden, toggle } = useHidden()
   const hasSwap = node.swap_total > 0 && rows.some((r) => "swap_used" in r)
+  const data = useMemo(() => decimate(rows, budget, [
+    (row) => row.mem_used,
+    ...(hasSwap ? [(row: ChartRow) => row.swap_used] : []),
+  ]), [rows, budget, hasSwap])
   const live = node.metrics
   const items: LegendItem[] = [
     { key: "mem", label: "RAM", color: COLOR.mem },
@@ -117,10 +127,10 @@ function MemoryPanel({ node, rows, hours }: { node: Node; rows: ChartRow[]; hour
       legend={<ChartLegend label="内存曲线" items={items} hidden={hidden} onToggle={toggle} />}
     >
       <ResponsiveContainer>
-        <ComposedChart data={rows}>
+        <ComposedChart data={data}>
           <ChartFade id="fade-mem" color={COLOR.mem} />
           <CartesianGrid {...GRID} />
-          <XAxis {...timeAxis(rows, hours)} />
+          <XAxis {...timeAxis(data, hours)} />
           <YAxis domain={[0, node.mem_total]} ticks={quarters(node.mem_total)} tickFormatter={axisBytes} {...VALUE_AXIS} />
           <Tooltip {...TOOLTIP} formatter={(value) => detailBytes(Number(value))} />
           {!hidden.includes("memTotal") && (
@@ -141,8 +151,9 @@ function MemoryPanel({ node, rows, hours }: { node: Node; rows: ChartRow[]; hour
   )
 }
 
-function DiskPanel({ node, rows, hours }: { node: Node; rows: ChartRow[]; hours: number }) {
+function DiskPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]; hours: number; budget: number }) {
   const { hidden, toggle } = useHidden()
+  const data = useMemo(() => decimate(rows, budget, [(row) => row.disk_used]), [rows, budget])
   const live = node.metrics
   const items: LegendItem[] = [
     { key: "disk", label: "磁盘已用", color: COLOR.disk },
@@ -163,10 +174,10 @@ function DiskPanel({ node, rows, hours }: { node: Node; rows: ChartRow[]; hours:
       legend={<ChartLegend label="磁盘曲线" items={items} hidden={hidden} onToggle={toggle} />}
     >
       <ResponsiveContainer>
-        <ComposedChart data={rows}>
+        <ComposedChart data={data}>
           <ChartFade id="fade-disk" color={COLOR.disk} />
           <CartesianGrid {...GRID} />
-          <XAxis {...timeAxis(rows, hours)} />
+          <XAxis {...timeAxis(data, hours)} />
           <YAxis domain={[0, node.disk_total]} ticks={quarters(node.disk_total)} tickFormatter={axisBytes} {...VALUE_AXIS} />
           <Tooltip {...TOOLTIP} formatter={(value) => detailBytes(Number(value))} />
           {!hidden.includes("diskTotal") && (
@@ -181,9 +192,14 @@ function DiskPanel({ node, rows, hours }: { node: Node; rows: ChartRow[]; hours:
   )
 }
 
-function NetworkPanel({ node, rows, hours }: { node: Node; rows: ChartRow[]; hours: number }) {
+function NetworkPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]; hours: number; budget: number }) {
   const { hidden, toggle } = useHidden()
   const hasPeak = rows.some((r) => (r.net_rx_max ?? 0) > 0 || (r.net_tx_max ?? 0) > 0)
+  const data = useMemo(() => decimate(rows, budget, [
+    (row) => row.net_rx,
+    (row) => row.net_tx,
+    ...(hasPeak ? [(row: ChartRow) => row.net_rx_max, (row: ChartRow) => row.net_tx_max] : []),
+  ]), [rows, budget, hasPeak])
   const live = node.metrics
   const max = rows.reduce((hi, r) => Math.max(hi, r.net_rx_max ?? r.net_rx ?? 0, r.net_tx_max ?? r.net_tx ?? 0), RATE_FLOOR)
   const { domain, ticks } = rateAxis(RATE_FLOOR, max)
@@ -212,9 +228,9 @@ function NetworkPanel({ node, rows, hours }: { node: Node; rows: ChartRow[]; hou
       legend={<ChartLegend label="网络曲线" items={items} hidden={hidden} onToggle={toggle} />}
     >
       <ResponsiveContainer>
-        <ComposedChart data={rows}>
+        <ComposedChart data={data}>
           <CartesianGrid {...GRID} />
-          <XAxis {...timeAxis(rows, hours)} />
+          <XAxis {...timeAxis(data, hours)} />
           <YAxis
             scale="log"
             domain={domain}
@@ -240,8 +256,9 @@ function NetworkPanel({ node, rows, hours }: { node: Node; rows: ChartRow[]; hou
   )
 }
 
-function ConnectionsPanel({ node, rows, hours }: { node: Node; rows: ChartRow[]; hours: number }) {
+function ConnectionsPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]; hours: number; budget: number }) {
   const { hidden, toggle } = useHidden()
+  const data = useMemo(() => decimate(rows, budget, [(row) => row.tcp, (row) => row.udp]), [rows, budget])
   const live = node.metrics
   const items: LegendItem[] = [
     { key: "tcp", label: "TCP", color: COLOR.tcp },
@@ -257,9 +274,9 @@ function ConnectionsPanel({ node, rows, hours }: { node: Node; rows: ChartRow[];
       legend={<ChartLegend label="连接曲线" items={items} hidden={hidden} onToggle={toggle} />}
     >
       <ResponsiveContainer>
-        <LineChart data={rows}>
+        <LineChart data={data}>
           <CartesianGrid {...GRID} />
-          <XAxis {...timeAxis(rows, hours)} />
+          <XAxis {...timeAxis(data, hours)} />
           <YAxis domain={[0, "auto"]} allowDecimals={false} {...VALUE_AXIS} />
           <Tooltip {...TOOLTIP} formatter={(value) => Math.round(Number(value))} />
           {!hidden.includes("tcp") && <Line dataKey="tcp" name="TCP" stroke={COLOR.tcp} {...LINE} />}
@@ -270,8 +287,9 @@ function ConnectionsPanel({ node, rows, hours }: { node: Node; rows: ChartRow[];
   )
 }
 
-function ProcessPanel({ node, rows, hours }: { node: Node; rows: ChartRow[]; hours: number }) {
+function ProcessPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]; hours: number; budget: number }) {
   const live = node.metrics
+  const data = useMemo(() => decimate(rows, budget, [(row) => row.procs]), [rows, budget])
   return (
     <ChartCard
       icon={Activity}
@@ -280,9 +298,9 @@ function ProcessPanel({ node, rows, hours }: { node: Node; rows: ChartRow[]; hou
       note={<Num value={live ? String(live.procs) : "—"} />}
     >
       <ResponsiveContainer>
-        <LineChart data={rows}>
+        <LineChart data={data}>
           <CartesianGrid {...GRID} />
-          <XAxis {...timeAxis(rows, hours)} />
+          <XAxis {...timeAxis(data, hours)} />
           <YAxis domain={[0, "auto"]} allowDecimals={false} {...VALUE_AXIS} />
           <Tooltip {...TOOLTIP} formatter={(value) => Math.round(Number(value))} />
           <Line dataKey="procs" name="进程" stroke={COLOR.proc} {...LINE} />
@@ -305,6 +323,10 @@ export function LoadCharts({ node, rows, hours, smooth, live = false }: {
   /** Live rows mix a one-minute seed with two-second samples; do not read that as an outage. */
   live?: boolean
 }) {
+  const grid = useRef<HTMLDivElement>(null)
+  const width = useElementWidth(grid)
+  const panelWidth = width > 0 ? (width >= 768 ? (width - 16) / 2 : width) : 0
+  const budget = panelWidth > 0 ? renderBudget(panelWidth) : Number.POSITIVE_INFINITY
   const chart = useMemo(() => (live ? rows : withGaps(rows)).map((row) => (
     "mem_used" in row
       ? { ...row, mem_total: node.mem_total, swap_total: node.swap_total, disk_total: node.disk_total }
@@ -314,13 +336,13 @@ export function LoadCharts({ node, rows, hours, smooth, live = false }: {
   const hasProcs = rows.some((r) => "procs" in r)
 
   return (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-      <CpuPanel node={node} rows={chart} hours={hours} smooth={smooth} />
-      <MemoryPanel node={node} rows={chart} hours={hours} />
-      <DiskPanel node={node} rows={chart} hours={hours} />
-      <NetworkPanel node={node} rows={chart} hours={hours} />
-      {hasConns && <ConnectionsPanel node={node} rows={chart} hours={hours} />}
-      {hasProcs && <ProcessPanel node={node} rows={chart} hours={hours} />}
+    <div ref={grid} className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <CpuPanel node={node} rows={chart} hours={hours} smooth={smooth} budget={budget} />
+      <MemoryPanel node={node} rows={chart} hours={hours} budget={budget} />
+      <DiskPanel node={node} rows={chart} hours={hours} budget={budget} />
+      <NetworkPanel node={node} rows={chart} hours={hours} budget={budget} />
+      {hasConns && <ConnectionsPanel node={node} rows={chart} hours={hours} budget={budget} />}
+      {hasProcs && <ProcessPanel node={node} rows={chart} hours={hours} budget={budget} />}
     </div>
   )
 }

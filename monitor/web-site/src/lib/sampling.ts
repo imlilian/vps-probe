@@ -45,3 +45,12 @@ export function pointsFor(hours: number, kind: SamplingKind): number {
 export function renderBudget(panelWidth: number): number {
   return Math.max(120, Math.round(panelWidth * 0.75))
 }
+
+/**
+ * The one place the history URL is assembled. `series` is metrics for load and
+ * ping for latency; the point count is always the time-bucket table's, never a
+ * panel width. Keeping it here makes the request auditable from a test.
+ */
+export function metricsPath(nodeId: number, hours: number, kind: SamplingKind): string {
+  return `/nodes/${nodeId}/metrics?hours=${hours}&points=${pointsFor(hours, kind)}&series=${kind === "load" ? "metrics" : "ping"}`
+}

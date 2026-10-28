@@ -17,7 +17,7 @@ import { MetricGrid } from "@/components/detail/MetricGrid"
 import { percentText } from "@/components/Meter"
 import { Figure } from "@/components/NodeCard"
 import { api, type Metrics, type Node } from "@/lib/api"
-import { pointsFor } from "@/lib/sampling"
+import { metricsPath } from "@/lib/sampling"
 import { lttb } from "@/lib/downsample"
 import {
   axisBytes, axisTop, bytes, clockFor, despike,
@@ -585,7 +585,7 @@ export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
   const [chartTop, setChartTop] = useState(0)
   // Latency keeps its own time bucket (1m/2m/5m/10m/1h/4h); the load half has
   // already moved to `LoadSection` and the same table.
-  const points = pointsFor(hours, "ping")
+  const path = metricsPath(node.id, hours, "ping")
 
   useEffect(() => {
     let active = true
@@ -595,15 +595,13 @@ export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
     setZoom(null)
     // oxlint-disable-next-line react/set-state-in-effect
     setFailed("")
-    api<{ metrics: Point[]; ping: PingPoint[]; probes: Probes; loss?: Loss }>(
-      `/nodes/${node.id}/metrics?hours=${hours}&points=${points}&series=ping`,
-    )
+    api<{ metrics: Point[]; ping: PingPoint[]; probes: Probes; loss?: Loss }>(path)
       .then((next) => { if (active) setData(next) })
       .catch((e: Error) => {
         if (active) { setFailed(e.message); setData({ metrics: [], ping: [], probes: {} }) }
       })
     return () => { active = false }
-  }, [node.id, hours, attempt, points])
+  }, [path, attempt])
 
   // One series per probe that reported, labelled from the names the samples
   // arrived with. Memoised, as is the chart's row set below: the node prop
