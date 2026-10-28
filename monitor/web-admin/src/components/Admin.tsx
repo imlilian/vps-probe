@@ -2820,9 +2820,9 @@ function Sessions({ rows, reload }: { rows: Session[]; reload: () => void }) {
   )
 }
 
-// The ways into this panel, on their own page: the sessions signed in, the
-// GitHub identity it trusts and the password that works when GitHub does not.
-function Security({ site }: { site: string }) {
+// The ways into this panel, on their own page: the sessions signed in, the two
+// identities it trusts and the password that works when neither does.
+function Security({ site, sited }: { site: string; sited: boolean }) {
   const { s, set, save } = useSettings()
   const sessions = useSessions()
   // The password being set, and the one it replaces: a change asks for both.
@@ -2837,6 +2837,7 @@ function Security({ site }: { site: string }) {
   // change asks for theirs.
   const needsCurrent = hasPassword && !s.password_generated
   const callback = `${site}/api/auth/github/callback`
+  const oidcCallback = `${site}/api/auth/oidc/callback`
 
   return (
     <div className="space-y-4">
@@ -2890,13 +2891,100 @@ function Security({ site }: { site: string }) {
         </div>
       </Card>
 
+      {/* The other identity system, for an owner who runs one. Kept beside
+          GitHub rather than instead of it: each hides its button when it has no
+          settings, so a broken provider costs its own button and no more. */}
+      <Card className="gap-4 p-5">
+        <div>
+          <h3 className="text-sm font-medium">OIDC 单点登录</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Pocket-ID、Authentik、Authelia、Keycloak 这类身份系统。授权码 + PKCE，只需要 Issuer、
+            Client ID 与回调地址。
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            回调地址 <code className="rounded bg-muted px-1 break-all">{oidcCallback}</code>
+          </p>
+        </div>
+        {!sited && (
+          <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            需要 hub 以 --site 启动，OIDC 才能回调：上面的地址会跟着面板的地址走，而身份系统
+            打不开一个 127.0.0.1 上的端口。
+          </p>
+        )}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Issuer URL" hint="身份系统的地址，可以带路径">
+            <Input
+              placeholder="https://pocket-id.example.com"
+              value={String(s.oidc_issuer ?? "")}
+              onChange={(e) => set("oidc_issuer", e.target.value)}
+            />
+          </Field>
+          <Field label="Client ID">
+            <Input value={String(s.oidc_client_id ?? "")} onChange={(e) => set("oidc_client_id", e.target.value)} />
+          </Field>
+          <Field
+            label="Client Secret"
+            hint={s.oidc_secret_set ? "已设置，留空不变" : "公开客户端可以留空"}
+          >
+            <Input
+              type="password"
+              autoComplete="off"
+              placeholder={s.oidc_secret_set ? "••••••••" : ""}
+              value={String(s.oidc_client_secret ?? "")}
+              onChange={(e) => set("oidc_client_secret", e.target.value)}
+            />
+          </Field>
+          <Field label="按钮名称" hint="登录页上这个入口叫什么，留空就是「OIDC」">
+            <Input
+              maxLength={16}
+              placeholder="OIDC"
+              value={String(s.oidc_provider_name ?? "")}
+              onChange={(e) => set("oidc_provider_name", e.target.value)}
+            />
+          </Field>
+        </div>
+        {String(s.oidc_client_id ?? "") !== "" && String(s.oidc_allowed_users ?? "").trim() === "" && (
+          <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            白名单为空，OIDC 登录拒绝所有人。填入用户名并保存后生效。
+          </p>
+        )}
+        <Field label="允许登录的用户名" hint="逗号分隔，按身份系统里的用户名。留空 = 拒绝所有人">
+          <Input
+            value={String(s.oidc_allowed_users ?? "")}
+            onChange={(e) => set("oidc_allowed_users", e.target.value)}
+            placeholder="alice"
+          />
+        </Field>
+        <div>
+          <Button
+            size="sm"
+            onClick={() => {
+              const patch: Record<string, string> = {
+                oidc_issuer: String(s.oidc_issuer ?? ""),
+                oidc_client_id: String(s.oidc_client_id ?? ""),
+                oidc_allowed_users: String(s.oidc_allowed_users ?? ""),
+                oidc_provider_name: String(s.oidc_provider_name ?? ""),
+              }
+              // Only when typed: an empty field means "keep the stored one", so
+              // a save from a panel that never showed it cannot clear it.
+              if (typeof s.oidc_client_secret === "string" && s.oidc_client_secret) {
+                patch.oidc_client_secret = s.oidc_client_secret
+              }
+              save(patch)
+            }}
+          >
+            保存 OIDC 设置
+          </Button>
+        </div>
+      </Card>
+
       <Card className="gap-4 p-5">
         <div>
           <h3 className="text-sm font-medium">应急密码</h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            GitHub 不可用时的备用入口，也用来确认恢复备份这类不可撤销的操作。
+            两个单点登录都不可用时的备用入口，也用来确认恢复备份这类不可撤销的操作。
             {!hasPassword
-              ? "设置后 GitHub 之外的登录方式才可用。"
+              ? "设置后应急密码登录才可用。"
               : s.password_generated
                 ? "现在这个是首次启动时自动生成的，只打印过一次。设置一个自己的来替换它，之后的修改需要输入当前密码。"
                 : "修改后其它设备登录立即失效，当前设备不受影响。"}
@@ -3357,6 +3445,7 @@ export function Admin({
   nodes,
   refresh,
   site,
+  sited,
   refusal,
   reloadMe,
 }: {
@@ -3365,6 +3454,9 @@ export function Admin({
   nodes: Node[]
   refresh: () => void
   site: string
+  /** Whether the hub was started with `--site`, i.e. whether `site` is its own
+   *  address rather than the one this browser happens to use. */
+  sited: boolean
   refusal: string
   reloadMe: () => void
 }) {
@@ -3406,7 +3498,7 @@ export function Admin({
         ) : path === "/admin/data" ? (
           <Data />
         ) : path === "/admin/security" ? (
-          <Security site={site} />
+          <Security site={site} sited={sited} />
         ) : path === "/admin/settings" ? (
           <SettingsTab onSaved={reloadMe} />
         ) : path === "/admin/update" ? (

@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { ShieldCheck } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -17,15 +18,29 @@ function GithubMark() {
   )
 }
 
-// The hub redirects a failed GitHub sign-in back here with the reason attached,
-// so it is readable in context rather than as a bare 401 page.
+// The hub redirects a failed sign-in back here with the reason attached, so it
+// is readable in context rather than as a bare 401 page. Both single sign-on
+// paths report through the same parameter: the hub writes the text.
 function callbackError(): string {
   const reason = new URLSearchParams(location.search).get("login_error")
   if (reason) history.replaceState({}, "", location.pathname)
   return reason ?? ""
 }
 
-export function Login({ github, onDone }: { github: boolean; onDone: () => void }) {
+/** The ways in that this hub turned on. Each is offered only when its settings
+ *  are complete, so an unreachable or misconfigured provider costs its own
+ *  button and nothing else -- the password form is always there. */
+export function Login({
+  github,
+  oidc,
+  oidcName,
+  onDone,
+}: {
+  github: boolean
+  oidc: boolean
+  oidcName: string
+  onDone: () => void
+}) {
   const [password, setPassword] = useState("")
   const [error, setError] = useState(callbackError)
   const [busy, setBusy] = useState(false)
@@ -53,13 +68,27 @@ export function Login({ github, onDone }: { github: boolean; onDone: () => void 
           <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>
         )}
 
-        {github && (
+        {/* One per provider rather than a row: the button label is whatever the
+            operator named their provider, and a sixteen-character name beside
+            "使用 GitHub 登录" does not fit a 24rem card. */}
+        {(github || oidc) && (
           <>
-            <Button asChild variant="outline" className="w-full">
-              <a href="/api/auth/github">
-                <GithubMark /> 使用 GitHub 登录
-              </a>
-            </Button>
+            <div className="flex flex-col gap-2">
+              {github && (
+                <Button asChild variant="outline" className="w-full">
+                  <a href="/api/auth/github">
+                    <GithubMark /> 使用 GitHub 登录
+                  </a>
+                </Button>
+              )}
+              {oidc && (
+                <Button asChild variant="outline" className="w-full">
+                  <a href="/api/auth/oidc">
+                    <ShieldCheck aria-hidden /> {oidcName} 登录
+                  </a>
+                </Button>
+              )}
+            </div>
             <div className="relative">
               <Separator />
               <span className="absolute inset-0 -top-2 mx-auto w-fit bg-card px-2 text-xs text-muted-foreground">
@@ -78,7 +107,9 @@ export function Login({ github, onDone }: { github: boolean; onDone: () => void 
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
-              autoFocus={!github}
+              // Focused when it is the first thing on the card, since a
+              // sign-in button above it is what a pointer would aim at first.
+              autoFocus={!github && !oidc}
             />
           </div>
           <Button type="submit" className="w-full" disabled={busy || !password}>

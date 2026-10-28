@@ -9,7 +9,18 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { api, provisionRefusal, useNodes } from "@/lib/api"
 
-type Me = { authed: boolean; github: boolean; site_name: string; public_page: boolean; site: string }
+type Me = {
+  authed: boolean
+  /** Whether each single sign-on path is configured. Empty settings hide the
+   *  button; nothing else about the path changes. */
+  github: boolean
+  oidc: boolean
+  /** What the OIDC button says, defaulted by the hub ("OIDC" when unnamed). */
+  oidc_name: string
+  site_name: string
+  public_page: boolean
+  site: string
+}
 
 // `/admin` alone is not a page; it is normalised to the first section so that a
 // bookmark and the OAuth redirect both resolve to a real route.
@@ -139,7 +150,12 @@ export default function App() {
   if (!me.authed) {
     return (
       <>
-        <Login github={me.github} onDone={() => { loadMe(); refresh(); go("/admin/nodes") }} />
+        <Login
+          github={me.github}
+          oidc={me.oidc}
+          oidcName={me.oidc_name}
+          onDone={() => { loadMe(); refresh(); go("/admin/nodes") }}
+        />
         <Toaster position="top-center" theme={dark ? "dark" : "light"} />
       </>
     )
@@ -211,6 +227,10 @@ export default function App() {
               // panel is frequently reached over a loopback port behind a proxy,
               // while the install command and OAuth callback need the real one.
               site={me.site || location.origin}
+              // Whether `site` above is the hub's own address or this browser's,
+              // which decides if OIDC can call back at all: the provider has to
+              // reach the hub, and a loopback port behind a proxy is not it.
+              sited={!!me.site}
               // Why this page cannot add nodes, measured by the rule the hub applies
               // to the `Origin` it receives; empty when it can.
               refusal={provisionRefusal(location.origin, me.site)}
