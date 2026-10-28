@@ -1,21 +1,20 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowDown, ArrowDownUp, ArrowLeft, ArrowUp, Activity, Cable, Cpu, HardDrive, MemoryStick, Network } from "lucide-react"
+import { ArrowDown, ArrowDownUp, ArrowUp, Activity, Cable, Cpu, HardDrive, MemoryStick, Network } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import {
   Area, AreaChart, Brush, CartesianGrid, ComposedChart, Line, LineChart, ResponsiveContainer,
   Tooltip, XAxis, YAxis, type DotItemDotProps,
 } from "recharts"
 
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Chip, Segmented } from "@/components/ui/chip"
 import { Glyph } from "@/components/ui/glyph"
 import { Skeleton } from "@/components/ui/skeleton"
 import { priceParts } from "@/components/Billing"
 import { ChartFade, ChartPanel, CURSOR, GRID, ToneIcon, type ChartTone } from "@/components/ChartPanel"
+import { DetailHeader } from "@/components/detail/DetailHeader"
 import { percentText } from "@/components/Meter"
-import { Country, Figure, Status, Uptime } from "@/components/NodeCard"
+import { Figure } from "@/components/NodeCard"
 import { api, type Metrics, type Node } from "@/lib/api"
 import { lttb, samples } from "@/lib/downsample"
 import {
@@ -655,10 +654,13 @@ const pctFigure = (pct: number | null) => pctText(pct).replace("%", " %")
  * point is a bucket -- its median, the range its answers spanned and the share
  * lost -- which over a month shows a route's evening pattern a day cannot.
  */
-export function NodeDetail({ node, historyDays, onBack }: {
+export function NodeDetail({ node, historyDays, onBack, nodes = [], onOpen }: {
   node: Node
   historyDays: number
   onBack: () => void
+  /** The public fleet, already ordered, for the header's switcher. */
+  nodes?: Node[]
+  onOpen?: (id: number) => void
 }) {
   const ranges = useMemo(() => windows(historyDays), [historyDays])
   const [tab, setTab] = useState<Tab>("resources")
@@ -860,38 +862,15 @@ export function NodeDetail({ node, historyDays, onBack }: {
 
   return (
     <div ref={page} className="space-y-4">
-      {/* The list is one press away, and the way back has been the site name in
-          the bar until now -- not where anyone looks for it once they are two
-          machines deep. */}
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={onBack}
-        className="-ml-2 h-7 gap-1 px-2 text-xs text-muted-foreground"
-      >
-        <Glyph icon={ArrowLeft} box="sm" />
-        全部节点
-      </Button>
+      <DetailHeader node={node} nodes={nodes} onBack={onBack} onOpen={onOpen} />
 
       <Card className="min-w-0 gap-0 p-4 sm:p-5">
-        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2">
-          <Country node={node} />
-          <h2 className="min-w-0 truncate text-xl font-semibold tracking-tight" title={node.name}>{node.name}</h2>
-          <Status node={node} />
-          {/* The same capsule the card in the list carried to get here, so the
-              page someone landed on is visibly the machine they pressed. */}
-          {node.online && <Uptime node={node} />}
-          {node.agent_version && (
-            <Badge className="font-normal text-muted-foreground">agent {node.agent_version}</Badge>
-          )}
-        </div>
-
         {/* Six figures, in the order someone scans a machine: the three
             things that fill up, then the two things that queue, then the bill
             for the day. A hub that pushed no live sample yet shows dashes
             rather than an empty row: the page has already drawn its charts
             from history, and a metric grid with holes reads as a broken node. */}
-        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
           <Metric
             icon={Cpu}
             tone="cpu"

@@ -356,11 +356,13 @@ try {
   }
   // React separates a text child from an expression with a comment.
   assert.match(page, /agent <!-- -->1\.4\.2/)
-  // The heading says the state in one word and puts the number in the capsule
-  // the list uses: `在线 92d 0h` was a sentence where a state belongs.
+  // The heading says the state in one word; the uptime moved into the figures
+  // below when the header stopped being a card. The way back is an icon now,
+  // named for a screen reader rather than spelled out.
   assert.ok(page.includes(">在线<"), "the state is one word")
   assert.ok(!page.includes(">在线 9"), "and the uptime is not glued to it")
-  assert.match(page, /<\/svg>\d+d \d+h<\/span>/, "the capsule follows it")
+  assert.match(page, /aria-label="返回全部节点"/, "the way back is an icon button")
+  assert.match(page, /aria-label="切换节点"/, "and the fleet switcher is a select")
   // Six cells of the spec sheet, so the hairline grid divides into rows of two,
   // three and six.
   assert.equal(page.match(/bg-card-2 px-3 py-2\.5/g)?.length, 6)
@@ -383,7 +385,7 @@ try {
   // is off at six hours.
   assert.ok(page.includes('aria-label="视图"'))
   assert.equal(page.match(/aria-pressed="true"/g)?.length, 1 + 1, "one view and one range")
-  assert.equal(page.match(/aria-pressed="false"/g)?.length, 1 + (windows(7).length - 1) + 1, "plus 削峰")
+  assert.equal(page.match(/aria-pressed="false"/g)?.length, 1 + (windows(7).length - 1) + 2, "plus 削峰 and the star")
   // A public page never shows where the machine is: an operator's `ip` and
   // `hostname` are the panel's.
   const hidden = detail({ node: { ...fleet[1], ip: "203.0.113.7", hostname: "hk-02" } })

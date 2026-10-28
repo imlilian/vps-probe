@@ -7,17 +7,17 @@ import { cn } from "@/lib/utils"
 // six were unused from the moment they were vendored. Restore one from upstream
 // if a card ever needs it.
 //
-// The fill is translucent and blurred: the page's dot grid showing through at
-// 12px is what makes a grid of cards read as one surface, and it costs nothing
-// at rest since the layer underneath never moves. The shadow is the token's two
-// layers -- a contact line and a wide lift -- rather than the stock one, which on
-// a page with washes in the corners is too shallow to stand the card off it.
+// The fill is translucent but no longer blurred: the page is a continuous wash
+// rather than a dot grid, so there is nothing to soften, and an unblurred card
+// keeps 12px chart hairlines crisp. The border is the softer token -- a card is
+// a plane, not a box -- and the shadow is one shallow lift rather than the old
+// contact line plus wide drop.
 function Card({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card"
       className={cn(
-        "flex flex-col gap-6 rounded-xl border bg-card py-6 text-card-foreground shadow-card backdrop-blur-md",
+        "flex flex-col gap-6 rounded-xl border border-border-soft bg-card py-6 text-card-foreground shadow-card",
         className
       )}
       {...props}

@@ -5,7 +5,7 @@
 // Nothing imports it, so the bundle never includes it.
 import {
   axisBytes, axisTop, bytes, cpuName, cycle, cycleSuffix, daysUntil, despike, money, moneyParts, osName, pair, percent,
-  quarters, RATE_FLOOR, rateAxis, sinceSeen, splitUnit, tickClock, timeTicks, uptime, windows, withGaps,
+  loadWindows, pingWindows, quarters, RATE_FLOOR, rateAxis, sinceSeen, splitUnit, tickClock, timeTicks, uptime, windows, withGaps,
 } from "./format.ts"
 
 let failed = 0
@@ -134,6 +134,20 @@ eq(RATE_FLOOR, 1024, "底是 1 KB/s")
   eq(hours(92), [1, 6, 24, 168, 720, 2208], "紧挨保留期的整档位不单列")
   eq(hours(8), [1, 6, 24, 192], "8 天不再并列 7 天")
   eq(windows(1).map((w) => w.label), ["1 小时", "6 小时", "1 天"], "一天")
+}
+
+// loadWindows / pingWindows: the detail page's stops, capped at a month.
+{
+  const hours = (list: { hours: number }[]) => list.map((w) => w.hours)
+  eq(hours(loadWindows(7)), [4, 24, 168], "负载：一周")
+  eq(hours(loadWindows(30)), [4, 24, 168, 720], "负载：30 天")
+  eq(hours(loadWindows(90)), [4, 24, 168, 720], "负载：超过 30 天也封顶 30 天")
+  eq(hours(loadWindows(1)), [4, 24], "负载：一天")
+  eq(loadWindows(7).map((w) => w.label), ["4 小时", "1 天", "7 天"], "负载标签")
+  eq(hours(pingWindows(7)), [1, 6, 12, 24, 168], "延迟：一周")
+  eq(hours(pingWindows(30)), [1, 6, 12, 24, 168, 720], "延迟：30 天")
+  eq(hours(pingWindows(1)), [1, 6, 12, 24], "延迟：一天")
+  eq(pingWindows(30).map((w) => w.label), ["1 小时", "6 小时", "12 小时", "1 天", "7 天", "30 天"], "延迟标签")
 }
 
 // sinceSeen: the hub's count wins, null included; only its absence falls back to the browser's.

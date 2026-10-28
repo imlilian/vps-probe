@@ -41,6 +41,7 @@ export function writePref(key: string, value: string | null): void {
  */
 const ORDER = "sort"
 const DENSITY = "density"
+const FAVORITES = "favorite-nodes"
 
 export function readOrder(): Order {
   return parseOrder(readPref(ORDER))
@@ -58,4 +59,25 @@ export function writeDensity(density: Density): void {
   // `standard` is written rather than removed: a named value is easier to read
   // back than a hole, the same argument the theme key makes.
   writePref(DENSITY, density)
+}
+
+/**
+ * The nodes the reader starred, in the order they were starred. A set rather
+ * than a list is what the header needs, but the array keeps the order stable
+ * for a future "my favourites" filter. Anything that is not an integer id is
+ * dropped: this is the reader's own convenience, not a contract with the hub.
+ */
+export function readFavorites(): number[] {
+  try {
+    const raw = readPref(FAVORITES)
+    const parsed: unknown = raw ? JSON.parse(raw) : []
+    if (!Array.isArray(parsed)) return []
+    return [...new Set(parsed.filter((id): id is number => Number.isInteger(id)))]
+  } catch {
+    return []
+  }
+}
+
+export function writeFavorites(ids: number[]): void {
+  writePref(FAVORITES, JSON.stringify([...new Set(ids.filter((id) => Number.isInteger(id)))]))
 }

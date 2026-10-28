@@ -291,6 +291,40 @@ export function windows(days: number): { hours: number; label: string }[] {
   }))
 }
 
+// The detail page's load chart stops at a month. Past that the buckets are
+// hours wide and a line is a trend, not a reading; the four presets plus the
+// whole of the retained window are the useful stops. Kept separate from
+// `WINDOWS` because the list page's own summary still uses that ladder.
+const LOAD_WINDOWS = [4, 24, 168, 720]
+const PING_WINDOWS = [1, 6, 12, 24, 168, 720]
+
+/**
+ * The windows a detail chart offers, capped at `cap` hours, with the retained
+ * window itself as the last stop when it is not one of the presets. A preset
+ * within a quarter of the retained window is left out: two tabs of nearly the
+ * same width read as a bug (7 and 8 days, 30 and 31).
+ */
+function pickWindows(presets: number[], days: number, cap: number): { hours: number; label: string }[] {
+  const whole = Math.max(1, Math.floor(days)) * 24
+  const limit = Math.min(whole, cap)
+  const list = presets.filter((h) => h === limit || h * 1.25 <= limit)
+  if (limit >= presets[0] && !list.includes(limit)) list.push(limit)
+  return [...new Set(list)].sort((a, b) => a - b).map((hours) => ({
+    hours,
+    label: hours < 24 ? `${hours} 小时` : `${hours / 24} 天`,
+  }))
+}
+
+/** Load-chart ranges: realtime is added by the component, not here. */
+export function loadWindows(days: number): { hours: number; label: string }[] {
+  return pickWindows(LOAD_WINDOWS, days, 720)
+}
+
+/** Latency-chart ranges; no realtime, and the same 30-day ceiling. */
+export function pingWindows(days: number): { hours: number; label: string }[] {
+  return pickWindows(PING_WINDOWS, days, 720)
+}
+
 /**
  * Distro and CPU names as vendors write them carry mostly redundant text: a
  * codename in brackets, "GNU/Linux", "(R)", a core count already printed

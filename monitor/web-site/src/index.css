@@ -36,9 +36,18 @@
      in, so a card can group its facts without drawing another border of the same
      weight as its own edge. */
   --background: light-dark(oklch(0.968 0.007 247.896), oklch(0.129 0.042 264.695)); /* slate-100 / slate-950 */
+  /* The page is a continuous, very shallow vertical wash rather than a sheet of
+     dots. The dots at 12% were louder than the two corner washes, and a card at
+     82% let them read through: a grid of cards looked textured rather than
+     placed. These two steps are the ends of that wash (slate-50 -> slate-100,
+     and a navy one step above slate-950). */
+  --page-top: light-dark(oklch(0.984 0.003 247.858), oklch(0.145 0.02 260)); /* slate-50 / navy */
+  --page-bottom: light-dark(oklch(0.968 0.007 247.896), oklch(0.129 0.042 264.695)); /* slate-100 / slate-950 */
   --foreground: light-dark(oklch(0.208 0.042 265.755), oklch(0.968 0.007 247.896)); /* slate-900 / slate-100 */
-  --card: light-dark(oklch(1 0 0 / 82%), oklch(0.208 0.042 265.755 / 80%)); /* white/80 / slate-900/80 */
-  --card-2: light-dark(oklch(0.968 0.007 247.896 / 65%), oklch(0.279 0.041 260.031 / 45%)); /* slate-100/65 / slate-800/45 */
+  /* More opaque than before: without a dot grid underneath there is nothing to
+     show through, and a 90% card keeps chart hairlines crisp. */
+  --card: light-dark(oklch(1 0 0 / 90%), oklch(0.208 0.042 265.755 / 82%)); /* white/90 / slate-900/82 */
+  --card-2: light-dark(oklch(0.968 0.007 247.896 / 60%), oklch(0.279 0.041 260.031 / 42%)); /* slate-100/60 / slate-800/42 */
   --card-foreground: light-dark(oklch(0.208 0.042 265.755), oklch(0.968 0.007 247.896));
   /* The accent: links, the brand mark, the live figures, and every control that
      is on. blue-600 clears 4.79:1 on this page; blue-500 would not as text. */
@@ -70,6 +79,7 @@
   --chart-3: light-dark(oklch(0.596 0.145 163.225), oklch(0.765 0.177 163.223)); /* emerald-600 / emerald-400 */
   --chart-4: light-dark(oklch(0.606 0.25 292.717), oklch(0.702 0.183 293.541)); /* violet-500 / violet-400 */
   --chart-5: light-dark(oklch(0.656 0.241 354.308), oklch(0.718 0.202 349.761)); /* pink-500 / pink-400 */
+  --chart-6: light-dark(oklch(0.769 0.188 70.08), oklch(0.828 0.189 84.429)); /* amber-500 / amber-400 */
 
   /* Green, amber, red: the three states a reader acts on. Each is the step that
      clears 4.5:1 as text on its own side -- emerald-700 at 4.9 on the page,
@@ -113,27 +123,25 @@
      one that stands the card off the page. One shadow deep enough to read does
      the work of a border and makes a grid of eight cards look punched out. */
   --elev-card: light-dark(
-    0 1px 2px oklch(0.208 0.042 265.755 / 5%),
-    0 6px 20px -12px oklch(0.208 0.042 265.755 / 14%)
+    0 1px 2px oklch(0.208 0.042 265.755 / 3%),
+    0 4px 12px -8px oklch(0.208 0.042 265.755 / 5%)
   ), light-dark(
-    0 1px 2px oklch(0 0 0 / 35%),
-    0 8px 24px -14px oklch(0 0 0 / 65%)
+    0 1px 2px oklch(0 0 0 / 25%),
+    0 6px 18px -12px oklch(0 0 0 / 45%)
   );
   --elev-raise: light-dark(
-    0 2px 6px oklch(0.208 0.042 265.755 / 6%),
-    0 16px 34px -16px oklch(0.208 0.042 265.755 / 20%)
+    0 2px 6px oklch(0.208 0.042 265.755 / 4%),
+    0 12px 28px -18px oklch(0.208 0.042 265.755 / 10%)
   ), light-dark(
-    0 2px 6px oklch(0 0 0 / 40%),
-    0 18px 38px -16px oklch(0 0 0 / 75%)
+    0 2px 6px oklch(0 0 0 / 30%),
+    0 14px 28px -16px oklch(0 0 0 / 55%)
   );
 
-  /* The page's texture: a 28px dot grid, and two cold washes spilling from the
-     top corners so a page of cards is not flat. The washes are the reason the
-     cards can be translucent at all -- without something behind them, `bg-white`
-     at 82% is just a greyer white. */
-  --dot: light-dark(oklch(0.554 0.046 257.417 / 12%), oklch(0.704 0.04 256.788 / 10%));
-  --glow-a: light-dark(oklch(0.623 0.214 259.815 / 7%), oklch(0.623 0.214 259.815 / 10%));
-  --glow-b: light-dark(oklch(0.704 0.14 182.503 / 5%), oklch(0.704 0.14 182.503 / 7%));
+  /* Two cold washes spilling from the top corners, at Horizon's strength
+     (#467ee60b / #199fb006) rather than ours (7% / 5%). With the dot grid gone
+     these are the only texture on the page, so they have to stay quiet. */
+  --glow-a: light-dark(oklch(0.623 0.214 259.815 / 6%), oklch(0.623 0.214 259.815 / 8%));
+  --glow-b: light-dark(oklch(0.704 0.14 182.503 / 4%), oklch(0.704 0.14 182.503 / 5%));
 }
 
 /* Pinned by `useTheme`. After the :root block so it wins on equal specificity;
@@ -172,6 +180,7 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-online: var(--online);
@@ -215,17 +224,17 @@
   html { scrollbar-gutter: stable; }
   body {
     @apply bg-background text-foreground antialiased;
-    /* The grid is drawn behind the cards and never moves; the two washes are
-       wide ellipses hanging off the top corners, sized in viewport units so a
-       tall page does not repeat them, and fixed so a scrolled page keeps its
-       light. */
+    /* The base is a shallow vertical wash, then two wide ellipses hanging off
+       the top corners. No dot grid: the cards are the texture now. The first
+       layer stretches over the whole document so a long page keeps its light;
+       the washes are sized in pixels so they fade out before the fold. */
     background-image:
-      radial-gradient(ellipse 70% 42% at 6% -4%, var(--glow-a), transparent 62%),
-      radial-gradient(ellipse 55% 38% at 96% 14%, var(--glow-b), transparent 58%),
-      radial-gradient(circle at 1px 1px, var(--dot) 1px, transparent 0);
-    background-size: 100% 900px, 100% 1100px, 28px 28px;
-    background-repeat: no-repeat, no-repeat, repeat;
-    background-attachment: scroll, scroll, fixed;
+      linear-gradient(180deg, var(--page-top), var(--page-bottom)),
+      radial-gradient(ellipse 80% 50% at 8% -10%, var(--glow-a), transparent 65%),
+      radial-gradient(ellipse 55% 40% at 96% 12%, var(--glow-b), transparent 60%);
+    background-size: 100% 100%, 100% 900px, 100% 1100px;
+    background-repeat: no-repeat, no-repeat, no-repeat;
+    background-attachment: scroll, scroll, scroll;
   }
   ::selection { @apply bg-brand/20; }
 }
