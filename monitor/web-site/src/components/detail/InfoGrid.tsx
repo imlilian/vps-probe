@@ -24,6 +24,17 @@ function InfoCard({ title, className, children }: { title: string; className?: s
   )
 }
 
+/**
+ * Label and value against the two ends of the well.
+ *
+ * The cards under the grid stretch their rows to one height, and a well whose
+ * content stacks at the top leaves the difference as a blank strip beneath the
+ * value -- visible on `系统信息`, where four short cells share the height of the
+ * tallest. Pushed apart, the label stays where the eye looks for it and the
+ * value lands on the well's own bottom edge, so the whitespace reads as the
+ * cell's shape rather than as a mistake. A grid whose rows are only as tall as
+ * their content has nothing to distribute and looks exactly as before.
+ */
 function InfoCell({ icon: Icon, label, value, className }: {
   icon: LucideIcon
   label: string
@@ -31,12 +42,12 @@ function InfoCell({ icon: Icon, label, value, className }: {
   className?: string
 }) {
   return (
-    <div className={cn("min-w-0 rounded-lg bg-card-2 p-2.5", className)}>
-      <div className="flex items-center gap-1.5 text-2xs text-muted-foreground">
+    <div className={cn("flex min-w-0 flex-col justify-between gap-1 rounded-lg bg-card-2 p-2.5", className)}>
+      <div className="flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground">
         <Glyph icon={Icon} box="sm" />
         <span className="truncate">{label}</span>
       </div>
-      <div className="mt-1 text-xs leading-snug break-words sm:text-sm">{value}</div>
+      <div className="text-xs leading-snug break-words sm:text-sm">{value}</div>
     </div>
   )
 }
