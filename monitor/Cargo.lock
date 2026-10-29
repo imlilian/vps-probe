@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "probe-hub"
-version = "0.3.2"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "argon2",

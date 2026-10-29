@@ -1,6 +1,6 @@
 [package]
 name = "probe-agent"
-version = "0.3.3"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 description = "Linux monitoring agent for the probe hub"
