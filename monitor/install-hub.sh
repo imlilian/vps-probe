@@ -375,15 +375,22 @@ UNIT
 	printf '\n'
 
 	# The hub is on loopback, so this is the remaining half of the install rather
-	# than optional advice. It deliberately omits --site: the panel builds install
-	# commands from the browser's own address, so once the domain works everything
-	# downstream follows.
+	# than optional advice. It does not ask for --site here: the panel builds
+	# install commands from the browser's own address, so once the domain works
+	# everything downstream follows -- except OIDC, which the hub has to name the
+	# callback address for itself, and which is why the note below mentions it.
 	if [ -z "$SITE" ]; then
 		printf '  %s还差一步：配个反向代理%s\n' "$B" "$N"
 		printf '     面板只监听本机，公网访问不到——这是故意的，凭证不会在链路上裸奔。\n'
 		printf '     用 nginx / caddy / cf tunnel 任选一种，把 hub.example.com 换成你的域名，\n'
 		printf '     配好之后用域名访问面板，我相信这难不倒你。\n'
 		[ "$PORT" = 28080 ] || printf '     反代要指向 %s 这个端口。\n' "$PORT"
+		# Everything the panel derives from the browser address follows from the
+		# domain working, which is why --site is not asked for here. OIDC is the
+		# exception: the hub has to send the callback address itself, and only
+		# --site tells it what that is.
+		printf '     另外：要用 OIDC 登录（面板「安全」页那张卡），得再跑一次带\n'
+		printf '     --site https://你的域名 的安装——OIDC 的回调地址只能来自它。\n'
 	fi
 }
 
@@ -491,8 +498,10 @@ probe hub 安装器
 
   --port <n>     本机监听端口，默认 $PORT
   --site <url>   一般不用填。面板拼安装命令用的是浏览器地址栏，配好反代
-                 用域名访问就自动对了。三种情况要填：节点该连的域名和你
-                 进面板的域名不是同一个；走 SSH 隧道进面板（地址栏是
+                 用域名访问就自动对了。四种情况要填：要用 OIDC 登录（面板
+                 「安全」页那张卡——它必须原样带上回调地址，hub 只能从
+                 --site 知道它，不填则点登录按钮直接失败）；节点该连的域名
+                 和你进面板的域名不是同一个；走 SSH 隧道进面板（地址栏是
                  127.0.0.1，节点连不上它）；反代不发 X-Forwarded-Proto
                  （那时会话 cookie 拿不到 Secure 标志）
   --from <file>  不从发布源取，改用本地文件；同名 .sig 要放在它旁边

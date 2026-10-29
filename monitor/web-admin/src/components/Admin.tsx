@@ -2903,12 +2903,14 @@ function Security({ site, sited }: { site: string; sited: boolean }) {
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             回调地址 <code className="rounded bg-muted px-1 break-all">{oidcCallback}</code>
+            {!sited && <span className="ml-1">（从地址栏推出来的，hub 自己并不知道）</span>}
           </p>
         </div>
         {!sited && (
           <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            需要 hub 以 --site 启动，OIDC 才能回调：上面的地址会跟着面板的地址走，而身份系统
-            打不开一个 127.0.0.1 上的端口。
+            hub 没有用 --site 启动，它不知道自己对外的地址。上面那个回调地址是从你的浏览器地址栏
+            推出来的——浏览器知道，hub 不知道；而 OIDC 的授权请求和换 token 都必须原样带上它，
+            所以现在点登录按钮会直接失败。给 hub 加上 --site https://你的域名 后重启即可。
           </p>
         )}
         <div className="grid gap-4 sm:grid-cols-2">

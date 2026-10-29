@@ -23,7 +23,8 @@ sudo sh install-hub.sh
 ```
 
 有终端时给菜单，`curl | sh` 按默认安装。hub 只监听 `127.0.0.1:28080`，公网访问要自己配
-nginx / caddy / CF 隧道，装完加 `--site https://你的域名`。
+nginx / caddy / CF 隧道，装完加 `--site https://你的域名`。要用 OIDC 登录就必须加：hub 得
+自己把回调地址发给身份系统，而这个地址只能来自 `--site`（不填则点登录按钮直接失败）。
 
 升级与卸载（重跑即升级，端口和 `--site` 沿用上次的，起不来自动回滚）：
 
