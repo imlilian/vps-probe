@@ -79,6 +79,16 @@ make test     # 前端测试 + cargo test
 用 ed25519 签名。一个 tag 同时发布两个组件，因此 `monitor/Cargo.toml` 与 `agent/Cargo.toml`
 的版本号必须一致，且等于 tag（CI 会校验）。
 
+版本号别手改，交给脚本：
+
+```sh
+make release VERSION=0.2.2    # 也可以 ./scripts/release.sh 0.2.2
+```
+
+它把两处 `Cargo.toml` 和两份 `Cargo.lock` 一起改好（`release.yml` 用 `--locked` 构建，锁文件
+落后于清单会直接失败）、提交、推送，然后停下——**不打 tag**：等 CI 绿了再自己
+`git tag v0.2.2 && git push origin v0.2.2`。加 `--dry-run` 只看会改哪几行。
+
 签名私钥只存在于仓库的 Actions secret `AGENT_SIGNING_KEY`，任何机器上都没有。公钥有两份副本：
 `monitor/src/main.rs` 的 `AGENT_SIGNING_KEY`（hub 转发 agent 时验签）与 `monitor/install-hub.sh`
 的 `PUBKEY`（安装 hub 时验签）。**轮换密钥要同时改这两处并发版。**

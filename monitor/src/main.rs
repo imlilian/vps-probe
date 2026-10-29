@@ -697,6 +697,7 @@ async fn main() -> Result<()> {
         .route("/api/settings", get(api::settings).put(api::save_settings))
         .route("/api/version", get(api::versions))
         .route("/api/notify/test", post(notify::test))
+        .route("/api/notify/presets", get(notify::presets))
         .route("/api/db", get(api::db_stats))
         .route("/api/db/backup", get(api::db_backup))
         .route("/api/db/vacuum", post(api::db_vacuum))

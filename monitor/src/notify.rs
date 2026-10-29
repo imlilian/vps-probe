@@ -12,12 +12,13 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::Result;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Local, NaiveDate, TimeZone, Timelike, Utc};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -66,6 +67,50 @@ const FLAP_GRACE: i64 = 1_800;
 pub const DEFAULT_BODY: &str =
     r#"{"event":"{{event}}","node":"{{node}}","title":"{{title}}","message":"{{message}}"}"#;
 pub const DEFAULT_TEXT: &str = "{{title}}\n{{message}}";
+
+/// Feishu (Lark) custom bot, as an interactive card: the coloured header carries
+/// the alert, the body the detail, the footer which hub it came from.
+const FEISHU_CARD: &str = r#"{"msg_type":"interactive","card":{"config":{"wide_screen_mode":true},"header":{"template":"orange","title":{"tag":"plain_text","content":"{{title}}"}},"elements":[{"tag":"div","text":{"tag":"lark_md","content":"{{message}}"}},{"tag":"hr"},{"tag":"note","elements":[{"tag":"plain_text","content":"{{site}} · {{time}}"}]}]}}"#;
+/// The same service without a card, for a group whose readers prefer one line.
+const FEISHU_TEXT: &str = r#"{"msg_type":"text","content":{"text":"{{title}}\n{{message}}"}}"#;
+const DINGTALK: &str = r#"{"msgtype":"markdown","markdown":{"title":"{{title}}","text":"**{{title}}**\n\n{{message}}\n\n{{site}} · {{time}}"}}"#;
+const WECOM: &str =
+    r#"{"msgtype":"markdown","markdown":{"content":"**{{title}}**\n{{message}}\n\n{{site}} · {{time}}"}}"#;
+/// Slack and Discord read one field and ignore everything else. Bark turns
+/// `title` into the notification's own title and `body` into its text.
+const SLACK: &str = r#"{"text":"{{title}}\n{{message}}"}"#;
+const DISCORD: &str = r#"{"content":"{{title}}\n{{message}}"}"#;
+const BARK: &str = r#"{"title":"{{title}}","body":"{{message}}","group":"{{site}}"}"#;
+
+/// The bodies the panel offers as starting points, in the order it lists them.
+///
+/// One default body cannot serve these receivers: Feishu, DingTalk and WeCom
+/// accept nothing but their own envelope and answer a flat object with an error,
+/// while Slack, Discord and Bark read one named field. The default therefore
+/// stays the flat cross-receiver object -- the shape a generic receiver, a
+/// script of one's own, or an ntfy topic can read -- and these are pasted one at
+/// a time by the operator who needs one.
+///
+/// They live here rather than in the panel because the renderer is here: every
+/// one of them is held to [`setting_error`] and to [`render`] by the tests
+/// below, so a template that would arrive as broken JSON fails the build rather
+/// than an alert. Kept to one line each, since the preview pretty-prints what
+/// the field holds.
+///
+/// None of them signs its request. Feishu's 签名校验 and DingTalk's 加签 are an
+/// HMAC over a timestamp and the shared secret, recomputed for every request,
+/// and a fixed body with fixed headers cannot carry one: a bot that offers it
+/// has to be held to a keyword or an IP allow-list instead.
+pub const PRESETS: [(&str, &str); 8] = [
+    ("通用 JSON（自定字段）", DEFAULT_BODY),
+    ("飞书 卡片", FEISHU_CARD),
+    ("飞书 纯文本", FEISHU_TEXT),
+    ("钉钉 Markdown", DINGTALK),
+    ("企业微信 Markdown", WECOM),
+    ("Slack", SLACK),
+    ("Discord", DISCORD),
+    ("Bark", BARK),
+];
 
 /// Numeric settings as `(key, min, max, default, the panel's name for it)`.
 const NUMBERS: [(&str, i64, i64, i64, &str); 3] = [
@@ -393,12 +438,51 @@ pub async fn deliver(app: Shared, mut inbox: mpsc::Receiver<Note>) {
     }
 }
 
-/// `POST /api/notify/test`: one alert through every configured channel, past the
-/// queue and its retries, so each channel's own error reaches the panel.
-pub async fn test(_: Admin, State(app): State<Shared>) -> Response {
-    let channels = channels(&app);
+/// `GET /api/notify/presets`: what the panel's menu offers.
+///
+/// Its own route rather than a field on `/api/settings`: everything that route
+/// returns is a setting the panel echoes back to the write side, and a list the
+/// hub would have to accept back as a value is not one. Read-only, so it is
+/// fetched once when the panel draws the card.
+pub async fn presets(_: Admin) -> Json<Value> {
+    Json(json!(PRESETS.iter().map(|(name, body)| json!({"name": name, "body": body})).collect::<Vec<_>>()))
+}
+
+/// The channel a test names, if it names one. Absent means every configured one.
+#[derive(Deserialize)]
+pub struct Which {
+    channel: Option<String>,
+}
+
+/// `POST /api/notify/test[?channel=webhook]`: one alert through the channel
+/// named, or through every configured one, past the queue and its retries, so
+/// each channel's own error reaches the panel.
+///
+/// The panel always sends the channel: it asks from inside that channel's card,
+/// and an operator tuning a Feishu card wants Feishu's answer, not Telegram's.
+/// The unnamed form stays for a one-click check of the whole path.
+pub async fn test(_: Admin, State(app): State<Shared>, Query(which): Query<Which>) -> Response {
+    let wanted = which.channel.as_deref().map(str::to_ascii_lowercase);
+    if let Some(name) = &wanted {
+        if name != "telegram" && name != "webhook" {
+            return answer(StatusCode::BAD_REQUEST, "没有这个通知渠道");
+        }
+    }
+    let mut channels = channels(&app);
+    if let Some(name) = &wanted {
+        channels.retain(|c| c.name().eq_ignore_ascii_case(name));
+    }
     if channels.is_empty() {
-        return answer(StatusCode::BAD_REQUEST, "还没有配置通知渠道");
+        // Named rather than "no channel configured": the operator is looking at
+        // the card that has no URL in it yet.
+        return answer(
+            StatusCode::BAD_REQUEST,
+            match wanted.as_deref() {
+                Some("telegram") => "还没有配置 Telegram",
+                Some(_) => "还没有配置 Webhook",
+                None => "还没有配置通知渠道",
+            },
+        );
     }
     let note = Note {
         event: "test",
@@ -748,6 +832,88 @@ mod tests {
         assert_eq!(note.message.lines().count(), LISTED + 1);
         assert!(note.message.ends_with("……另外 40 台"));
         assert_eq!(note.node.split(", ").count(), 60);
+    }
+
+    /// The preset a menu names, for the tests that care about one of them.
+    fn preset(name: &str) -> &'static str {
+        PRESETS.iter().find(|(n, _)| n.contains(name)).expect("a preset by that name").1
+    }
+
+    /// A node name carrying the characters a hand-written JSON breaks on, and a
+    /// message of the shape `batch` sends for several nodes.
+    fn hostile() -> Note {
+        Note {
+            event: "offline",
+            node: r#"a"b\c"#.into(),
+            title: r#"🔴 a"b\c 离线"#.into(),
+            message: "最后上报 09-15 20:13 +08:00\n……另外 2 台".into(),
+            time: 0,
+        }
+    }
+
+    /// Every body the menu offers has to survive the renderer: valid JSON with
+    /// the placeholders filled, and the substituted values escaped as text. A
+    /// preset is written once and clicked by operators who have no way to debug
+    /// it, so the check belongs here rather than in a group chat.
+    ///
+    /// That a placeholder outside its quotes is refused -- which is what makes
+    /// this parsing worth doing -- is held by
+    /// `a_rendered_body_stays_json_whatever_the_values_contain`.
+    #[test]
+    fn every_preset_renders_as_the_json_it_describes() {
+        for (name, body) in PRESETS {
+            assert_eq!(setting_error("notify_webhook_body", body), None, "{name}");
+            let rendered = render(body, &hostile(), "Monitor", true);
+            let parsed: Value =
+                serde_json::from_str(&rendered).unwrap_or_else(|e| panic!("{name}: {e}\n{rendered}"));
+            // Every preset carries the title, and the title is where the quote
+            // and the backslash land: escaped once, it stays one JSON string.
+            assert!(parsed.to_string().contains(r#"a\"b\\c"#), "{name}: {rendered}");
+        }
+    }
+
+    /// The card is the one preset whose shape Feishu checks rather than reads, so
+    /// it is held to the envelope its documentation gives: `msg_type`, a header
+    /// title, one lark_md body, and a footer naming the hub.
+    #[test]
+    fn the_feishu_card_keeps_the_envelope_feishu_reads() {
+        let note = hostile();
+        let rendered = render(preset("飞书 卡片"), &note, "Monitor", true);
+        let parsed: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["msg_type"], "interactive");
+        let card = &parsed["card"];
+        assert_eq!(card["header"]["title"]["content"], note.title, "the coloured header is the alert");
+        assert_eq!(card["elements"][0]["text"]["content"], note.message, "newlines survive as text");
+        let footer = card["elements"][2]["elements"][0]["content"].as_str().unwrap();
+        assert_eq!(footer, format!("Monitor · {}", clock(note.time)), "{footer}");
+    }
+
+    /// The panel asks from inside a channel's own card, so an unconfigured
+    /// channel has to be named: "no channel configured" is written for a page
+    /// with two empty cards on it, where the reader already knows that.
+    #[tokio::test]
+    async fn a_test_that_names_a_channel_answers_for_that_channel() {
+        let app = std::sync::Arc::new(app());
+        let ask = |channel: Option<&str>| {
+            let app = app.clone();
+            let which = Which { channel: channel.map(str::to_owned) };
+            async move {
+                let response = test(Admin, State(app), Query(which)).await;
+                let status = response.status();
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                (status, String::from_utf8(body.to_vec()).unwrap())
+            }
+        };
+
+        for (channel, named) in [(Some("telegram"), "Telegram"), (Some("webhook"), "Webhook")] {
+            let (status, body) = ask(channel).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{channel:?}");
+            assert!(body.contains(named), "{channel:?}: {body}");
+        }
+        // Nothing configured at all, and a name no channel answers to.
+        assert!(ask(None).await.1.contains("还没有配置通知渠道"));
+        assert_eq!(ask(Some("discord")).await.0, StatusCode::BAD_REQUEST);
+        assert!(ask(Some("discord")).await.1.contains("没有这个通知渠道"));
     }
 
     #[test]

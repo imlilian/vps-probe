@@ -1,4 +1,4 @@
-# monorepo 构建入口：make / make hub / make agent / make theme / make admin
+# monorepo 构建入口：make / make hub / make agent / make theme / make admin / make release
 # 依赖：node+npm（web-admin 与 web-site 是 Vite 工程）、Rust 工具链（hub 与 agent）。
 #
 # web-admin/dist 必须在 cargo 之前存在，所以 hub / check / test 都先跑 admin。公开页
@@ -11,7 +11,7 @@
 THEME_DIR := monitor/web-site
 ADMIN_DIR := monitor/web-admin
 
-.PHONY: all hub agent theme admin check test clean
+.PHONY: all hub agent theme admin check test clean release
 
 all: hub agent
 
@@ -38,6 +38,13 @@ test: admin
 	cd $(ADMIN_DIR) && npm test
 	cd monitor && cargo test
 	cd agent && cargo test
+
+# 版本号要同时出现在 monitor/Cargo.toml、agent/Cargo.toml 和两份 Cargo.lock 里，
+# release.yml 拿 tag 跟它们逐个比对，`--locked` 又要求 lock 先改好。脚本把这一件事
+# 做完（改号、提交、推送）就停：tag 等你看到 CI 绿了再打。
+#   make release VERSION=0.2.2
+release:
+	@./scripts/release.sh $(VERSION)
 
 clean:
 	rm -rf $(THEME_DIR)/dist $(ADMIN_DIR)/dist monitor/target agent/target

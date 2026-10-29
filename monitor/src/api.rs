@@ -862,6 +862,33 @@ pub(crate) fn issuer_url(issuer: &str) -> Option<reqwest::Url> {
     (scheme_ok && url.query().is_none() && url.fragment().is_none()).then_some(url)
 }
 
+/// The issuer a pasted discovery URL actually names.
+///
+/// The field is a base URL -- [`issuer_url`] describes the shape -- and the hub
+/// appends `/.well-known/openid-configuration` to it on every fetch. Every
+/// identity system shows its operator that same concatenation, as a "discovery
+/// URL" or "OIDC 发现 URL" to copy, so the address that reaches this field is
+/// very often the finished URL rather than the base. Appending to it then asks
+/// for `…/openid-configuration/.well-known/openid-configuration`, which answers
+/// 404, and the panel reports a provider that "does not serve OIDC" about one
+/// that is configured correctly everywhere else.
+///
+/// So the suffix is removed instead of refused: the value the operator pasted
+/// is the value they meant, as with [`http_address`], and there is exactly one
+/// issuer a discovery URL can name. A tenant path in front of it is kept --
+/// Keycloak puts realms there -- because only the suffix is the hub's own.
+fn issuer_address(issuer: &str) -> String {
+    let trimmed = issuer.trim().trim_end_matches('/');
+    for suffix in ["/.well-known/openid-configuration", "/openid-configuration"] {
+        // Case-insensitively: the spelling is copied out of a document by hand,
+        // and a provider that answers to one case is the same provider.
+        if trimmed.len() > suffix.len() && trimmed.to_ascii_lowercase().ends_with(suffix) {
+            return trimmed[..trimmed.len() - suffix.len()].trim_end_matches('/').to_owned();
+        }
+    }
+    trimmed.to_owned()
+}
+
 /// The address a `site_url` value names, in the one spelling the rest of the hub
 /// uses: `https://host[:port]`, without a trailing slash.
 ///
@@ -2144,7 +2171,12 @@ fn setting_error(key: &str, value: &Value) -> Option<String> {
         // speak and nothing after the path: a query or fragment there would be
         // swallowed by that append without a word. A path is allowed -- Authentik
         // puts one in its issuer.
-        "oidc_issuer" if !value.is_empty() && issuer_url(value).is_none() => {
+        //
+        // Held to that rule after [`issuer_address`], since the discovery URL an
+        // operator pastes is stored as the base it names: refusing `https://host`
+        // for what `/its/own/suffix` would have left of it refuses a value this
+        // save would have corrected.
+        "oidc_issuer" if !value.is_empty() && issuer_url(&issuer_address(value)).is_none() => {
             Some("身份系统地址要以 https:// 开头（本机或内网可以用 http://），且不能带 ? 或 #".into())
         }
         // The bindings are stored as `name:sub` pairs, so a colon inside a name
@@ -2235,6 +2267,11 @@ pub async fn save_settings(
             // URL. The panel asks for the bare host, but a pasted full URL
             // arrives here too and is normalised rather than refused.
             "site_url" => app.db.set("site_url", &http_address(value)),
+            // Stored without the discovery suffix an operator has almost
+            // certainly pasted, and without a trailing slash, which would
+            // otherwise produce `//.well-known` -- a path no provider serves.
+            // See `issuer_address`.
+            "oidc_issuer" => app.db.set("oidc_issuer", &issuer_address(value)),
             _ => app.db.set(key, value),
         };
         if let Err(e) = saved {
@@ -4299,9 +4336,73 @@ mod tests {
             "http://198.51.100.7:1411",
             // A name is not evidence of locality, so it does not unlock http.
             "http://id.internal:1411",
+            // What is left of the address once the paired suffix is stripped is
+            // not a base URL either, so the discovery URL does not rescue it.
+            "https:///.well-known/openid-configuration",
         ] {
             assert!(setting_error("oidc_issuer", &json!(bad)).is_some(), "{bad}");
         }
+        // The discovery URL every provider hands its operator is stored as the
+        // base it names rather than refused: the hub appends that suffix itself,
+        // and appending it to a pasted one asks for a path nobody serves.
+        assert_eq!(setting_error("oidc_issuer", &json!(POCKET_ID_DISCOVERY)), None);
+        assert_eq!(issuer_address(POCKET_ID_DISCOVERY), "https://id.example.com");
+    }
+
+    /// The address Pocket-ID shows as its own discovery URL -- the value a
+    /// reader copies into the Issuer field, and the one that produced a 404.
+    const POCKET_ID_DISCOVERY: &str = "https://id.example.com/.well-known/openid-configuration";
+
+    /// The Issuer field is a base URL, so the finished discovery URL an operator
+    /// copies out of their identity system names the same issuer once the suffix
+    /// it repeats is gone. Every spelling of that suffix is one the hub would
+    /// otherwise append its own copy to, and a tenant path in front is kept.
+    #[test]
+    fn the_discovery_url_a_reader_pastes_is_stored_as_the_issuer_it_names() {
+        for (pasted, stored) in [
+            ("https://id.example.com", "https://id.example.com"),
+            (POCKET_ID_DISCOVERY, "https://id.example.com"),
+            ("https://id.example.com/", "https://id.example.com"),
+            ("https://id.example.com/.well-known/openid-configuration/", "https://id.example.com"),
+            // What a provider writes without the `.well-known` segment, and the
+            // spellings a hand-typed address arrives in.
+            ("https://id.example.com/openid-configuration", "https://id.example.com"),
+            (" https://id.example.com/.well-known/OpenID-Configuration ", "https://id.example.com"),
+            // A tenant path lives in the issuer rather than in the suffix, so
+            // stripping the one must not touch the other.
+            (
+                "https://id.example.com/realms/monitor/.well-known/openid-configuration",
+                "https://id.example.com/realms/monitor",
+            ),
+            // Nothing to strip: a path that merely ends in the same word is the
+            // operator's own and stays as typed.
+            (
+                "https://id.example.com/my-openid-configuration",
+                "https://id.example.com/my-openid-configuration",
+            ),
+            ("", ""),
+        ] {
+            assert_eq!(issuer_address(pasted), stored, "{pasted}");
+        }
+    }
+
+    /// The wiring rather than the rule: what the panel saves is what the next
+    /// discovery fetch appends to, so a pasted discovery URL must reach the
+    /// store already shortened -- and a valid one must not be refused on the way
+    /// in for what stripping it leaves.
+    #[tokio::test]
+    async fn a_pasted_discovery_url_is_saved_as_the_issuer() {
+        let app = std::sync::Arc::new(app());
+        let put =
+            |body: Value| save_settings(Admin, State(app.clone()), peer(), HeaderMap::new(), Json(body));
+
+        assert_eq!(put(json!({"oidc_issuer": POCKET_ID_DISCOVERY})).await.status(), StatusCode::OK);
+        assert_eq!(app.db.get("oidc_issuer").as_deref(), Some("https://id.example.com"));
+
+        // Saving the field again without touching it keeps the stored spelling,
+        // which is what the panel shows and echoes back.
+        assert_eq!(put(json!({"oidc_issuer": "https://id.example.com"})).await.status(), StatusCode::OK);
+        assert_eq!(app.db.get("oidc_issuer").as_deref(), Some("https://id.example.com"));
     }
 
     /// The label sits inside a button, so it is measured in characters rather

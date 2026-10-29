@@ -611,8 +611,15 @@ async fn fetch_discovery(app: &App, url: &str, issuer: &str) -> Result<Discovery
         .map_err(|e| anyhow::Error::from(e).context(Shown("连不上身份系统，稍后再试".into())))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(anyhow!("discovery request answered {status} for {url}")
-            .context(Shown("身份系统没有提供 OIDC 配置，检查 Issuer 是否填对了".into())));
+        // The address the hub asked is named in the message, not only in the
+        // log: the appending above is invisible from the panel, so a reader
+        // looking at a doubled path can see what happened, and a reader looking
+        // at their own address sees it was reached and refused.
+        return Err(anyhow!("discovery request answered {status} for {url}").context(Shown(format!(
+            "身份系统没有提供 OIDC 配置：{url} 返回 {}。Issuer 只填它的地址，\
+             /.well-known/openid-configuration 由 hub 自己接",
+            status.as_u16()
+        ))));
     }
     let body = response
         .text()

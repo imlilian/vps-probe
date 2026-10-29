@@ -2584,6 +2584,12 @@ const SAMPLE_NOTE: Record<string, string> = {
 
 const PLACEHOLDERS = "{{title}} {{message}} {{node}} {{event}} {{site}} {{time}}"
 
+// A starting point the hub offers for the webhook body. The templates live in
+// the hub rather than here: it is the renderer that has to cope with them, and
+// its tests hold each one to a body that stays JSON once the placeholders are
+// filled.
+type Preset = { name: string; body: string }
+
 function TemplatePreview({ template, site, json = false }: { template: string; site: string; json?: boolean }) {
   if (!template.trim()) return <p className="text-xs text-muted-foreground">留空保存即恢复默认模板</p>
   const values = { ...SAMPLE_NOTE, site }
@@ -2692,7 +2698,13 @@ function OfflineNodes({ nodes, refresh }: { nodes: Node[]; refresh: () => void }
 
 function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
   const { s, set, save } = useSettings()
-  const [testing, setTesting] = useState(false)
+  // The channel being tested, or "all": one button per card, and the busy label
+  // belongs to the card that was clicked.
+  const [testing, setTesting] = useState<string | null>(null)
+  const [presets, setPresets] = useState<Preset[]>([])
+  useEffect(() => {
+    api<Preset[]>("/notify/presets").then(setPresets).catch(() => {})
+  }, [])
   if (!s) return null
   const text = (k: string) => String(s[k] ?? "")
   // A credential is sent only when something was typed: the field starts empty
@@ -2700,16 +2712,31 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
   const typed = (...keys: string[]) =>
     Object.fromEntries(keys.filter((k) => typeof s[k] === "string" && s[k] !== "").map((k) => [k, text(k)]))
   const secretHint = (k: string) => (s[`${k}_set`] ? "已设置，留空不变" : "未设置")
+  // What each card's save button sends, so its test button sends the same patch:
+  // the hub reads the stored settings when it sends, and a test of what is still
+  // only in the form would test the previous body.
+  const telegramPatch = () => ({
+    notify_telegram_chat: text("notify_telegram_chat"),
+    notify_telegram_text: text("notify_telegram_text"),
+    ...typed("notify_telegram_token"),
+  })
+  const webhookPatch = () => ({
+    notify_webhook_body: text("notify_webhook_body"),
+    ...typed("notify_webhook_url", "notify_webhook_headers"),
+  })
 
-  async function test() {
-    setTesting(true)
+  async function test(channel?: "telegram" | "webhook", patch?: Record<string, string>) {
+    setTesting(channel ?? "all")
     try {
-      const { sent } = await api<{ sent: string[] }>("/notify/test", { method: "POST" })
+      if (patch && !(await save(patch))) return
+      const { sent } = await api<{ sent: string[] }>(`/notify/test${channel ? `?channel=${channel}` : ""}`, {
+        method: "POST",
+      })
       toast.success(`测试通知已发送：${sent.join("、")}`)
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
-      setTesting(false)
+      setTesting(null)
     }
   }
 
@@ -2720,11 +2747,11 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
           <div className="min-w-0 flex-1">
             <h3 className="text-sm font-medium">通知渠道</h3>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              Telegram 和 Webhook 配了哪个就发哪个，也可以同时用。离线通知在下方按节点打开；流量和到期提醒对填了额度、到期日的节点生效。
+              Telegram 和 Webhook 配了哪个就发哪个，也可以同时用。每个渠道下面的「发送测试」只测那一个，它先保存这一栏的改动再发。离线通知在下方按节点打开；流量和到期提醒对填了额度、到期日的节点生效。
             </p>
           </div>
-          <Button size="sm" variant="secondary" disabled={testing} onClick={test}>
-            <Send /> {testing ? "发送中…" : "发送测试"}
+          <Button size="sm" variant="secondary" disabled={!!testing} onClick={() => test()}>
+            <Send /> {testing === "all" ? "发送中…" : "测试全部渠道"}
           </Button>
         </div>
       </Card>
@@ -2749,17 +2776,11 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
         </Field>
         <TemplatePreview template={text("notify_telegram_text")} site={text("site_name") || "Monitor"} />
         <div className="flex gap-2">
-          <Button
-            size="sm"
-            onClick={() =>
-              save({
-                notify_telegram_chat: text("notify_telegram_chat"),
-                notify_telegram_text: text("notify_telegram_text"),
-                ...typed("notify_telegram_token"),
-              })
-            }
-          >
+          <Button size="sm" onClick={() => save(telegramPatch())}>
             保存 Telegram
+          </Button>
+          <Button size="sm" variant="secondary" disabled={!!testing} onClick={() => test("telegram", telegramPatch())}>
+            <Send /> {testing === "telegram" ? "发送中…" : "发送测试"}
           </Button>
           {s.notify_telegram_token_set && (
             <Button size="sm" variant="ghost" onClick={() => save({ notify_telegram_token: "", notify_telegram_chat: "" }, "已清除 Telegram")}>
@@ -2788,16 +2809,45 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
             onChange={(e) => set("notify_webhook_headers", e.target.value)}
           />
         </Field>
+        {presets.length > 0 && (
+          <Field label="预设模板" hint="选一个填进下面的请求体；填进去只是改这一栏，按需再改，点保存才生效">
+            <Select
+              value={presets.find((p) => p.body === text("notify_webhook_body"))?.name}
+              onValueChange={(name) => {
+                const preset = presets.find((p) => p.name === name)
+                if (preset) set("notify_webhook_body", preset.body)
+              }}
+            >
+              <SelectTrigger className="w-full" aria-label="选择预设模板">
+                {/* Edited by hand after picking one, the body matches nothing:
+                    said plainly, since a blank trigger would look like a
+                    selection that failed to stick. */}
+                <SelectValue
+                  placeholder={
+                    text("notify_webhook_body").trim() ? "自定义（没有匹配的预设）" : "选择预设模板…"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent position="popper">
+                {presets.map((p) => (
+                  <SelectItem key={p.name} value={p.name}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        )}
         <Field label="请求体" hint={`以 POST 发送，Content-Type 为 application/json。占位符 ${PLACEHOLDERS}，须写在引号内`}>
           <textarea rows={4} className={TEXTAREA} value={text("notify_webhook_body")} onChange={(e) => set("notify_webhook_body", e.target.value)} />
         </Field>
         <TemplatePreview template={text("notify_webhook_body")} site={text("site_name") || "Monitor"} json />
         <div className="flex gap-2">
-          <Button
-            size="sm"
-            onClick={() => save({ notify_webhook_body: text("notify_webhook_body"), ...typed("notify_webhook_url", "notify_webhook_headers") })}
-          >
+          <Button size="sm" onClick={() => save(webhookPatch())}>
             保存 Webhook
+          </Button>
+          <Button size="sm" variant="secondary" disabled={!!testing} onClick={() => test("webhook", webhookPatch())}>
+            <Send /> {testing === "webhook" ? "发送中…" : "发送测试"}
           </Button>
           {s.notify_webhook_headers_set && (
             <Button size="sm" variant="ghost" onClick={() => save({ notify_webhook_headers: "" }, "已清除请求头")}>
@@ -3024,7 +3074,10 @@ function Security({ site, hubSite, siteFixed }: { site: string; hubSite: string;
           </p>
         ) : null}
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Issuer URL" hint="https 地址，可以带路径；本机或内网的调试实例可以用 http">
+          <Field
+            label="Issuer URL"
+            hint="填身份系统的地址，不是它的发现地址：/.well-known/openid-configuration 由 hub 自己接（https，可以带路径；本机或内网的调试实例可以用 http）"
+          >
             <Input
               placeholder="https://pocket-id.example.com"
               value={String(s.oidc_issuer ?? "")}
