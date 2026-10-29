@@ -30,8 +30,8 @@ agent:
 check: admin
 	cd $(THEME_DIR) && { [ -d node_modules ] || npm ci; } && npm run lint
 	cd $(ADMIN_DIR) && npm run lint
-	cd monitor && cargo check
-	cd agent && cargo check
+	cd monitor && cargo fmt --check && cargo check
+	cd agent && cargo fmt --check && cargo check
 
 test: admin
 	cd $(THEME_DIR) && { [ -d node_modules ] || npm ci; } && npm test
