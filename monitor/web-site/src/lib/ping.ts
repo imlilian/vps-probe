@@ -28,8 +28,13 @@ export type Slot = { ts: number; latency: number | null; loss: number } | null
 export type ProbeStats = {
   id: number
   name: string
-  /** The newest bucket's median, null when it timed out or there is none. */
-  latest: number | null
+  /**
+   * The figure printed beside the strip: the median of the buckets that answered
+   * in the last [RECENT] seconds of this probe's own history, null when nothing
+   * did.
+   */
+  reading: number | null
+  /** Every bucket in that window timed out: the line is down, not merely lossy. */
   timedOut: boolean
   /** The line's usual latency: the median of the buckets that answered. */
   typical: number | null
@@ -89,6 +94,19 @@ function median(values: number[]): number | null {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
 }
 
+/**
+ * The stretch the figure beside a strip is read from.
+ *
+ * At the intervals an agent actually probes on -- a minute, by default -- one
+ * bucket holds one sample, so "the newest bucket's median" was the last single
+ * probe: one lost packet blanked the figure for a whole minute, and a line
+ * delivering 90% of its packets read as dead every few minutes. Five minutes is
+ * long enough to survive that, since four answers out of five keep a number on
+ * the card, and short enough that a line which has really gone is still reported
+ * as gone: then nothing in the window answered at all.
+ */
+export const RECENT = 300
+
 /** One probe of one node over the window ending at `until`. */
 export function probeStats(
   data: PingData,
@@ -98,11 +116,19 @@ export function probeStats(
 ): ProbeStats {
   const rows = data.ping.filter((r) => r.task_id === probe.id).sort((a, b) => a.ts - b.ts)
   const answered = rows.flatMap((r) => (r.latency === null ? [] : [r.latency]))
-  const last = rows.at(-1)
+  // Anchored to this probe's own last sample rather than to `until`: `until` is
+  // the strip's right edge, rounded up to the block grid and taken from the
+  // newest row of *any* probe, and a probe that samples every half hour would
+  // otherwise have an empty window every time. The cost is that a probe which
+  // stopped reporting altogether keeps its last figure -- the strip's empty
+  // blocks on the right are what says so.
+  const end = rows.at(-1)?.ts ?? until
+  const recent = rows.filter((r) => r.ts > end - RECENT)
+  const answeredRecent = recent.flatMap((r) => (r.latency === null ? [] : [r.latency]))
   return {
     ...probe,
-    latest: last?.latency ?? null,
-    timedOut: Boolean(last && last.latency === null),
+    reading: median(answeredRecent),
+    timedOut: recent.length > 0 && answeredRecent.length === 0,
     typical: median(answered),
     // Zero loss is left out of `loss` by the hub, so an absent key means none.
     loss: rows.length ? (data.loss?.[probe.id] ?? 0) : null,
@@ -186,7 +212,7 @@ export function slotSignal(slot: Slot): number {
 
 /** A figure's step: a timeout is the worst latency there is. */
 export function probeLatencySignal(probe: ProbeStats): number {
-  return probe.timedOut ? 5 : latencySignal(probe.latest)
+  return probe.timedOut ? 5 : latencySignal(probe.reading)
 }
 
 export const fmtMs = (ms: number) => (ms < 10 ? ms.toFixed(1) : Math.round(ms).toString())

@@ -6,9 +6,13 @@
 import assert from "node:assert/strict"
 
 import {
-  BLOCK, buildSlots, cardProbes, fmtLoss, fmtMs, latencySignal, lossSignal, probeStats, slotSignal,
+  BLOCK, buildSlots, cardProbes, fmtLoss, fmtMs, latencySignal, lossSignal, probeStats, RECENT, slotSignal,
   type PingData, type PingRow,
 } from "./ping.ts"
+
+// Five minutes is what the card's figure is read from; the tests below name
+// buckets relative to that so the number is not a magic constant here.
+assert.equal(RECENT, 300, "the reading is taken from the last five minutes")
 
 const row = (task_id: number, ts: number, latency: number | null, loss?: number): PingRow =>
   loss === undefined ? { task_id, ts, latency } : { task_id, ts, latency, loss }
@@ -54,23 +58,50 @@ const data: PingData = {
   loss: { "1": 12.5 },
 }
 
-// The newest bucket, not the window's mean: a line that just died reads as dead,
-// and a mean would keep it looking healthy for the rest of the hour.
+// The reading is the last five minutes' median, not the newest sample: at a
+// one-minute interval one bucket is one probe, and a single lost packet used to
+// blank the card for a whole minute.
 {
   const probe = probeStats(data, { id: 1, name: "上海电信" }, 10_140, 20)
-  assert.equal(probe.latest, 60)
+  // Buckets in the window (10060 null, 10120 answered 60): the median of what
+  // answered is the 60.
+  assert.equal(probe.reading, 60)
   assert.equal(probe.timedOut, false)
   assert.equal(probe.typical, 45)
-  console.log("the newest bucket is the figure, with the window's median as its norm")
+  console.log("the figure is the last five minutes' median, with the hour's as its norm")
 }
 
-// All three samples of the newest bucket timed out: the figure says so rather
-// than falling back to the last one that answered.
+// A minute lost to a single timeout no longer hides the line: four answers in
+// five keep the number, and the loss is printed beside it.
 {
-  const probe = probeStats({ ...data, ping: [...data.ping, row(1, 10_300, null)] }, { id: 1, name: "上海电信" }, 10_320, 20)
-  assert.equal(probe.latest, null)
+  const rows = [
+    row(1, 10_060, 40, 0), row(1, 10_120, 42, 0), row(1, 10_180, null),
+    row(1, 10_240, 44, 0), row(1, 10_300, 46, 0),
+  ]
+  const probe = probeStats({ ping: rows, probes: { "1": "上海电信" } }, { id: 1, name: "上海电信" }, 10_320, 20)
+  assert.equal(probe.reading, 43, "median of the four that answered")
+  assert.equal(probe.timedOut, false, "one lost bucket is not a dead line")
+  console.log("one timed-out bucket stays a number on the card")
+}
+
+// Every bucket in the window lost: that is a line that is down, and the figure
+// says so rather than showing the last thing it saw.
+{
+  const rows = [row(1, 10_060, 40, 0), row(1, 10_300, null), row(1, 10_360, null), row(1, 10_420, null)]
+  const probe = probeStats({ ping: rows, probes: { "1": "上海电信" } }, { id: 1, name: "上海电信" }, 10_440, 20)
+  assert.equal(probe.reading, null)
   assert.equal(probe.timedOut, true)
-  console.log("a dead line reports a timeout, not a stale figure")
+  console.log("five minutes of nothing is a timeout, not a stale figure")
+}
+
+// A probe that samples every half hour still gets a figure: the window ends at
+// its own last sample, not at the strip's right edge.
+{
+  const rows = [row(1, 5_000, 30, 0), row(1, 6_800, 32, 0)]
+  const probe = probeStats({ ping: rows, probes: { "1": "上海电信" } }, { id: 1, name: "上海电信" }, 10_000, 20)
+  assert.equal(probe.reading, 32)
+  assert.equal(probe.timedOut, false)
+  console.log("a slow probe is read against its own samples")
 }
 
 // Loss comes from the response's window figure. Averaging the buckets instead
@@ -83,7 +114,7 @@ const data: PingData = {
   // Nothing retained at all is not the same as nothing lost.
   const none = probeStats(data, { id: 9, name: "无" }, 10_140, 20)
   assert.equal(none.loss, null)
-  assert.equal(none.latest, null)
+  assert.equal(none.reading, null)
   assert.equal(none.timedOut, false)
   console.log("loss is the window figure, and no rows is not zero loss")
 }

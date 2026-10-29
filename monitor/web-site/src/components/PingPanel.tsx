@@ -66,8 +66,12 @@ function Strip({ slots, clock, className }: { slots: Slot[]; clock: (ms: number)
 }
 
 /**
- * One probe: the name, the newest reading, the hour's loss, and the hour drawn
- * under them.
+ * One probe: the name, the reading of the last few minutes, the hour's loss, and
+ * the hour drawn under them.
+ *
+ * The figure is a window's median rather than the newest sample -- see [RECENT]
+ * in `lib/ping.ts` for why one lost packet must not turn the card into a
+ * timeout.
  *
  * Three columns of these was the alternative -- the reference theme draws them
  * side by side -- and it does not survive this card's width: a third of 300px is
@@ -76,7 +80,7 @@ function Strip({ slots, clock, className }: { slots: Slot[]; clock: (ms: number)
  */
 function Probe({ probe, hours }: { probe: ProbeStats; hours: number }) {
   const clock = clockFor(hours)
-  const latency = probe.timedOut ? "超时" : probe.latest !== null ? `${fmtMs(probe.latest)} ms` : "—"
+  const latency = probe.timedOut ? "超时" : probe.reading !== null ? `${fmtMs(probe.reading)} ms` : "—"
   return (
     <div className="py-1.5 first:pt-0 last:pb-0" title={`${probe.name} · 近 ${hours} 小时的延迟与丢包`}>
       <div className="flex items-baseline justify-between gap-2 text-2xs">
@@ -144,7 +148,7 @@ export function ProbeLines({ node, hours = HOURS }: { node: Node; hours?: number
             <span className="truncate text-muted-foreground">{probe.name}</span>
             <span className="tnum flex shrink-0 items-baseline gap-1.5">
               <span className={cn("font-semibold", INK[probeLatencySignal(probe)])}>
-                {probe.timedOut ? "超时" : probe.latest !== null ? `${fmtMs(probe.latest)} ms` : "—"}
+                {probe.timedOut ? "超时" : probe.reading !== null ? `${fmtMs(probe.reading)} ms` : "—"}
               </span>
               <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>
                 {probe.loss === null ? "—" : `${fmtLoss(probe.loss)}%`}
