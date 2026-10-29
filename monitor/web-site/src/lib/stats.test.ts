@@ -2,7 +2,7 @@
 import assert from "node:assert/strict"
 
 import type { Metrics, Node } from "./api.ts"
-import { busiest, due, fleet, live, residual, today } from "./stats.ts"
+import { busiest, deployed, due, fleet, live, residual, serving, today } from "./stats.ts"
 
 const metrics = (cpu: number, rx = 0, tx = 0): Metrics => ({
   uptime: 100, cpu, load: [0, 0, 0],
@@ -27,6 +27,17 @@ assert.deepEqual(fleet([node({ online: true }), node({ online: true }), node({ o
   { total: 3, online: 2, offline: 1 })
 assert.deepEqual(fleet([]), { total: 0, online: 0, offline: 0 })
 console.log("the fleet counts what is up")
+
+// What a visitor is shown. A node whose agent never connected has no shape and no
+// figures, so it is not drawn at all -- and the summary above the cards folds over
+// the same list, or the page would say it is about one machine more than it shows.
+const reported = node({ id: 1, cpu_cores: 4, online: true })
+const never = node({ id: 2, cpu_cores: 0, mem_total: 0, online: false })
+assert.equal(deployed(reported), true, "a machine that reported has a shape")
+assert.equal(deployed(never), false, "one that never did has none")
+assert.deepEqual(serving([reported, never]).map((n) => n.id), [1], "only the reported one is drawn")
+assert.deepEqual(fleet(serving([reported, never])), { total: 1, online: 1, offline: 0 })
+console.log("the page shows the machines that have reported")
 
 // Busiest is the peak, not the average, and a node that stopped reporting is not
 // a candidate however high its last figure was.

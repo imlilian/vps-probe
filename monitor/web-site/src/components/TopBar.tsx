@@ -67,12 +67,23 @@ export function TopBar({ siteName, authed, error, closed, mode, onMode, onHome }
         >
           {/* The hub stamps this path with the icon the operator uploaded, or
               with the theme's own if they uploaded none. */}
-          <img src="/favicon.svg" alt="" className="size-7 shrink-0 rounded-lg shadow-sm ring-1 ring-foreground/10" />
+          <img src="/favicon.svg" alt="" className="size-7 shrink-0 rounded-lg shadow-sm ring-1 ring-foreground/10 sm:size-8" />
           {/* The mark and the name, and nothing after it. `/ MONITOR` used to sit
               here as the brand's full form; it named the software on a page whose
               only job is the operator's own fleet, and the badge's boxed capitals
-              took the eye that the name should have had. */}
-          <span className="truncate text-sm font-bold tracking-tight">{siteName}</span>
+              took the eye that the name should have had.
+
+              The name is the page's title, so it is set like one wherever the bar
+              has the room: 18px against a 32px mark, from `sm` up. At 14px it read
+              as a caption beside the pill and the three theme stops -- the same
+              size as the words inside them -- so the bar named nothing.
+
+              Below `sm` it stays 14px on purpose. The one row the bar keeps from
+              416px up is measured against a 14px name (see `--breakpoint-xs`): at
+              18px the four groups need about 420px and a phone is 430, so the name
+              would truncate to `VPS Mon…` on exactly the screens that have no
+              second row to fall back to. */}
+          <span className="truncate text-sm font-bold tracking-tight sm:text-lg">{siteName}</span>
         </button>
 
         <div className="flex w-full items-center justify-end gap-2 xs:ml-auto xs:w-auto xs:gap-3">

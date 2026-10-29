@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from "react"
-import { Activity, Clock, Cpu, HardDrive, MemoryStick, Network, WifiOff, type LucideIcon } from "lucide-react"
+import { Activity, Clock, Cpu, HardDrive, MemoryStick, Network, Plug, WifiOff, type LucideIcon } from "lucide-react"
 import {
   siAlmalinux, siAlpinelinux, siArchlinux, siCentos, siDebian, siFedora, siLinux, siOpensuse, siRedhat,
   siRockylinux, siUbuntu, type SimpleIcon,
@@ -11,7 +11,7 @@ import { Card } from "@/components/ui/card"
 import { FlowTag } from "@/components/Flow"
 import { Glyph } from "@/components/ui/glyph"
 import { percentText, RESOURCE_TONES } from "@/components/Meter"
-import { monthUsage } from "@/lib/stats"
+import { deployed, monthUsage } from "@/lib/stats"
 import { PingPanel } from "@/components/PingPanel"
 import type { Node } from "@/lib/api"
 import {
@@ -47,13 +47,6 @@ const DISTROS: [string, SimpleIcon][] = [
 
 /** `MAX`/`SUM`/`UP`/`DOWN`: how the plan counts, in the width of a tag. */
 const MODE_LABEL: Record<string, string> = { up: "UP", down: "DOWN", max: "MAX", sum: "SUM" }
-
-// A node that has reported once has told the hub its shape -- cores, memory,
-// disk -- and the hub retains its traffic totals whether connected or not. A node
-// that never connected is the only case with nothing to show.
-export function deployed(node: Node) {
-  return node.cpu_cores > 0 || node.mem_total > 0
-}
 
 /**
  * How long the machine has been up, or once it is gone, how long it has been
@@ -234,6 +227,12 @@ function Resource({ icon, label, value, sub, pct, tone, title }: {
  *
  * `size` picks the figure's step; the unit is always `text-2xs`, which is the
  * smallest text this page has.
+ *
+ * It sets no size on its own wrapper, so it takes its line box from the row it
+ * sits in -- and a row that mixes a word with figures has to state the size on
+ * both halves. Without it the figures inherit the card's 14px/20px text, their
+ * box comes out taller than the word's, and centring the two halves lines the
+ * text up on nothing: that is the tilt the sockets row was reported with.
  */
 export function Figure({ text, size = "sm", className, title }: {
   text: string
@@ -310,15 +309,19 @@ function Traffic({ node }: { node: Node }) {
 
   return (
     <div className="mt-3 rounded-lg border border-border-soft bg-card-2 p-2.5">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="flex items-center gap-1 text-2xs text-muted-foreground">
+      {/* Centred rather than baseline-aligned, and so is the sockets row at the
+          bottom of this well: a glyph has no baseline, so a row that starts with
+          one aligns on the icon's bottom edge and the words float above the
+          figures beside them. See the note there. */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1 text-xs text-muted-foreground">
           <Glyph icon={Network} box="sm" />
           周期流量
         </span>
         {/* What the plan counts, and how much: `MAX 710 MB` is the figure the
             quota below is a share of, so it leads the bar rather than trailing
             it under a word. */}
-        <span className="flex items-baseline gap-1">
+        <span className="flex items-center gap-1 text-xs">
           <span className="rounded-xs bg-brand/10 px-1 text-3xs font-semibold tracking-wide text-brand">{mode}</span>
           <Figure text={bytes(used)} size="xs" />
         </span>
@@ -341,9 +344,24 @@ function Traffic({ node }: { node: Node }) {
         </span>
       </div>
 
-      <div className="mt-2 flex items-baseline justify-between gap-2 border-t border-border-soft pt-1.5">
-        <span className="text-2xs text-muted-foreground">连接</span>
-        <span className="flex shrink-0 items-baseline gap-1.5">
+      {/* Sockets and processes, under one label: the row carries two counts of
+          two different things, and `连接` named only the first. The icon is the
+          one the detail page gives `连接数`, so the same figure is marked the
+          same way in both places.
+
+          Both sides are 12px on purpose, and each side says so. The value half used
+          to carry no size of its own, so it inherited the card's 14px/20px text:
+          its box was taller than the label's and, centred against it, the figures
+          sat a couple of pixels low -- which is the tilt this row was reported
+          with. A glyph cannot join a baseline group either, so both halves are
+          centred boxes now, and centred only agrees when both boxes are the same
+          size to begin with. */}
+      <div className="mt-2 flex items-center justify-between gap-2 border-t border-border-soft pt-1.5">
+        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+          <Glyph icon={Plug} box="sm" />
+          连接与进程
+        </span>
+        <span className="flex shrink-0 items-center gap-1.5 text-xs">
           {m ? (
             <>
               <Figure text={`${m.tcp} TCP`} size="xs" />
@@ -471,14 +489,37 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
               read as a live one. */}
           {node.online && <PingPanel node={node} />}
 
-          <Billing node={node} className="mt-2.5" size="md" />
+          {/* The footer: a hairline and the price, pinned to the card's bottom.
+              Pinned because the probe list above runs to as many rows as the node
+              has probes, so a one-probe card would otherwise end two rows higher
+              than its neighbour; and ruled because the air that this pinning
+              leaves above it is otherwise a hole in the card -- the hairline makes
+              it the space above a footer, which is what it is.
+
+              The wrapper carries the `mt-auto` and the inner element the rule, so
+              that a card with no slack to give keeps an 8px gap above the line
+              instead of letting it touch the well above. Both gaps are 8 where they
+              were 12 and 10, and the price is a step down at `size="sm"`: a footer
+              is reference information, and it was reading as the loudest line on
+              the card. */}
+          <div className="mt-auto pt-2">
+            <Billing node={node} className="border-t border-border-soft pt-2" size="sm" />
+          </div>
         </>
       ) : (
         /* Never connected: nothing to plot, so the card stays short rather than
-           padding out to match its neighbours. */
-        <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-          还没有接入。在后台生成安装命令并执行一次。
-        </p>
+           padding out to match its neighbours. The list leaves such a node out
+           altogether -- see `serving` -- so this is what a hub that still sends
+           one gets: a block on the card's own inset surface, in the card's own
+           labels, rather than a sentence loose in the box saying something that
+           only meant anything to whoever runs the panel. */
+        <div className="mt-3 flex items-center gap-2.5 rounded-lg border border-dashed border-border-soft bg-card-2 p-2.5">
+          <Glyph icon={WifiOff} box="lg" className="text-muted-foreground/60" />
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-muted-foreground">尚未接入监控</p>
+            <p className="mt-0.5 truncate text-2xs text-muted-foreground/80">接入后显示资源与流量</p>
+          </div>
+        </div>
       )}
 
       {/* Last, so it paints over the figures: the veil is the state, not a

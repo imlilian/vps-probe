@@ -17,9 +17,9 @@ const VALUED_IN = "USD"
 
 /**
  * The body position for the two flow tiles: pinned to the bottom of the fixed
- * box, so the 8px a 24px figure's line box would leave over becomes 20px of air
+ * box, so the 8px a 24px figure's line box would leave over becomes the air
  * between the title and the first row -- measured, in a 116px card with a 14px
- * inset and an 18px label.
+ * inset and a 20px label.
  *
  * A constant because it is a measurement, not a style: if the card's height or
  * the label's line box changes, this is the line to look at.
@@ -46,8 +46,8 @@ function Tile({ icon, label, meta, note, body, className, children }: {
   children: ReactNode
 }) {
   return (
-    // One height for all five: 14 + 18 (label) + 8 + 32 (figure) + 8 + 16
-    // (note) + 14, and 8 more of air. Auto-height made every tile shrink to its
+    // One height for all five: 14 + 20 (label) + 8 + 32 (figure) + 8 + 16
+    // (note) + 14, and 4 more of air. Auto-height made every tile shrink to its
     // own content, so a two-row traffic table and a single percentage sat in
     // boxes of different shapes and the shortest one read as crowded; the fixed
     // box is what lets the same figure breathe in all of them. The extra 8 is
@@ -65,10 +65,16 @@ function Tile({ icon, label, meta, note, body, className, children }: {
         className,
       )}
     >
-      <div className="flex items-center gap-1.5 text-2xs text-muted-foreground">
+      {/* The label was 11px beside a 16px glyph, which is the size of a caption
+          rather than of the one word that says what the card is: the figures below
+          it were never the problem. 14px medium takes the header row from 16 to
+          20px, and the card has the air for it -- the note under the figure is
+          pinned to the bottom, so the header eats the slack the box already had
+          rather than its height. */}
+      <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
         <Glyph icon={icon} />
         <span className="min-w-0 truncate">{label}</span>
-        {meta && <span className="ml-auto shrink-0 text-2xs opacity-80">{meta}</span>}
+        {meta && <span className="ml-auto shrink-0 text-xs font-normal opacity-80">{meta}</span>}
       </div>
       <div className={body ?? "mt-2"}>{children}</div>
       {note}
@@ -92,7 +98,7 @@ function Big({ children }: { children: ReactNode }) {
  */
 function Note({ children, tone, title }: { children: ReactNode; tone?: string; title?: string }) {
   return (
-    <div title={title} className={cn("mt-auto truncate text-2xs", tone ?? "text-muted-foreground")}>
+    <div title={title} className={cn("mt-auto truncate text-xs", tone ?? "text-muted-foreground")}>
       {children}
     </div>
   )

@@ -25,7 +25,7 @@ export const PROBES: { id: number; name: string }[] = [
  * line goes bad in practice -- everything slows down, or a slice of the traffic
  * never arrives -- and the panel has to make both obvious at a glance.
  */
-type Profile = "good" | "congested" | "lossy" | "flaky"
+type Profile = "good" | "congested" | "lossy" | "flaky" | "wobbly"
 
 type Spec = {
   id: number
@@ -148,8 +148,9 @@ const SPECS: Spec[] = [
     monthUsed: 0.24, rxBase: 14.6 * MiB, txBase: 21.3 * MiB,
     cpuBase: 22, cpuAmp: 8, memPct: 0.41, diskPct: 0.35,
     tcp: 271, udp: 33, procs: 402, uptime: 231 * 86400,
-    // Five probes: only the first three are drawn, per the design rule.
-    probes: [1, 2, 3, 4, 5], online: true,
+    // Five probes: only the first three are drawn, per the design rule. One of them
+    // goes dark for a stretch, which is the case the blocks have to show as empty.
+    probes: [1, 2, 3, 4, 5], profiles: { 3: "flaky" }, online: true,
   },
   {
     id: 7, name: "上海-家宽", country: "CN", group: "国内",
@@ -161,8 +162,10 @@ const SPECS: Spec[] = [
     // A hub from before 1.4.1: no swap/socket/process history and no peaks.
     legacy: true,
     tcp: 57, udp: 9, procs: 121, uptime: 19 * 86400,
-    // One probe: a single column, not a row of empty cells.
-    probes: [1], profiles: { 1: "flaky" }, online: true,
+    // One probe, and a line that moves: this is the card the curve is drawn for,
+    // so it carries the profile a curve has something to say about -- an evening
+    // queue that doubles the round trip, and no loss at all.
+    probes: [1], profiles: { 1: "wobbly" }, online: true,
   },
   {
     id: 8, name: "广州-测试机", country: "CN", group: "",
@@ -419,6 +422,20 @@ function pingSample(spec: Spec, task: number, minute: number): Sample {
       if (phase < 14) return { latency: null, lost: true }
       scale = 1.05
       lossRate = 0.01
+      break
+    }
+    case "wobbly": {
+      // Bufferbloat on a home line: nothing is lost, but the queue doubles the
+      // round trip for a stretch of every hour. The one profile a curve has
+      // something to say about, which is why the single-probe card carries it.
+      const phase = (minute + offset) % 53
+      // Half again, not three times: a queue that doubles the round trip is a
+      // crisis on a 200 ms link, and the card's axis is drawn around this link's
+      // own numbers, so a real wobble fills the box without a fake mountain.
+      scale = 1 + 0.85 * Math.max(0, Math.sin((phase / 53) * 2 * Math.PI)) ** 1.6
+      // Nothing lost at all: this card exists to show the curve, and a hole in it
+      // would be read as the curve's own failure.
+      lossRate = 0
       break
     }
   }

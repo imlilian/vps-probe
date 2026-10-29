@@ -41,6 +41,16 @@ export type ProbeStats = {
   /** Window loss in percent, null without samples. */
   loss: number | null
   slots: Slot[]
+  /** The window the strip and the curve draw, as whole seconds. */
+  since: number
+  until: number
+  /**
+   * This probe's own buckets over that window, oldest first, ungrouped. The strip
+   * folds them into twenty blocks; the single-probe card draws them as a line,
+   * because one probe has the whole card's width and a line says "it climbed at
+   * 21:20" where twenty blocks can only say "one block was yellow".
+   */
+  series: PingRow[]
 }
 
 /**
@@ -125,6 +135,7 @@ export function probeStats(
   const end = rows.at(-1)?.ts ?? until
   const recent = rows.filter((r) => r.ts > end - RECENT)
   const answeredRecent = recent.flatMap((r) => (r.latency === null ? [] : [r.latency]))
+  const since = until - count * BLOCK
   return {
     ...probe,
     reading: median(answeredRecent),
@@ -133,6 +144,9 @@ export function probeStats(
     // Zero loss is left out of `loss` by the hub, so an absent key means none.
     loss: rows.length ? (data.loss?.[probe.id] ?? 0) : null,
     slots: buildSlots(rows, until, count),
+    since,
+    until,
+    series: rows.filter((r) => r.ts >= since && r.ts < until),
   }
 }
 

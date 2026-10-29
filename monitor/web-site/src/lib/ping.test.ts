@@ -137,6 +137,21 @@ const data: PingData = {
   console.log("the strip is always twenty blocks")
 }
 
+// The same stats carry the window and the raw buckets inside it: the single-probe
+// card draws those as a line where the three-probe card draws twenty blocks.
+{
+  const [probe] = cardProbes(data, 10_000)
+  assert.equal(probe.until - probe.since, 20 * BLOCK, "the window is the strip's twenty blocks")
+  assert.ok(probe.series.length > 0, "a probe with history carries its own rows")
+  assert.ok(
+    probe.series.every((r) => r.task_id === probe.id && r.ts >= probe.since && r.ts < probe.until),
+    "and only that probe's rows, inside the window",
+  )
+  const ages = probe.series.map((r) => r.ts)
+  assert.deepEqual(ages, [...ages].sort((a, b) => a - b), "oldest first, as a line is drawn")
+  console.log("the stats carry the window and the buckets the curve is drawn from")
+}
+
 // Loss is judged by its own figure: 1, 5, 15 and 40 per cent are the steps up.
 assert.deepEqual(
   [null, 0, 1, 2, 5, 6, 15, 16, 40, 41].map(lossSignal),

@@ -50,6 +50,32 @@ export function fleet(nodes: Node[]) {
 }
 
 /**
+ * Whether an agent has ever reported. A node created in the panel and not yet
+ * installed is the only one that has not: no shape, no figures, and the sentence
+ * that would explain it -- generate the install command and run it -- addressed
+ * to the operator rather than to a visitor.
+ *
+ * Lives here rather than in the card because the list has to ask it before any
+ * card is drawn; see [serving].
+ */
+export function deployed(node: Node): boolean {
+  return node.cpu_cores > 0 || node.mem_total > 0
+}
+
+/**
+ * What a visitor is shown. A machine whose agent never connected is left out
+ * rather than drawn as an empty card: on a status page it says nothing about
+ * anything, and a row of them reads as a fleet that is down. The panel lists
+ * them all, which is also where they are installed from.
+ *
+ * The summary counts this list, so the tabs and the five tiles agree on how many
+ * machines the page is about.
+ */
+export function serving(nodes: Node[]): Node[] {
+  return nodes.filter(deployed)
+}
+
+/**
  * The busiest node rather than the fleet average: one machine pinned at 95% is
  * the thing to look at, and a row of idle ones would average it into nothing.
  */

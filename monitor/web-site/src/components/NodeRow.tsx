@@ -5,8 +5,8 @@ import { Glyph } from "@/components/ui/glyph"
 import { flowTone } from "@/components/Flow"
 import { percentText, RESOURCE_TONES } from "@/components/Meter"
 import { Billing } from "@/components/Billing"
-import { Country, deployed, Figure, statusDot, statusLabel } from "@/components/NodeCard"
-import { monthUsage } from "@/lib/stats"
+import { Country, Figure, statusDot, statusLabel } from "@/components/NodeCard"
+import { deployed, monthUsage } from "@/lib/stats"
 import { ProbeLines } from "@/components/PingPanel"
 import type { Node } from "@/lib/api"
 import { absence, bytes, percent, rate, sinceSeen, splitUnit, uptimeShort } from "@/lib/format"
@@ -93,7 +93,13 @@ export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
       // Focus is drawn as the same border the pointer gets on hover, plus the
       // button's ring.
       className={cn(
-        "min-w-0 cursor-pointer gap-0 p-3 outline-none transition-[box-shadow,border-color] duration-200 hover:shadow-raise focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50",
+        // `relative` + `overflow-hidden`: the offline hatch is an overlay drawn to
+        // the card's rounded edges, exactly as on the standard card. The row used
+        // to go without it, on the grounds that stripes under forty pixels of text
+        // cost more than the state is worth; a column of compact cards is a wall of
+        // green dots, and the hatch is what makes a dark one findable from across
+        // the page.
+        "relative min-w-0 cursor-pointer gap-0 overflow-hidden p-3 outline-none transition-[box-shadow,border-color] duration-200 hover:shadow-raise focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50",
         offline ? "border-destructive/40 hover:border-destructive/60" : "hover:border-ring/50",
       )}
     >
@@ -166,11 +172,25 @@ export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
             <Figure text={bytes(monthUsage(node))} size="xs" className="shrink-0" title="本周期已用流量" />
           </div>
 
-          <Billing node={node} className="mt-2" />
+          {/* Pinned, as on the standard card: the row of compact cards is one
+              rectangle, and the price is the line read across it. */}
+          <div className="mt-auto pt-2">
+            <Billing node={node} />
+          </div>
         </>
       ) : (
-        <p className="mt-2 text-2xs text-muted-foreground">还没有接入</p>
+        /* The same state the standard card draws, in one line: the list leaves a
+           node that never reported out, so this is the fallback for a hub that
+           still sends one. */
+        <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Glyph icon={WifiOff} box="sm" className="text-muted-foreground/60" />
+          尚未接入监控
+        </p>
       )}
+
+      {/* Last, so it paints over the figures: the veil is the state, not a
+          backdrop. Not announced -- the pill beside the name says it in words. */}
+      {offline && <span aria-hidden className="offline-veil pointer-events-none absolute inset-0" />}
     </Card>
   )
 }

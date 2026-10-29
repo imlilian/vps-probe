@@ -33,6 +33,10 @@ try {
   // The mark and the name, and nothing after them: `/ MONITOR` named the
   // software on a page whose only subject is the operator's own fleet.
   assert.ok(live.includes('src="/favicon.svg"'), "the mark sits in front of the name")
+  // The name is the page's title: at 14px it was the same size as the words in the
+  // pill beside it, and named nothing in particular.
+  assert.match(live, /text-sm font-bold tracking-tight sm:text-lg/, "the site name is set as a title")
+  assert.ok(!live.includes("text-lg font-bold tracking-tight\""), "and only where the bar has the room for it")
   assert.ok(!live.includes("MONITOR") && !live.includes("> / <"), "and nothing trails it")
   // The count of online nodes left the header for the summary: `7/9` in the
   // corner and `7 / 9` in a card forty pixels below are one fact twice.
@@ -100,6 +104,11 @@ try {
   // count is the only other thing on the line.
   assert.match(full, /text-muted-foreground">\/(?:<!-- -->)?月<\/span>/, "the period hangs off the price")
   assert.match(full, /剩 \d+ 天/)
+  // The price sits under a hairline, so the air a one-probe card leaves above it
+  // reads as the space above a footer rather than as a hole in the card: the
+  // wrapper is what is pinned, and the rule belongs to the price.
+  assert.ok(full.includes('class="mt-auto pt-2"'), "the footer is pinned to the card's bottom")
+  assert.match(full, /border-t border-border-soft pt-2[^.]/, "and drawn under a hairline")
   assert.ok(!full.includes("月付<"), "no billing word in front of the amount")
   // The billed usage leads the quota it is a share of, tagged with the plan's
   // own counting rule rather than a sentence about it.
@@ -125,6 +134,10 @@ try {
   // size, the word steps down and mutes.
   assert.match(full, /font-semibold text-foreground text-xs">\d+<\/span><span class="ml-1 text-2xs font-normal text-muted-foreground">TCP/, "the socket count leads")
   assert.match(full, /text-2xs font-normal text-muted-foreground">进程/, "and the process label follows its number")
+  // One label over two kinds of count: `连接` named the sockets and left the
+  // processes it sits beside unaccounted for. The icon is the detail page's.
+  assert.ok(full.includes("连接与进程"), "the row is labelled for both of its counts")
+  assert.ok(!full.includes(">连接<"), "and no longer for the sockets alone")
   // Same rule on the traffic figure and on the amount: a bare `48.0 GB` at one
   // weight reads as a word, not a quantity.
   assert.match(full, /font-semibold text-foreground text-xs">[\d.]+<\/span><span class="ml-1 text-2xs font-normal text-muted-foreground">GB/)
@@ -180,7 +193,8 @@ try {
     fetchPing(2)
     await new Promise((resolve) => setTimeout(resolve, 100))
     const strip = card(1)
-    const blocks = strip.match(/h-1\.5 rounded-xs/g)?.length ?? 0
+    // Four pixels tall, not six: three probes of twenty blocks give sixty.
+    const blocks = strip.match(/h-1 rounded-xs/g)?.length ?? 0
     assert.equal(blocks, 60, `three probes of twenty blocks, got ${blocks}`)
     for (const want of ["上海电信", "上海联通", "上海移动", "ms"]) {
       assert.ok(strip.includes(want), `missing ${want}`)
@@ -191,7 +205,81 @@ try {
   } finally {
     globalThis.fetch = asked
   }
+  // One probe or three, the compact card's probe block is the same height.
+  {
+    const { ProbeLines } = await server.ssrLoadModule("/src/components/PingPanel.tsx")
+    const block = renderToString(createElement(ProbeLines, { node: fleet[1] }))
+    assert.ok(block.includes("min-h-[3.25rem]"), "three lines reserved, whatever the probe count")
+  }
   console.log("a card with a history draws three strips of twenty blocks")
+
+  // One probe is not one third of a comparison: it is a machine with a single link,
+  // so the card draws the hour as a line and spends the room three probes do not
+  // have on the numbers that describe a link. Two probes keep the strips and gain a
+  // second line of figures.
+  const row = (task: number, ts: number, latency: number | null) => ({ task_id: task, ts, latency })
+  const served = (probes: Record<string, string>, tasks: number[]) => {
+    const newest = Math.ceil(Date.now() / 1000 / 60) * 60
+    const ping = tasks.flatMap((task) =>
+      Array.from({ length: 40 }, (_, i) => row(task, newest - (39 - i) * 90, i % 13 === 5 ? null : 200 + task * 10 + (i % 7) * 5)),
+    )
+    return new Response(JSON.stringify({ ping, probes, loss: Object.fromEntries(tasks.map((t) => [t, 3.4])) }), {
+      headers: { "content-type": "application/json" },
+    })
+  }
+
+  globalThis.fetch = async () => served({ "9": "上海电信" }, [9])
+  try {
+    fetchPing(2)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const solo = card(1)
+    assert.ok(solo.includes("上海电信"), "the one probe is named")
+    assert.match(solo, /<svg[^>]*viewBox="0 0 300 100"/, "and drawn as a line")
+    // One hue for the stroke and its fill -- the band the reading falls in -- shaded
+    // from the line down to the axis.
+    assert.ok(solo.includes("linearGradient"), "whose fill is shaded to the axis")
+    // One colour for the line and its fill: `currentColor`, set once on the svg,
+    // so the shading cannot drift from the stroke.
+    assert.equal(solo.match(/stop-color:currentColor/g)?.length, 2, "one hue, two stops")
+    assert.match(solo, /<svg[^>]*class="[^"]*text-(emerald|amber|orange|red)-700/, "the svg carries the band's ink")
+    // Two figures, the ends of the hour: the median is already the number above
+    // them, and a timestamp on a card being watched says nothing.
+    for (const want of ["最佳", "最差"]) {
+      assert.ok(solo.includes(want), `a solo link says ${want}`)
+    }
+    for (const gone of ["最近", "中位"]) {
+      assert.ok(!solo.includes(gone), `a solo link no longer says ${gone}`)
+    }
+    // And each figure is set in its own band's ink, so a bad `最差` is coloured
+    // before it is read.
+    assert.ok((solo.match(/text-(emerald|amber|orange|red)-700 dark:text-\1-400">\d/g)?.length ?? 0) >= 3,
+      "the figures carry the scale, the two under the curve included")
+    assert.ok(!solo.includes("grid-cols-20"), "and drops the twenty blocks")
+    // One height for the well whatever the probe count: three rows of 24px, their
+    // paddings and two hairlines is 116px, and a curve is drawn inside it.
+    assert.ok(solo.includes("h-[7.25rem]"), "the well is a fixed box")
+  } finally {
+    globalThis.fetch = asked
+  }
+
+  globalThis.fetch = async () => served({ "8": "上海电信", "9": "上海联通" }, [8, 9])
+  try {
+    fetchPing(2)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const pair = card(1)
+    assert.ok(pair.includes("上海电信") && pair.includes("上海联通"), "both probes are named")
+    assert.ok(pair.includes("h-[7.25rem]"), "and the well is the same fixed box")
+    assert.equal(pair.match(/grid-cols-20/g)?.length, 2, "two probes keep two strips")
+    assert.ok(!pair.includes("linearGradient"), "and no curve: two rows of blocks stay scannable")
+    for (const want of ["最佳", "最差"]) {
+      assert.ok(pair.includes(want), `two probes can afford ${want}`)
+    }
+  } finally {
+    globalThis.fetch = asked
+    fetchPing(2)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  console.log("one probe draws the hour as a line, two keep the blocks and gain figures")
 
   // A node with no probe configured answers with an empty `probes`, and the panel
   // keeps its frame and its padding under nothing: a bordered well across the
@@ -215,6 +303,19 @@ try {
   }
   console.log("a node without probes keeps no empty frame at the bottom")
 
+  // A node whose agent never connected: the list leaves it out (`serving`), so
+  // what a hub that still sends one gets is this. It has to speak to a visitor,
+  // in the card's own language -- the sentence that used to sit here told the
+  // reader to go and run an install command in the panel.
+  const never = { ...fleet[1], online: false, metrics: null, cpu_cores: 0, mem_total: 0, os: "", arch: "" }
+  const unplugged = renderToString(createElement(NodeCard, { node: never as Node, onOpen() {} }))
+  for (const want of ["尚未接入监控", "接入后显示资源与流量"]) {
+    assert.ok(unplugged.includes(want), `a never-connected node says ${want}`)
+  }
+  assert.ok(unplugged.includes("等待首次上报"), "and the line under its name still says what is missing")
+  assert.ok(!unplugged.includes("在后台"), "and no longer sends a visitor to the panel")
+  console.log("a node that never reported is drawn as a state, not as a sentence")
+
   // The overview row: five tiles, one question each, and the bill to schedule in
   // the last one.
   const { Overview } = await server.ssrLoadModule("/src/components/Overview.tsx")
@@ -222,6 +323,10 @@ try {
   for (const want of ["节点", "最忙节点", "实时速率", "今日流量", "剩余价值", "0 点起"]) {
     assert.ok(overview.includes(want), `missing ${want}`)
   }
+  // One size for the five labels, and it is a title's: 11px beside a 16px glyph
+  // read as a caption, which is what the figure below it already had one of.
+  assert.equal(overview.match(/text-sm font-medium text-muted-foreground/g)?.length, 5,
+    "every tile labels itself at the same size")
   // Seven of the eight sample nodes are up. React separates two text children
   // with a comment, so the pair is matched rather than searched for; the total
   // is set a step down, since a total is a unit and not a second count.
@@ -294,7 +399,7 @@ try {
   for (const want of ["全部", "香港", "日本", "美国", "新加坡", "欧洲", "国内", "未分组"]) {
     assert.ok(controls.includes(want), `missing ${want}`)
   }
-  assert.ok(controls.includes("8 台"), "nothing is hidden, so the count is the fleet")
+  assert.ok(!controls.includes("8 台"), "nothing is filtered, so the count is on the 全部 tab and nowhere else")
   // Narrowed: the count says so, and the order does too.
   const narrowed = toolbar({ group: "香港", shown: 2 })
   assert.equal(narrowed.match(/aria-pressed="true"/g)?.length, 2)
@@ -343,13 +448,20 @@ try {
   assert.ok(whole.indexOf("最忙节点") < whole.indexOf('aria-label="排序"'), "the summary leads the controls")
   assert.ok(whole.indexOf('aria-label="排序"') < whole.indexOf("sm:grid-cols-2 lg:grid-cols-3"))
   assert.ok(whole.includes("最忙节点"), "the five tiles are always drawn")
+  // One height per row in the standard density too: a node with one probe used to
+  // end two rows short of its neighbour, its price at a third height.
+  assert.ok(whole.includes("grid items-stretch"), "a row of cards is one height")
   console.log("a group narrows the list, a search narrows the group, the order arranges what is left")
 
   // The compact card: the same node in a quarter of the height. It keeps the four
   // readings the standard card has -- so a scan does not depend on the sort -- and
   // drops the two wells.
-  const compactCards = cards(list({ density: "compact" }))
-  assert.ok(compactCards.includes("items-stretch gap-2"), "compact cards sit closer together")
+  const compactHtml = list({ density: "compact" })
+  const compactCards = cards(compactHtml)
+  // Both densities stretch their rows to one height -- see App.tsx -- and the
+  // compact ones sit closer together.
+  assert.ok(compactHtml.includes("grid items-stretch") && compactCards.includes("gap-2"),
+    "compact cards sit closer together")
   assert.ok(compactCards.includes("香港-CN2-02"), "a compact card still names the node")
   assert.ok(compactCards.includes("59.90"), "and still shows what it costs")
   for (const want of ["CPU", "内存", "硬盘", "负载"]) {
@@ -359,6 +471,16 @@ try {
   for (const dropped of ["周期流量", "连接", "grid-cols-20"]) {
     assert.ok(!compactCards.includes(dropped), `a compact card leaves out ${dropped}`)
   }
+  // The compact card is a card like any other: the offline hatch is drawn on it,
+  // the price is pinned to the bottom of the row, and the probe lines reserve three
+  // lines whether the node has one probe or three.
+  const { NodeRow } = await server.ssrLoadModule("/src/components/NodeRow.tsx")
+  const rowHtml = (node: Node) => renderToString(createElement(NodeRow, { node, onOpen() {} }))
+  const darker = rowHtml({ ...fleet[1], online: false })
+  assert.ok(darker.includes("offline-veil"), "an offline row carries the hatch")
+  assert.ok(darker.includes("relative") && darker.includes("overflow-hidden"), "in a box that clips it")
+  assert.ok(!rowHtml(fleet[1]).includes("offline-veil"), "a reporting row carries none")
+  assert.ok(compactCards.includes('class="mt-auto pt-2"'), "and the price is pinned to the bottom")
   console.log("the compact card keeps four readings and drops the wells")
 
   // The detail page's shell: who the machine is, what it is, and which views it
@@ -466,6 +588,11 @@ try {
   const unpriced = foot({ price: 0 })
   assert.ok(unpriced.includes("<span>免费</span>"), "免费就是免费，没有符号")
   assert.ok(!unpriced.includes("¥"), "免费不带任何货币符号")
+  // A word is not a figure: at the size of the numbers beside it, `免费` read a
+  // fifth larger than they did, because a CJK glyph fills its em box where a
+  // digit reaches about seven tenths of one.
+  assert.match(unpriced, /font-semibold text-foreground text-sm[^>]*>/, "免费 is set a step down from a price")
+  assert.match(cny, /font-semibold text-foreground text-base[^>]*>/, "a figure keeps its size")
   console.log("a price keeps its mark as a unit beside the figure")
 
   console.log("the detail page composes header, figures, info, load and latency")

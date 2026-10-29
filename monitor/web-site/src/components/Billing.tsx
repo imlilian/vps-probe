@@ -55,6 +55,8 @@ export function Billing({ node, className, size = "sm" }: {
 }) {
   const days = expiryDays(node)
   const { mark, value, suffix } = priceParts(node)
+  // A price with no mark is `免费`: a word where the other cards have a figure.
+  const free = mark === ""
   const expired = days !== null && days < 0
   const tone = expired ? "text-destructive" : days !== null && days <= 7 ? "text-warn" : "text-muted-foreground"
 
@@ -66,7 +68,15 @@ export function Billing({ node, className, size = "sm" }: {
         mark={mark}
         value={value}
         suffix={suffix}
-        className={cn("font-semibold text-foreground", size === "md" ? "text-base" : "text-sm")}
+        // A digit reaches about seven tenths of its em box; a CJK glyph fills it.
+        // `免费` at the size of the numbers beside it therefore reads a fifth
+        // larger than the numbers do, which on one card in a row of prices looks
+        // like a mistake -- the whole footer turned loud on the one machine that
+        // costs nothing. One step down puts the word at the weight of a figure.
+        className={cn(
+          "font-semibold text-foreground",
+          size === "md" ? (free ? "text-sm" : "text-base") : free ? "text-xs" : "text-sm",
+        )}
       />
       <span aria-hidden className="text-xs text-border">·</span>
       <span className={cn("text-xs", tone)} title={node.expires_at ?? undefined}>

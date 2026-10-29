@@ -12,6 +12,7 @@ import { api, groupsOf, useNodes, type Node } from "@/lib/api"
 import { readDensity, readOrder, writeDensity, writeOrder } from "@/lib/prefs"
 import { useHubRates } from "@/lib/rates"
 import { arrange, type Density, type Order } from "@/lib/sort"
+import { serving } from "@/lib/stats"
 import { useTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 
@@ -122,7 +123,12 @@ export default function App() {
     if (me && !me.public_page && !me.authed) location.href = "/admin/"
   }, [me])
 
-  const sorted = [...(nodes ?? [])].sort((a, b) => a.sort - b.sort || a.id - b.id)
+  // A node whose agent has never connected has nothing to show a visitor: no
+  // shape, no figures, and the install command that would explain it is the
+  // panel's business. Filtered here rather than in the card, because the summary,
+  // the group tabs and the detail route all fold over this one list and have to
+  // count the same machines.
+  const sorted = serving(nodes ?? []).sort((a, b) => a.sort - b.sort || a.id - b.id)
   const selected = sorted.find((n) => n.id === open)
 
   // `/node/{id}` is a page people bookmark and share, so the tab needs the node's
@@ -284,13 +290,16 @@ export function NodeList({ nodes, group, query, order, density, onGroup, onQuery
       ) : shown.length === 0 ? (
         <p className="py-16 text-center text-sm text-muted-foreground">{needle ? "没有匹配的节点" : "这个分组里没有节点"}</p>
       ) : (
-        // Cards of one density keep one height per row: a compact card is a
-        // fixed list of four figures and two lines, so stretching it costs
-        // nothing and lines the grid up; a standard card's content is already
-        // ragged, so those start at the top.
+        // One height per row, in both densities. A standard card used to start at
+        // the top of its cell, on the grounds that its content is ragged anyway:
+        // a node with one probe next to a node with three then ended two rows
+        // short, and the prices -- the one line a reader compares across a row --
+        // sat at three different heights. The cards are stretched instead and each
+        // one pins its price to the bottom (see `NodeCard`), so a row is one
+        // rectangle with one price line, and the uneven part is air in the middle.
         <div className={cn(
-          "grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
-          compact ? "items-stretch gap-2" : "items-start gap-3",
+          "grid items-stretch sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
+          compact ? "gap-2" : "gap-3",
         )}>
           {shown.map((n) => compact
             ? <NodeRow key={n.id} node={n} onOpen={() => onOpen(n.id)} />

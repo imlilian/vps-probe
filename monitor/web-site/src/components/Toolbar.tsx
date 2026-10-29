@@ -100,11 +100,14 @@ export function Toolbar({
             </button>
           ))}
         </div>
-        {/* The count belongs beside the switch that changes it: it is the receipt
-            for the filters on the right, and on a phone the two are one line. */}
-        <span className="tnum truncate text-2xs text-muted-foreground">
-          {shown === nodes.length ? `${nodes.length} 台` : `${shown} / ${nodes.length} 台`}
-        </span>
+        {/* Only when something is filtered out: the count is the receipt for the
+            narrowings on the right -- a search, a tab -- and an unfiltered `4 台`
+            beside a `全部 4` chip was the same number twice in twenty pixels. */}
+        {shown !== nodes.length && (
+          <span className="tnum truncate text-2xs text-muted-foreground">
+            {`${shown} / ${nodes.length} 台`}
+          </span>
+        )}
       </div>
 
       {/* Group names are free text, so they carry a prefix no key of the 全部
