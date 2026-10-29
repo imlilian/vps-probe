@@ -187,9 +187,12 @@ if [ "$DRY" = yes ]; then
 fi
 
 git add monitor/Cargo.toml monitor/Cargo.lock agent/Cargo.toml agent/Cargo.lock
+# The trailing `|| true` is not decoration: a `[ ... ] && printf` that does not
+# fire returns non-zero, and as the last command of the substitution it is what
+# the assignment sees -- which `set -e` would take as fatal, before the commit.
 msg=$(printf 'release:'
-  [ "$BUMP_MONITOR" = yes ] && printf ' hub %s' "$MONITOR_VER"
-  [ "$BUMP_AGENT" = yes ] && printf ' agent %s' "$AGENT_VER")
+  { [ "$BUMP_MONITOR" = yes ] && printf ' hub %s' "$MONITOR_VER"; } || true
+  { [ "$BUMP_AGENT" = yes ] && printf ' agent %s' "$AGENT_VER"; } || true)
 git commit -q -m "$msg"
 
 # The tag is this release's sequence number: the largest tag's patch, plus one.
