@@ -364,8 +364,10 @@ fn relayable(key: &[u8], binary: &[u8], signature: &[u8], arch: &str) -> bool {
     signed(key, binary, signature) && built_for(binary, arch)
 }
 
-/// One GET of a release asset, whole, refused past `max` bytes.
-async fn fetch_asset(app: &App, url: &str, what: &str, max: usize) -> Result<Vec<u8>, String> {
+/// One GET of a release asset, whole, refused past `max` bytes. Public for the
+/// panel's version lookup, which reads `versions.json` through the same
+/// channel -- proxy included -- as the agent binary it describes.
+pub async fn fetch_asset(app: &App, url: &str, what: &str, max: usize) -> Result<Vec<u8>, String> {
     let who = if url.starts_with("https://github.com/") { "GitHub" } else { "the GitHub proxy" };
     // The default client timeout is sized for API calls; the caller bounds the
     // download as a whole.

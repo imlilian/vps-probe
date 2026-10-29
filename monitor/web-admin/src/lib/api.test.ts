@@ -52,6 +52,10 @@ assert.deepEqual(outdatedAgents([{ agent_version: "1.2.0-dev" }], "1.2.0"), [{ a
 assert.equal(behind("1.2.0", "1.10.0"), true)
 assert.equal(behind("1.3.0", "1.2.0"), false)
 assert.equal(behind("1.2.0", ""), false)
+// An inherited asset re-publishes a component's own version unchanged: equal
+// versions are no update, so a hub-only release never marks the agent card.
+assert.equal(behind("1.2.0", "1.2.0"), false)
+assert.equal(behind("", "1.2.0"), false)
 
 // An emptied traffic field means the counter is not to be corrected. Sent as 0
 // it would clear a lifetime total, which must never decrease.

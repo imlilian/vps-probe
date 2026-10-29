@@ -203,7 +203,13 @@ install_hub() {
 		tag="$(curl -fsSI -o /dev/null -w '%{redirect_url}' "$BASE/$asset" 2>/dev/null |
 			sed -n 's#.*/download/\([^/]*\)/.*#\1#p')" || true
 		[ -n "$tag" ] || die "查不到最新发布版；GitHub 不可达，或还没有任何发布"
-		ok "版本" "$tag"
+		# A tag is only the release's sequence number; versions.json, written by
+		# CI from monitor/Cargo.toml, says which hub the release actually
+		# carries. It is a best-effort read: a release without it (older, or the
+		# file failed to download) shows the tag alone, which is still true.
+		ver="$(curl -fsSL --max-time 10 "$BASE/versions.json" 2>/dev/null |
+			sed -n 's/.*"hub": *"\([^"]*\)".*/\1/p' | head -1)" || ver=""
+		[ -n "$ver" ] && ok "版本" "发行 $tag（hub $ver）" || ok "版本" "$tag"
 
 		curl -fsSL --max-time 300 "$BASE/$asset" -o "$tmp/$asset" || die "二进制下载失败：$BASE/$asset"
 		curl -fsSL --max-time 30 "$BASE/$asset.sig" -o "$tmp/$asset.sig" ||

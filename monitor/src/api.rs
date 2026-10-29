@@ -1953,6 +1953,10 @@ pub async fn db_vacuum(_: Admin, State(app): State<Shared>) -> Response {
 const RELEASES_FRESH: i64 = 6 * 3600;
 const RELEASES_RETRY: i64 = 600;
 
+/// The most a `versions.json` may weigh. It is two short version strings; this
+/// cap only keeps a redirected proxy page from being parsed as one.
+const MAX_VERSIONS_JSON: usize = 4096;
+
 /// What is running here, and what is published. The agent's own version travels
 /// in its hello and is already in the node list, so the panel compares the two
 /// itself and names the nodes to upgrade.
@@ -1969,15 +1973,7 @@ pub async fn versions(_: Admin, State(app): State<Shared>) -> Json<Value> {
     let latest = if fresh_enough(&cached, Utc::now().timestamp()) {
         cached
     } else {
-        // One repository holds both binaries, so one lookup answers for both:
-        // the same tag carries the hub and the agent. Asking twice would spend
-        // two of GitHub's unauthenticated hourly requests on the same answer.
-        let tag = latest_tag(&app, crate::REPO).await;
-        let read = crate::Releases {
-            read_at: Utc::now().timestamp(),
-            hub: tag.clone().unwrap_or_default(),
-            agent: tag.unwrap_or_default(),
-        };
+        let read = latest_versions(&app).await;
         *app.releases.lock().unwrap_or_else(|e| e.into_inner()) = read.clone();
         read
     };
@@ -1992,6 +1988,46 @@ pub async fn versions(_: Admin, State(app): State<Shared>) -> Json<Value> {
         // lookup runs either way, so the update page still answers when opened.
         "notice": app.db.get("update_notice").as_deref() != Some("off"),
     }))
+}
+
+/// The versions a release publishes for each component, read from its
+/// `versions.json` -- the only artifact that says which hub and which agent a
+/// tag carries, since the tag itself is just a sequence number. Falls back to
+/// the tag for both on any miss: a release cut before the file existed, or a
+/// hub that cannot reach GitHub at all, answers exactly as it did before.
+async fn latest_versions(app: &App) -> crate::Releases {
+    let url = crate::proxied(
+        app,
+        format!("https://github.com/{}/releases/latest/download/versions.json", crate::REPO),
+    );
+    let parsed = crate::fetch_asset(app, &url, "versions file", MAX_VERSIONS_JSON)
+        .await
+        .ok()
+        .and_then(|body| serde_json::from_slice::<ReleaseVersions>(&body).ok());
+    match parsed {
+        // Any empty field means the file is not saying; the tag is the better
+        // answer than a half-filled panel.
+        Some(v) if !v.hub.is_empty() && !v.agent.is_empty() => crate::Releases {
+            read_at: Utc::now().timestamp(),
+            hub: v.hub,
+            agent: v.agent,
+        },
+        _ => {
+            let tag = latest_tag(app, crate::REPO).await;
+            crate::Releases {
+                read_at: Utc::now().timestamp(),
+                hub: tag.clone().unwrap_or_default(),
+                agent: tag.unwrap_or_default(),
+            }
+        }
+    }
+}
+
+/// The two fields of `versions.json`, as CI writes it from the two manifests.
+#[derive(Deserialize)]
+struct ReleaseVersions {
+    hub: String,
+    agent: String,
 }
 
 /// Whether the cached lookup still answers. One that returned nothing is held
@@ -2351,6 +2387,26 @@ mod tests {
             !fresh_enough(&read(now + 3600, "1.2.0", "1.1.0"), now),
             "read before the clock was set back"
         );
+    }
+
+    /// What the panel reads out of a release's `versions.json`, and what happens
+    /// when the file is missing, malformed or half-empty: the tag falls back for
+    /// both components, which is what a hub predating the file must keep seeing.
+    #[test]
+    fn a_versions_file_parses_and_falls_back_when_it_does_not() {
+        let versions = |body: &str| serde_json::from_str::<ReleaseVersions>(body).ok();
+        let read = |body: &str| versions(body)
+            .filter(|v| !v.hub.is_empty() && !v.agent.is_empty())
+            .map(|v| (v.hub, v.agent));
+        assert_eq!(read(r#"{"hub":"0.3.2","agent":"0.4.0"}"#), Some(("0.3.2".into(), "0.4.0".into())));
+        assert_eq!(read(r#"{"hub":"0.3.2","agent":"0.3.1"}"#), Some(("0.3.2".into(), "0.3.1".into())));
+        // Not JSON, missing fields, or a field with nothing to say: each is the
+        // pre-versions.json world, answered by the tag.
+        assert_eq!(read("<html>404</html>"), None, "a proxy's error page is not a versions file");
+        assert_eq!(read(r#"{"hub":"0.3.2"}"#), None, "agent missing");
+        assert_eq!(read(r#"{"hub":"","agent":"0.4.0"}"#), None, "hub empty");
+        assert_eq!(read(r#"{"hub":"0.3.2","agent":""}"#), None, "agent empty");
+        assert_eq!(read("null"), None);
     }
 
     fn app_with_site(site: &str) -> App {

@@ -3650,7 +3650,11 @@ function Update({ versions, reload, nodes, site, refusal }: {
             {versions.agent_latest
               ? outdated.length
                 ? <>最新 v{versions.agent_latest} · <span className="font-medium text-foreground">{outdated.length} 台待升级</span></>
-                : `全部已是最新 v${versions.agent_latest}`
+                // A release that bumped only the hub still publishes the agent's
+                // binary, inherited from the one before: the versions differing
+                // says so, and naming it keeps "latest v0.4.0" from reading as a
+                // missed update while the hub card next to it says 0.3.2.
+                : `全部已是最新 v${versions.agent_latest}${versions.agent_latest === versions.hub_latest ? "" : "（本版未更新 agent）"}`
               : "查不到版本"}
           </span>
         </div>

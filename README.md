@@ -76,18 +76,30 @@ make test     # 前端测试 + cargo test
 ## 发布
 
 推送 `v*` tag，`.github/workflows/release.yml` 出双架构（x86_64 / aarch64 musl）二进制并
-用 ed25519 签名。一个 tag 同时发布两个组件，因此 `monitor/Cargo.toml` 与 `agent/Cargo.toml`
-的版本号必须一致，且等于 tag（CI 会校验）。
+用 ed25519 签名。**tag 是纯发行序号**（单调递增、永不复用），不等于任何组件的版本号；
+`monitor/Cargo.toml` 与 `agent/Cargo.toml` 各自只随自己的代码改动 bump。每个 release 都
+同时含两个组件的全部资产：本次没改的组件**原样继承**上一版的二进制 + 签名（不重编译、
+不重签），CI 从两个 Cargo.toml 生成 `versions.json` 随 release 发布，面板读它区分
+「hub/agent 是否需要更新」，读不到则回退 tag（旧 hub 的行为不变）。
 
-版本号别手改，交给脚本：
+版本号别手改，交给脚本，bump 谁由参数决定：
 
 ```sh
-make release VERSION=0.2.2    # 也可以 ./scripts/release.sh 0.2.2
+make release VERSION=0.2.2              # 两个组件都 bump 到 0.2.2
+make release HUB=0.2.2                  # 只 bump hub
+make release AGENT=0.3.0                # 只 bump agent
+make release HUB=0.2.2 AGENT=0.3.0      # 各 bump 各的号
 ```
 
-它把两处 `Cargo.toml` 和两份 `Cargo.lock` 一起改好（`release.yml` 用 `--locked` 构建，锁文件
-落后于清单会直接失败）、提交、推送，然后停下——**不打 tag**：等 CI 绿了再自己
-`git tag v0.2.2 && git push origin v0.2.2`。加 `--dry-run` 只看会改哪几行。
+它把选中组件的 `Cargo.toml` 和 `Cargo.lock` 一起改好（`release.yml` 用 `--locked` 构建，
+锁文件落后于清单会直接失败）、提交，然后停下——**不推送、不打 tag**，末尾会打印算好的
+下一个 tag 号（当前最大 tag 的 patch +1，与组件版本无关）。按提示顺序执行：`git push`
+→ 等分支 CI 绿 → `git tag vX && git push origin vX`。加 `--dry-run` 只看会改哪几行。
+
+继承的判定依据是 Cargo.toml 版本号与上一版 release 的 versions.json 是否相同：版本没动
+就继承旧二进制。忘了 bump 的最坏后果是那一版沿用旧二进制（签名有效、节点无损），下一版
+可修正——所以 CI 不做强校验，只由脚本在本地提醒：改了某组件却没带对应参数时打警告，
+`--force` 跳过。
 
 签名私钥只存在于仓库的 Actions secret `AGENT_SIGNING_KEY`，任何机器上都没有。公钥有两份副本：
 `monitor/src/main.rs` 的 `AGENT_SIGNING_KEY`（hub 转发 agent 时验签）与 `monitor/install-hub.sh`

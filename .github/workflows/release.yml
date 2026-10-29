@@ -12,7 +12,8 @@ on:
 
 # Read-only by default: the build job runs third-party actions, dependency build
 # scripts and npm install hooks, none of which may hold a token that can
-# publish. Only the job that creates the release asks for more.
+# publish. The build job needs the token only to read the previous release's
+# versions.json; only the job that creates the release asks for more.
 permissions:
   contents: read
 
@@ -23,22 +24,58 @@ jobs:
     strategy:
       matrix:
         target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    # Every matrix leg computes the same values from the same commit, so which
+    # leg the runner picks them from does not matter.
+    outputs:
+      prev_tag: ${{ steps.versions.outputs.PREV_TAG }}
+      hub_inherit: ${{ steps.versions.outputs.HUB_INHERIT }}
+      agent_inherit: ${{ steps.versions.outputs.AGENT_INHERIT }}
     steps:
       - uses: actions/checkout@v7
 
-      # One tag carries both components, so both versions must agree with it. A
-      # v* tag can be neither moved nor deleted, so a mismatch found afterwards
-      # cannot be corrected, only superseded.
+      # A tag is only the release's sequence number. The components decide for
+      # themselves: a Cargo.toml version equal to the previous release's
+      # versions.json entry means "unchanged since then", and that component's
+      # binary is carried over instead of rebuilt. There is no git-diff gate on
+      # purpose -- a missed bump inherits a valid, signed binary and is
+      # corrected by the next release, which is cheaper than a release pipeline
+      # that must enumerate every file that can affect a build.
       - if: startsWith(github.ref, 'refs/tags/')
+        id: versions
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          HUB=v$(sed -n 's/^version = "\(.*\)"/\1/p' monitor/Cargo.toml)
-          AGENT=v$(sed -n 's/^version = "\(.*\)"/\1/p' agent/Cargo.toml)
-          [ "$GITHUB_REF_NAME" = "$HUB" ] ||
-            { echo "::error::tag $GITHUB_REF_NAME, monitor/Cargo.toml $HUB"; exit 1; }
-          [ "$GITHUB_REF_NAME" = "$AGENT" ] ||
-            { echo "::error::tag $GITHUB_REF_NAME, agent/Cargo.toml $AGENT"; exit 1; }
+          set -eu
+          # The newest tag other than this one: this push has already created
+          # GITHUB_REF_NAME on the remote, so it must be excluded or a release
+          # would always find itself as its own predecessor.
+          PREV_TAG=$({ git ls-remote --tags --refs origin 'v*' \
+                       | grep -v "refs/tags/$GITHUB_REF_NAME\$" || true; } \
+                     | awk '{ print $2 }' | sed 's|refs/tags/||' | sort -V | tail -n1)
+          PREV_HUB= PREV_AGENT=
+          # A release without versions.json predates this scheme: both
+          # components build, which is always safe.
+          if [ -n "$PREV_TAG" ] && gh release download "$PREV_TAG" -p versions.json -O prev-versions.json; then
+            PREV_HUB=$(sed -n 's/.*"hub": *"\([^"]*\)".*/\1/p' prev-versions.json)
+            PREV_AGENT=$(sed -n 's/.*"agent": *"\([^"]*\)".*/\1/p' prev-versions.json)
+          fi
+          HUB=$(sed -n 's/^version = "\(.*\)"/\1/p' monitor/Cargo.toml)
+          AGENT=$(sed -n 's/^version = "\(.*\)"/\1/p' agent/Cargo.toml)
+          HUB_INHERIT= AGENT_INHERIT=
+          [ -n "$PREV_HUB" ] && [ "$PREV_HUB" = "$HUB" ] && HUB_INHERIT=1 || true
+          [ -n "$PREV_AGENT" ] && [ "$PREV_AGENT" = "$AGENT" ] && AGENT_INHERIT=1 || true
+          {
+            echo "PREV_TAG=$PREV_TAG"
+            echo "HUB_INHERIT=$HUB_INHERIT"
+            echo "AGENT_INHERIT=$AGENT_INHERIT"
+          } >> "$GITHUB_OUTPUT"
+
+      # On a manual dispatch the versions step never ran, its outputs are empty,
+      # and `!= '1'` lets everything build -- the dispatch exists to exercise
+      # the build-and-sign path, which skipping would hollow out.
 
       - uses: actions/setup-node@v7
+        if: steps.versions.outputs.HUB_INHERIT != '1'
         with:
           node-version: 24
           cache: npm
@@ -47,9 +84,12 @@ jobs:
             monitor/web-site/package-lock.json
 
       # Required before cargo: rust-embed packs both dist/ trees into the hub.
+      # Skipped with the hub build itself when the hub is inherited.
       - run: npm ci && npm run build
+        if: steps.versions.outputs.HUB_INHERIT != '1'
         working-directory: monitor/web-admin
       - run: npm ci && npm run build
+        if: steps.versions.outputs.HUB_INHERIT != '1'
         working-directory: monitor/web-site
 
       - uses: dtolnay/rust-toolchain@stable
@@ -60,18 +100,34 @@ jobs:
       # toolchain, so both architectures come off one x86_64 runner. ring (used
       # by rustls) and rusqlite's bundled SQLite both compile under it.
       - run: cargo install --locked cross
+        if: steps.versions.outputs.HUB_INHERIT != '1' || steps.versions.outputs.AGENT_INHERIT != '1'
       - run: cross build --release --locked --target ${{ matrix.target }}
+        if: steps.versions.outputs.HUB_INHERIT != '1'
         working-directory: monitor
       - run: cross build --release --locked --target ${{ matrix.target }}
+        if: steps.versions.outputs.AGENT_INHERIT != '1'
         working-directory: agent
 
-      - name: collect
+      - name: collect hub
+        if: steps.versions.outputs.HUB_INHERIT != '1'
         run: |
           mkdir -p dist
           cp "monitor/target/${{ matrix.target }}/release/probe-hub" \
              "dist/probe-hub-${{ matrix.target }}"
+      - name: collect agent
+        if: steps.versions.outputs.AGENT_INHERIT != '1'
+        run: |
+          mkdir -p dist
           cp "agent/target/${{ matrix.target }}/release/probe-agent" \
              "dist/probe-agent-${{ matrix.target }}"
+      - name: collect
+        run: |
+          mkdir -p dist
+          # A release may inherit both components and build nothing. The
+          # artifact must not be empty, or its upload fails here and its
+          # download fails in the release job; a file nothing else globs keeps
+          # both steps happy.
+          [ -n "$(ls -A dist)" ] || touch dist/inherited-only
 
       - uses: actions/upload-artifact@v7
         with:
@@ -96,6 +152,9 @@ jobs:
       # anything: the private key reaches this job alone and never touches a
       # host. Verified against the same public key, so a secret holding any other
       # key fails the release rather than publishing binaries nothing installs.
+      # Inherited binaries are not re-signed -- their signatures, made by this
+      # same key at the previous release, ride along untouched -- so the loop
+      # may find nothing to do at all.
       - name: sign
         run: |
           [ -n "$SIGNING_KEY" ] || { echo "::error::the AGENT_SIGNING_KEY secret is not set"; exit 1; }
@@ -103,6 +162,7 @@ jobs:
           trap 'rm -f "$RUNNER_TEMP/key.pem" "$RUNNER_TEMP/pub.pem"' EXIT
           printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
           printf '%s\n' "$PUBLIC_KEY" > "$RUNNER_TEMP/pub.pem"
+          shopt -s nullglob
           for b in dist/probe-hub-*-musl dist/probe-agent-*-musl; do
             openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in "$b" -out "$b.sig"
             openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/pub.pem" -rawin \
@@ -122,12 +182,39 @@ jobs:
       # sha256sums.txt is an operator convenience -- `sha256sum -c` against a
       # downloaded binary -- and is not what either installer trusts: the
       # signature is. The `*-musl` glob keeps the .sig files out of it.
+      #
+      # versions.json is the only thing that says which hub and which agent this
+      # release carries, generated here from the two manifests and never edited
+      # by hand. The panel reads it to tell an inherited component from an
+      # updated one; a release without it is what the panel falls back from.
       - if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          cp monitor/install-hub.sh dist/
-          (cd dist && sha256sum probe-hub-*-musl probe-agent-*-musl install-hub.sh > sha256sums.txt)
-          gh release create "$GITHUB_REF_NAME" \
-            dist/probe-hub-* dist/probe-agent-* dist/install-hub.sh dist/sha256sums.txt \
-            --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
+          PREV_TAG: ${{ needs.build.outputs.prev_tag }}
+          HUB_INHERIT: ${{ needs.build.outputs.hub_inherit }}
+          AGENT_INHERIT: ${{ needs.build.outputs.agent_inherit }}
+        run: |
+          set -eu
+          # 1) An unchanged component inherits the previous release's binary and
+          #    signature byte for byte. The download must fail the release
+          #    rather than publish without the asset: every install that asks
+          #    for it would 404.
+          if [ "$HUB_INHERIT" = 1 ]; then
+            gh release download "$PREV_TAG" -p 'probe-hub-*-musl*' -D dist/ --clobber
+          fi
+          if [ "$AGENT_INHERIT" = 1 ]; then
+            gh release download "$PREV_TAG" -p 'probe-agent-*-musl*' -D dist/ --clobber
+          fi
+          # 2) Changed components are in dist/ already, built and signed above.
+          # 3) versions.json, from the manifests alone.
+          printf '{"hub":"%s","agent":"%s"}\n' \
+            "$(sed -n 's/^version = "\(.*\)"/\1/p' monitor/Cargo.toml)" \
+            "$(sed -n 's/^version = "\(.*\)"/\1/p' agent/Cargo.toml)" > dist/versions.json
+          # 4) The sums cover every binary this release ships, inherited ones
+          #    included.
+          cp monitor/install-hub.sh dist/
+          (cd dist && sha256sum probe-hub-*-musl probe-agent-*-musl install-hub.sh > sha256sums.txt)
+          # 5) One create, once every asset is in place.
+          gh release create "$GITHUB_REF_NAME" \
+            dist/probe-hub-* dist/probe-agent-* dist/install-hub.sh dist/sha256sums.txt \
+            dist/versions.json --generate-notes

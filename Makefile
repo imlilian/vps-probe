@@ -39,12 +39,15 @@ test: admin
 	cd monitor && cargo test
 	cd agent && cargo test
 
-# 版本号要同时出现在 monitor/Cargo.toml、agent/Cargo.toml 和两份 Cargo.lock 里，
-# release.yml 拿 tag 跟它们逐个比对，`--locked` 又要求 lock 先改好。脚本把这一件事
-# 做完（改号、提交、推送）就停：tag 等你看到 CI 绿了再打。
+# 版本号各自写在 monitor/、agent/ 的 Cargo.toml 和 Cargo.lock 里，`--locked`
+# 要求 lock 先改好。脚本按参数决定 bump 谁（VERSION= 两者同号；HUB=/AGENT=
+# 只动一个），改号、提交就停：push 和 tag 等你看到 CI 绿了再打，tag 号是
+# 纯发行序号，脚本末尾会算好。
 #   make release VERSION=0.2.2
+#   make release HUB=0.2.2
+#   make release HUB=0.2.2 AGENT=0.3.0
 release:
-	@./scripts/release.sh $(VERSION)
+	@./scripts/release.sh $(if $(VERSION),$(VERSION),$(if $(HUB),HUB=$(HUB))$(if $(AGENT), AGENT=$(AGENT)))
 
 clean:
 	rm -rf $(THEME_DIR)/dist $(ADMIN_DIR)/dist monitor/target agent/target
