@@ -136,7 +136,7 @@ try {
   const tri = renderToString(createElement(NodeCard, {
     node: { ...fleet[1], price: 168, currency: "USD", billing_cycle: "triennial" }, onOpen() {},
   }))
-  assert.match(tri, />US\$<\/span><span>168<\/span>/, "US$168：前缀保留，符号单独成元素")
+  assert.match(tri, />\$<\/span><span>168<\/span>/, "$168：符号单独成元素")
   assert.match(tri, /text-muted-foreground">\/(?:<!-- -->)?3年<\/span>/, "周期挂在金额后面")
   // A card is a div carrying role="button", so the focus ring the browser would
   // draw for a real button is ours to draw: without it, tabbing through the list
@@ -240,9 +240,8 @@ try {
   // keeps "39.6 MB/s" from reading as one word.
   assert.match(overview, /text-2xs font-normal text-muted-foreground">MB\/s</)
   // The estimate is drawn in dollars whatever the machines are billed in, and
-  // the mark keeps the locale's `US$`: a bare `$` beside a yuan figure reads as
-  // the same money in two spellings.
-  assert.match(overview, /text-muted-foreground">US\$<\/span>/)
+  // the dollar is drawn as `$`, the way the yuan is drawn as `¥`.
+  assert.match(overview, /text-muted-foreground">\$<\/span>/)
   // One height for every tile, whatever it holds: the box is what gives the
   // figure its air, and a traffic card with no note must not be shorter.
   assert.equal(overview.match(/min-h-29/g)?.length, 5)
@@ -448,7 +447,9 @@ try {
   assert.ok(!cny.includes(">¥29.90<"), "符号不跟数字粘在一起")
   assert.match(cny, />\/(?:<!-- -->)月<\/span>/, "周期跟在数字后面")
   const usd = foot({ price: 168, currency: "USD", billing_cycle: "yearly" })
-  assert.match(usd, />US\$<\/span><span>168<\/span>/, "美元的 US$ 前缀保留")
+  assert.match(usd, />\$<\/span><span>168<\/span>/, "美元跟人民币一样，只用符号")
+  const hkd = foot({ price: 168, currency: "HKD" })
+  assert.match(hkd, />HK\$<\/span><span>168<\/span>/, "港币留 HK，跟美元分得开")
   assert.match(foot({ price: 12.5, currency: "GBP" }), />£<\/span><span>12\.50<\/span>/, "英镑的符号")
   const unpriced = foot({ price: 0 })
   assert.ok(unpriced.includes("<span>免费</span>"), "免费就是免费，没有符号")

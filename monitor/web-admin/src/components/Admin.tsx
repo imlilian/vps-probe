@@ -16,7 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { addressFromOrigin, api, badIfaceName, behind, changes, currentIface, GIB, groupsOf, ifaceChoice, ifaceSpec, inGroup, outdatedAgents, provisioningSite, shortAddress, trafficCorrection, upload, type IfaceChoice, type Node, type PingTask, type Source } from "@/lib/api"
 import { currencyHint, currencyList, searchCurrencies } from "@/lib/currency"
-import { bytes, cycleMonths, FOREVER, money, uptime } from "@/lib/format"
+import { bytes, cycleMonths, FOREVER, moneyMark, moneyParts, uptime } from "@/lib/format"
 
 // Counters the panel can correct after migration or an accounting error.
 const TRAFFIC_FIELDS = [
@@ -262,6 +262,26 @@ const SOURCES: Record<Source, string> = {
   interface: "网卡地址",
   exit: "hub 看到的出口，不在节点网卡上（NAT 或代理）",
   connection: "hub 看到的连接地址",
+}
+
+/**
+ * A node's price in the table: the mark as a unit beside the figure, the same
+ * way the public page draws it, so the two views of one machine are not two
+ * spellings of the same money. A free machine is a word, with no mark to hold
+ * off from it.
+ */
+function Price({ amount, currency }: { amount: number; currency: string }) {
+  if (!(amount > 0)) return <>免费</>
+  const { value } = moneyParts(amount, currency)
+  // The mark is empty for a code Intl refuses; the letters of the code are then
+  // on the figure, and an empty span would only add the gap in front of it.
+  const mark = moneyMark(currency)
+  return (
+    <span className="inline-flex items-baseline gap-1">
+      {mark && <span className="text-2xs font-medium text-muted-foreground">{mark}</span>}
+      <span>{value}</span>
+    </span>
+  )
 }
 
 // The address a node is reached by, one per family, each click-to-copy: pasting
@@ -1870,7 +1890,7 @@ function Nodes({ nodes, refresh, site, refusal }: { nodes: Node[]; refresh: () =
                   </span>
                 </TableCell>
                 <TableCell className="tnum text-sm">
-                  {n.price > 0 ? money(n.price, n.currency) : "免费"}
+                  <Price amount={n.price} currency={n.currency} />
                   <div className="text-xs text-muted-foreground xl:hidden">{n.expires_at || FOREVER}</div>
                 </TableCell>
                 <TableCell className="hidden text-sm xl:table-cell">{n.expires_at || FOREVER}</TableCell>

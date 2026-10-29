@@ -4,6 +4,7 @@
 import assert from "node:assert/strict"
 
 import { COMMON, currencyHint, currencyLabel, currencyList, searchCurrencies } from "./currency.ts"
+import { money, moneyParts } from "./format.ts"
 
 // The three things a row shows, for the currencies the tooltip used to name by
 // code alone. `£` and `JP¥` are the whole point: the mark is what makes a code
@@ -12,8 +13,8 @@ const labels = (code: string) => currencyLabel(code)
 assert.deepEqual(labels("GBP"), { name: "英镑", mark: "£" }, "英镑")
 assert.deepEqual(labels("CNY"), { name: "人民币", mark: "¥" }, "人民币")
 assert.deepEqual(labels("JPY"), { name: "日元", mark: "JP¥" }, "日元的符号带 JP，与人民币分开")
-assert.deepEqual(labels("USD"), { name: "美元", mark: "US$" }, "美元保留地区前缀")
-assert.deepEqual(labels("HKD"), { name: "港元", mark: "HK$" }, "港元同样")
+assert.deepEqual(labels("USD"), { name: "美元", mark: "$" }, "美元跟人民币一样，只用符号")
+assert.deepEqual(labels("HKD"), { name: "港元", mark: "HK$" }, "港元留 HK，才不会跟美元混")
 // A hub older than the shape check may hold anything; neither table throws.
 assert.deepEqual(labels("港币"), { name: "港币", mark: "港币" }, "不是代码就照原样显示")
 assert.equal(currencyHint("GBP"), "英镑", "输入框下面那行是名字")
@@ -21,6 +22,12 @@ assert.equal(currencyHint("港币"), "未知代码，照原样显示", "认不�
 // 能不能折算成美元不在这里说：那是 hub 抓来的表与页面内置表的并集，面板不知道，
 // 由公开页的总估价卡片自己交代
 assert.equal(currencyHint("THB"), "泰铢", "没有汇率也不影响名字")
+
+// 表格里的价格与公开页同一套写法：符号当单位、加上地区规则
+assert.equal(money(168, "USD"), "$168.00", "美元只用符号")
+assert.equal(money(168, "HKD"), "HK$168.00", "港币带前缀")
+assert.equal(money(100, "港币"), "港币 100.00", "非法代码照原样")
+assert.deepEqual(moneyParts(29.9, "CNY"), { symbol: "¥", value: "29.90" }, "拆开就是符号与数字两块")
 
 const list = currencyList()
 assert.ok(list.length > 150, `浏览器能给出整份 ISO 4217，拿到 ${list.length}`)

@@ -8,11 +8,11 @@ import { cn } from "@/lib/utils"
  * The split exists because a price has two voices. `¥29.90/月` in one weight and
  * one colour reads as a label; the same characters with the mark as a unit --
  * smaller, grey, held off by a space -- read as a figure, which is what the
- * card, the tile and the estimate are all trying to say. It also buys back what
- * the full mark costs: zh-CN writes the dollar `US$` and the yen `JP¥`, and
- * keeping those prefixes is the only way `¥` on one card and `¥` on the next do
- * not mean the yuan and the yen. Drawn at `0.7em` in muted ink they cost about
- * as much room as the bare symbol did.
+ * card, the tile and the estimate are all trying to say. It also pays for the
+ * prefixes `moneyMark` keeps on everything but the dollar and the yuan: `JP¥` and
+ * `HK$` are what keep `¥` and `$` from being read as the other currency on the
+ * next card, and at `0.7em` in muted ink they cost about what the bare symbol
+ * did.
  *
  * The type size is the caller's, passed as a class: `em` makes the mark and the
  * period follow it, so one component serves a 10px footer, a 24px tile and the

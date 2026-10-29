@@ -100,13 +100,15 @@ export const FOREVER = "∞"
 const MONEY = new Map<string, Intl.NumberFormat>()
 
 /**
- * A price as zh-CN writes it: ¥12.00, US$12.00, HK$12.00, JP¥1,200, and the code
- * ahead of the amount where the locale has no symbol, as in SGD 12.00. The
- * locale is fixed so the figure does not vary with the browser's language, and
- * so JPY reads JP¥, apart from CNY. Fractions stop at two places, the precision
- * the price is entered in, not at the currency's minor unit: rounding to whole
- * yen would show a price of 0.4 as JP¥0. A formatter costs about 100 µs to
- * build, hence one per currency and precision.
+ * A price as one string: $12.00, ¥12.00, HK$12.00, JP¥1,200, and the code ahead
+ * of the amount where the locale has no symbol, as in SGD 12.00. The locale is
+ * fixed so the figure does not vary with the browser's language, and so JPY
+ * reads JP¥, apart from CNY. Fractions stop at two places, the precision the
+ * price is entered in, not at the currency's minor unit: rounding to whole yen
+ * would show a price of 0.4 as JP¥0.
+ *
+ * Assembled from [moneyParts], so the string is exactly the mark and the figure
+ * the cards draw apart -- one rule for the dollar and the yuan, not two.
  *
  * `digits` caps the places kept. A price is quoted to the cent; an estimate made
  * of prorated days claims less than that, and `0` keeps it from reading as if it
@@ -114,8 +116,8 @@ const MONEY = new Map<string, Intl.NumberFormat>()
  * still shows none.
  */
 export function money(amount: number, currency: string, digits?: number): string {
-  const format = moneyFormat(currency, digits)
-  return format ? format.format(amount) : `${currency} ${amount.toFixed(digits ?? 2)}`.trim()
+  const { symbol, value } = moneyParts(amount, currency, digits)
+  return `${symbol}${value}`.trim()
 }
 
 function moneyFormat(currency: string, digits?: number): Intl.NumberFormat | null {
@@ -140,12 +142,30 @@ function moneyFormat(currency: string, digits?: number): Intl.NumberFormat | nul
 }
 
 /**
+ * The two currencies this page is read in, whose mark is the symbol alone.
+ *
+ * zh-CN writes the dollar `US$`, the yen `JP¥` and the yuan a bare `¥`, and the
+ * prefix is what tells one currency from another: `HK$` from `$`, `JP¥` from
+ * `¥`. It is kept wherever it disambiguates, and dropped only for the two
+ * currencies a Chinese-language page is actually written in -- `$29.90` beside
+ * `¥29.90` says everything `US$29.90` did, in the space of the symbol.
+ */
+const BARE_MARK = new Set(["USD", "CNY"])
+
+/** A region prefix in front of a symbol: `US$`, `HK$`, `JP¥`, `R$`. */
+const PREFIXED_MARK = /^[A-Z]{2,3}([$¥€£₩₹])$/
+
+/**
  * The same price in two pieces, for a figure that sets its mark as a unit: `¥`
  * at body size beside a 24px `795` reads as a currency, where `¥795` in one size
  * makes the mark as loud as the amount and, in a column of them, as wide. The
  * currency code is the mark where the locale has no symbol -- Intl emits SGD as
  * the currency part -- and an unparseable code stays on the figure, since there
  * is nothing to split.
+ *
+ * The mark is the one the page draws, prefix rule included, so that the pieces
+ * always add back up to the whole: `money()` of the same price is these two
+ * concatenated.
  *
  * A negative amount keeps its sign on the figure: nothing here shows one, and
  * `¥-12` would be the alternative.
@@ -159,7 +179,7 @@ export function moneyParts(amount: number, currency: string, digits?: number): {
     if (part.type === "currency") symbol += part.value
     else value += part.value
   }
-  return { symbol, value: value.trim() }
+  return { symbol: bare(currency, symbol), value: value.trim() }
 }
 
 /**
@@ -172,18 +192,21 @@ export function splitUnit(text: string): [string, string] {
   return at < 0 ? [text, ""] : [text.slice(0, at), text.slice(at + 1)]
 }
 
+/** The mark without its region prefix, for the currencies read bare. */
+function bare(currency: string, symbol: string): string {
+  if (!BARE_MARK.has(currency.toUpperCase())) return symbol
+  return PREFIXED_MARK.exec(symbol)?.[1] ?? symbol
+}
+
 /**
- * The mark: `$`, `¥`, `US$`, `HK$`, `JP¥`, `£`, or the three letters of a
- * currency the locale has no symbol for.
+ * The mark a price is drawn with: `$`, `¥`, `HK$`, `JP¥`, `€`, `£`, or the three
+ * letters of a currency the locale has no symbol for.
  *
- * zh-CN spells the dollar `US$` and the yen `JP¥`, which is precise and is two
- * characters more than the symbol alone. The prefix is kept, because the short
- * spelling is ambiguous where it matters: `¥` is both the yuan and the yen on a
- * page that can hold machines billed in either, and `$` covers the dollar, the
- * Hong Kong dollar and the Taiwan dollar at once. The width that argued for
- * dropping it is paid for by drawing the mark a size down and a shade lighter
- * than the figure it belongs to -- see [Money](../components/Money.tsx) -- so
- * the prefix costs neither the reader's eye nor the line's space.
+ * `$` and `¥` are the dollar and the yuan, because those are the two currencies
+ * this page is read in; every other currency keeps its prefix, which is what
+ * keeps `HK$` and `JP¥` from being read as either of them. Drawn a size down and
+ * a shade lighter than the figure -- see [Money](../components/Money.tsx) -- the
+ * prefix costs neither the reader's eye nor the line's space.
  */
 export function moneyMark(currency: string): string {
   const { symbol } = moneyParts(0, currency, 0)

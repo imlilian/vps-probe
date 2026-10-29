@@ -43,10 +43,9 @@ export function priceParts(node: Node): { mark: string; value: string; suffix: s
  * sentence in a card and in a row.
  *
  * The price is set a size above the rest of the line. Ten pixels was small
- * enough that the mark -- now the locale's `US$` rather than a bare `$` -- could
- * not be drawn a step down from the figure without disappearing; at fourteen
- * and sixteen the two read as a unit and a number, and the count beside them
- * stays where it was.
+ * enough that the mark -- drawn a step down and a shade lighter -- could not be
+ * read at all; at fourteen and sixteen the two read as a unit and a number, and
+ * the count beside them stays where it was.
  */
 export function Billing({ node, className, size = "sm" }: {
   node: Node

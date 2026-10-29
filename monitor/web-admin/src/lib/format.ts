@@ -34,26 +34,73 @@ export const FOREVER = "∞"
 const MONEY = new Map<string, Intl.NumberFormat>()
 
 /**
- * A price as zh-CN writes it: ¥12.00, US$12.00, HK$12.00, JP¥1,200, and the code
- * ahead of the amount where the locale has no symbol, as in SGD 12.00. The
- * locale is fixed so the figure does not vary with the browser's language, and
- * so JPY reads JP¥, apart from CNY. Fractions stop at two places, the precision
- * the price is entered in, not at the currency's minor unit: rounding to whole
- * yen would show a price of 0.4 as JP¥0. A formatter costs about 100 µs to
- * build, hence one per currency.
+ * The two currencies this panel is read in, whose mark is the symbol alone.
+ *
+ * Kept in step with the public page, which draws the same rows with the same
+ * marks: the dollar and the yuan are the two a Chinese-language page is written
+ * in, and every other currency keeps its region prefix, which is what tells
+ * `HK$` and `JP¥` apart from them.
+ */
+const BARE_MARK = new Set(["USD", "CNY"])
+
+/** A region prefix in front of a symbol: `US$`, `HK$`, `JP¥`, `R$`. */
+const PREFIXED_MARK = /^[A-Z]{2,3}([$¥€£₩₹])$/
+
+/**
+ * A price as one string: $12.00, ¥12.00, HK$12.00, JP¥1,200, and the code ahead
+ * of the amount where the locale has no symbol, as in SGD 12.00. Assembled from
+ * [moneyParts], so the string is exactly the mark and the figure the table draws
+ * apart.
  */
 export function money(amount: number, currency: string): string {
+  const { symbol, value } = moneyParts(amount, currency)
+  return `${symbol}${value}`.trim()
+}
+
+/**
+ * The same price in two pieces, for a figure that sets its mark as a unit.
+ *
+ * Kept in step with the public page's copy of this function, prefix rule
+ * included: a price in the table and the same price on the page must read the
+ * same way. `symbol` is empty for a code Intl refuses, which leaves the letters
+ * of the code on the figure.
+ */
+export function moneyParts(amount: number, currency: string): { symbol: string; value: string } {
+  const format = moneyFormat(currency)
+  if (!format) return { symbol: "", value: `${currency} ${amount.toFixed(2)}`.trim() }
+  let symbol = ""
+  let value = ""
+  for (const part of format.formatToParts(amount)) {
+    if (part.type === "currency") symbol += part.value
+    else value += part.value
+  }
+  return { symbol: bare(currency, symbol), value: value.trim() }
+}
+
+/** The mark a price is drawn with, prefix rule included. */
+export function moneyMark(currency: string): string {
+  const { symbol } = moneyParts(0, currency)
+  return symbol || currency
+}
+
+/** The mark without its region prefix, for the currencies read bare. */
+function bare(currency: string, symbol: string): string {
+  if (!BARE_MARK.has(currency.toUpperCase())) return symbol
+  return PREFIXED_MARK.exec(symbol)?.[1] ?? symbol
+}
+
+/** One formatter per currency: it costs about 100 µs to build. */
+function moneyFormat(currency: string): Intl.NumberFormat | null {
+  const cached = MONEY.get(currency)
+  if (cached) return cached
   try {
-    let format = MONEY.get(currency)
-    if (!format) {
-      format = new Intl.NumberFormat("zh-CN", { style: "currency", currency, maximumFractionDigits: 2 })
-      MONEY.set(currency, format)
-    }
-    return format.format(amount)
+    const format = new Intl.NumberFormat("zh-CN", { style: "currency", currency, maximumFractionDigits: 2 })
+    MONEY.set(currency, format)
+    return format
   } catch {
     // Intl throws on anything but three letters, which hubs before 1.3.1 stored
     // unchecked when written through the API.
-    return `${currency} ${amount.toFixed(2)}`.trim()
+    return null
   }
 }
 

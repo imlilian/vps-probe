@@ -200,27 +200,29 @@ eq(
   "价格后面的周期",
 )
 
-// money: zh-CN whatever the browser's language, so US$ stands apart from HK$
-// and JP¥ from ¥; a code Intl refuses is shown rather than thrown.
+// money: zh-CN whatever the browser's language. The dollar and the yuan -- the
+// two this page is read in -- take the bare symbol; every other currency keeps
+// the region prefix that tells it apart from them; a code Intl refuses is shown
+// rather than thrown.
 eq(money(100, "CNY"), "¥100.00", "人民币")
-eq(money(100, "USD"), "US$100.00", "美元与港币等其它元区分开")
-eq(money(100, "HKD"), "HK$100.00", "港币同样符号在前")
+eq(money(100, "USD"), "$100.00", "美元就用美元符号，跟人民币一样不加地区前缀")
+eq(money(100, "HKD"), "HK$100.00", "港币留 HK，才不会跟美元混")
 eq(money(1200, "JPY"), "JP¥1,200", "日元不带小数，与人民币分开")
 eq(money(1200.5, "JPY"), "JP¥1,200.5", "日元填了小数照实显示，不取整")
 eq(money(100, "港币"), "港币 100.00", "旧 hub 存下的非法代码不抛错")
 
-// 符号连同前缀一起给：¥ 在人民币和日元之间是同一个字，$ 也同时是美元、港币和新台币
+// 符号：中美两个主要货币只留符号，其余保留地区前缀，¥ 与 JP¥、$ 与 HK$/NT$ 才分得开
 eq(
-  ["CNY", "JPY", "USD", "HKD", "TWD", "GBP", "EUR", "SGD"].map(moneyMark),
-  ["¥", "JP¥", "US$", "HK$", "NT$", "£", "€", "SGD"],
-  "货币符号保留地区前缀",
+  ["CNY", "USD", "JPY", "HKD", "TWD", "GBP", "EUR", "SGD"].map(moneyMark),
+  ["¥", "$", "JP¥", "HK$", "NT$", "£", "€", "SGD"],
+  "主要货币用符号，其余保留地区前缀",
 )
 eq(moneyMark("港币"), "港币", "拆不开的代码就是它自己")
 
 // 拆开是为了把符号排成单位：符号跟着数字走，不跟着数字一样大
 eq(moneyParts(795, "CNY", 0), { symbol: "¥", value: "795" }, "人民币拆出符号")
 eq(moneyParts(1200, "JPY"), { symbol: "JP¥", value: "1,200" }, "日元符号连同 JP 一起拆出")
-eq(moneyParts(12.5, "USD"), { symbol: "US$", value: "12.50" }, "美元符号是三位")
+eq(moneyParts(12.5, "USD"), { symbol: "$", value: "12.50" }, "美元只留符号")
 eq(moneyParts(100, "港币"), { symbol: "", value: "港币 100.00" }, "拆不开的代码留在数字上")
 // 拆分后拼回去必须还是那一串：格式化口径没有跟着改
 eq(["CNY", "USD", "JPY"].map((c) => {

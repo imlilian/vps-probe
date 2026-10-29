@@ -13,6 +13,7 @@
  * first screen, not the catalogue; a menu long enough that finding `GBP` means
  * scrolling is worse than the bare field it replaced.
  */
+import { moneyMark } from "./format.ts"
 
 const NAMES = new Intl.DisplayNames(["zh-CN"], { type: "currency" })
 
@@ -24,7 +25,13 @@ export const COMMON = [
 
 export type Currency = { code: string; name: string; mark: string }
 
-/** The Chinese name and the mark of a code, either of which may be the code. */
+/**
+ * The Chinese name and the mark of a code, either of which may be the code.
+ *
+ * The mark comes from `moneyMark`, the same function the table and the public
+ * page draw prices with: `$`, `¥`, `HK$`, `£`. A picker that offered `US$` for
+ * the currency the page prints as `$` would be a second spelling of one fact.
+ */
 export function currencyLabel(code: string): { name: string; mark: string } {
   let name = code
   try {
@@ -34,18 +41,7 @@ export function currencyLabel(code: string): { name: string; mark: string } {
     // DisplayNames throws on anything but three letters, which the hub refuses
     // with its own message.
   }
-  let mark = code
-  try {
-    mark =
-      new Intl.NumberFormat("zh-CN", { style: "currency", currency: code })
-        .formatToParts(0)
-        .filter((part) => part.type === "currency")
-        .map((part) => part.value)
-        .join("") || code
-  } catch {
-    // Same shape rule: an unformattable code stands as itself.
-  }
-  return { name, mark }
+  return { name, mark: moneyMark(code) }
 }
 
 /** Every code this browser can offer, common ones first. */
