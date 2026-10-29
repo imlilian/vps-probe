@@ -78,7 +78,11 @@ export type Node = {
   /** Panel only. What each family shows with its pin cleared; empty for none. */
   ipv4_auto?: string
   ipv6_auto?: string
-  /** Panel only. The agent's reporting interval in seconds, read from its reports; null until two have arrived. */
+  /**
+   * Panel only. The interval the agent reports at, as its reports state it; null
+   * from an agent that states none, and from a hub that predates the statement
+   * until two reports have let it infer the spacing instead.
+   */
   interval?: number | null
   remark?: string
   /** Set by hand and public. Absent from a hub predating it. */

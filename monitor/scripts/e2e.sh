@@ -79,7 +79,9 @@ ID=$(curl -fsS -H "Cookie: $COOKIE" "$URL/api/nodes" | jq -r '.nodes[0].id // em
 TOKEN=$(curl -fsS -H "Cookie: $COOKIE" "$URL/api/nodes/$ID/token" | jq -r '.token // empty')
 [ -n "$TOKEN" ] || fail "the panel shows no token for the new node"
 
-"$AGENT" --server "$URL" --token "$TOKEN" --interval 1 >"$DIR/agent.log" 2>&1 &
+# Three seconds rather than the default, so the figure checked below is one the
+# panel could only be printing as read: nothing here would make it fall back to 1.
+"$AGENT" --server "$URL" --token "$TOKEN" --interval 3 >"$DIR/agent.log" 2>&1 &
 AGENT_PID=$!
 wait_for "the node to report" reported
 # The panel's frame is cached for up to 1.9 s, and nothing an agent does renews
@@ -95,12 +97,19 @@ echo "$ADMIN" | jq -e '.nodes[0] | .remark == "e2e-remark" and (.hostname // "")
 	>/dev/null || fail "the panel's view lacks the private fields: $ADMIN"
 echo "$ADMIN" | jq -e --arg t "$TOKEN" 'any(.. | strings; contains($t)) | not' >/dev/null ||
 	fail "the node list carries the token beside what agents report: $ADMIN"
+# What the install dialog offers as the interval a reinstall would keep: the
+# agent's own word, and the panel's alone -- a machine's reporting pace is not
+# something a visitor is shown.
+echo "$ADMIN" | jq -e '.nodes[0].interval == 3' >/dev/null ||
+	fail "the panel does not carry the interval the agent runs at: $ADMIN"
+echo "$PUBLIC" | jq -e '.nodes[0] | has("interval") | not' >/dev/null ||
+	fail "the public view discloses the reporting interval: $PUBLIC"
 
 # No address, hostname, note or token reaches a visitor, neither under its own
 # key nor as a value anywhere else in the response.
 LEAKED=$(jq -nc --argjson a "$ADMIN" --argjson p "$PUBLIC" --arg t "$TOKEN" '
 	[$p.nodes[0] | keys[] | select(IN("ip", "ipv4", "ipv6", "ipv4_pin", "ipv6_pin", "ipv4_auto", "ipv6_auto", "addresses", "hostname",
-		"remark", "token"))]
+		"remark", "token", "interval"))]
 	+ ([$p | .. | strings] as $shown
 		| [($a.nodes[0] | .ip, .ipv4, .ipv6, .hostname, .remark), $t | select(. != "" and IN($shown[]))])')
 [ "$LEAKED" = "[]" ] || fail "the public view discloses $LEAKED: $PUBLIC"

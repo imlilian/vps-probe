@@ -65,6 +65,8 @@ probe-agent --server https://your-hub --token <token>
 `net_rx_total` / `net_tx_total` 为所计网卡的内核 lifetime 计数器之和，原样上报；`boot_id` 取自
 `/proc/sys/kernel/random/boot_id`，后接 `/` 与所计网卡集合的摘要，标明这两个读数在哪段区间内可以相减，
 是 hub 判定计数器重新开始的唯一依据，**不要删**。`iface` 回报当前的 `--iface`，供面板显示与预填。
+`interval` 同样回报当前的 `--interval`：hub 只能从报告到达的间隔去猜，机器一忙就会猜成另一秒，
+而面板要按它回显安装命令。它由 `main.rs` 的 `report_message` 加进报告，不在 `Metrics` 里。
 
 连接 hub 时逐个尝试解析出的地址，除最后一个外每个限 5 秒。网卡上只有内网 IPv4（NAT）时先连 hub 的
 IPv4：NAT 的公网地址不在网卡上，hub 只有看到一条 IPv4 连接才知道它。

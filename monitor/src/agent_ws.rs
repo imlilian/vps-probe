@@ -102,6 +102,10 @@ pub struct Agent {
     /// When this session's first and latest reports arrived, and how many came
     /// after the first. See [`Agent::interval`].
     reports: Option<(Instant, Instant, u32)>,
+    /// The `--interval` the agent states in its reports. `None` from an agent
+    /// released before it stated one, which leaves [`Agent::interval`] to the
+    /// spacing estimate.
+    stated_interval: Option<u64>,
 }
 
 impl Agent {
@@ -115,18 +119,37 @@ impl Agent {
             mark: None,
             minute: Minute::default(),
             reports: None,
+            stated_interval: None,
         }
     }
 
-    /// The interval the agent reports at, in whole seconds: the mean spacing of
-    /// this session's reports, `None` before the second. The agent does not
-    /// state its own, and a reinstall keeps it unless told otherwise, so the
-    /// install dialog shows this as what it would keep.
+    /// The interval the agent reports at, in whole seconds. A reinstall keeps it
+    /// unless told otherwise, so the install dialog shows this as what it would
+    /// keep.
+    ///
+    /// The agent states its own, and that is the answer: known from the first
+    /// report, and right where the fallback is not. The fallback is the mean
+    /// spacing of this session's reports, `None` before the second, and a report
+    /// held up on the way or bunched with its neighbour moves that mean to
+    /// another second -- an agent at 3 s reads as 2 or 4 until the session has
+    /// run long enough to average out. Only an agent from before the statement
+    /// arrived needs it.
     pub fn interval(&self) -> Option<u64> {
+        if self.stated_interval.is_some() {
+            return self.stated_interval;
+        }
         let (first, last, spacings) = self.reports?;
         (spacings > 0)
             .then(|| (last.duration_since(first).as_secs_f64() / f64::from(spacings)).round() as u64)
     }
+}
+
+/// The interval an agent states in a report, where it states one. Bounded to
+/// what `--interval` itself admits, so a mangled figure leaves the panel with
+/// the spacing estimate rather than offering a reinstall at a value both the
+/// agent and `install.sh` would refuse.
+fn stated_interval(metrics: &serde_json::Value) -> Option<u64> {
+    metrics.get("interval").and_then(serde_json::Value::as_u64).filter(|n| (1..=3600).contains(n))
 }
 
 /// Where a history row's network rate starts: the kernel's counters as a report
@@ -975,6 +998,10 @@ fn report(app: &App, node_id: i64, metrics: serde_json::Value, arrival: Arrival)
     // History holds one row per minute; the live view receives every report.
     let store = *entry.last_minute.get_or_insert(minute) != minute;
     entry.metrics = metrics.clone();
+    // Kept where a report omits it: an agent that restarts onto an older binary
+    // mid-session would otherwise drop the panel back to the spacing estimate,
+    // and the last statement was right.
+    entry.stated_interval = stated_interval(&metrics).or(entry.stated_interval);
     entry.last_seen = arrival.at.timestamp();
     entry.reports = Some(match entry.reports {
         Some((first, _, n)) => (first, arrival.tick, n + 1),
@@ -1355,6 +1382,49 @@ mod tests {
             dispatch(&app, id, "ip", &report, &mut session, at_ms(ms)).unwrap();
         }
         assert_eq!(interval(&app), Some(5), "a report held up for 2.9 s does not make it 8");
+    }
+
+    /// An agent that states the interval it runs at is believed over the spacing
+    /// of its arrivals: at once, where the spacing has said nothing yet, and
+    /// over the whole session, where a bunched or delayed report would round it
+    /// to another second and the panel would offer a reinstall at that figure.
+    #[test]
+    fn a_stated_interval_outranks_the_spacing_of_arrivals() {
+        let app = app();
+        let (id, _held) = connect(&app);
+        let mut session = Session::default();
+        let interval = |app: &App| app.agents.read().unwrap()[&id].interval();
+        let stating = |stated: serde_json::Value| {
+            json!({"jsonrpc": "2.0", "method": "report",
+                   "params": {"boot_id": "boot-a", "net_rx_total": 0, "net_tx_total": 0,
+                              "cpu": 1.0, "interval": stated}})
+            .to_string()
+        };
+
+        assert_eq!(interval(&app), None, "nothing known before a report");
+        dispatch(&app, id, "ip", &stating(json!(3)), &mut session, at_ms(0)).unwrap();
+        assert_eq!(interval(&app), Some(3), "stated by the first report, spacing and all");
+
+        // Reports bunched to a mean of 2 s, as a loaded machine's arrive. The
+        // statement holds: this is the figure the machine was installed with.
+        for ms in [2_000, 4_000, 6_000] {
+            dispatch(&app, id, "ip", &stating(json!(3)), &mut session, at_ms(ms)).unwrap();
+        }
+        assert_eq!(interval(&app), Some(3), "not the 2 s the arrivals average to");
+
+        // A report that omits it keeps the last statement rather than falling
+        // back to that average.
+        let silent = json!({"jsonrpc": "2.0", "method": "report",
+                            "params": {"boot_id": "boot-a", "net_rx_total": 0, "net_tx_total": 0,
+                                       "cpu": 1.0}})
+        .to_string();
+        dispatch(&app, id, "ip", &silent, &mut session, at_ms(8_000)).unwrap();
+        assert_eq!(interval(&app), Some(3));
+
+        // Outside what --interval admits, a figure is no statement at all: it
+        // would tell the panel to reinstall at something install.sh refuses.
+        dispatch(&app, id, "ip", &stating(json!(0)), &mut session, at_ms(10_000)).unwrap();
+        assert_eq!(interval(&app), Some(3), "zero is refused, the last good statement stands");
     }
 
     /// A history row describes the minute preceding it rather than the instant it

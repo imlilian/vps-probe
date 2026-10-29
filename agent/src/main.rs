@@ -144,6 +144,22 @@ fn notify(method: &str, params: serde_json::Value) -> Message {
     )
 }
 
+/// A report as the hub receives it: the metrics, plus the `--interval` this
+/// agent runs at.
+///
+/// The hub cannot work the interval out for itself. The spacing of arrivals
+/// from a busy machine averages to a figure that rounds to another second, and
+/// the panel shows that figure as what a reinstall would keep, so an agent at
+/// three seconds would be reinstalled at two or four. `iface` rides along in
+/// [`collect::Metrics`] for the same reason: what the machine was installed with
+/// is known here and nowhere else.
+fn report_message(mut params: serde_json::Value, interval: u64) -> Message {
+    if let Some(obj) = params.as_object_mut() {
+        obj.insert("interval".into(), interval.into());
+    }
+    notify("report", params)
+}
+
 /// Writes under a deadline drawn from the remaining silence budget.
 ///
 /// Reads and writes share one `select!` loop, so a socket that never drains
@@ -360,8 +376,8 @@ async fn session(
     let result = loop {
         tokio::select! {
             _ = ticker.tick() => {
-                let m = serde_json::to_value(collector.collect())?;
-                if let Err(e) = send(&mut ws, notify("report", m), remaining(last_frame)).await { break Err(e); }
+                let m = report_message(serde_json::to_value(collector.collect())?, interval);
+                if let Err(e) = send(&mut ws, m, remaining(last_frame)).await { break Err(e); }
             }
             _ = recheck.tick() => {
                 let fresh = collector.facts();
@@ -937,6 +953,19 @@ mod tests {
                 "{spent}s in, the budget must not push the deadline out"
             );
         }
+    }
+
+    #[test]
+    fn a_report_states_the_interval_it_runs_at() {
+        // The hub has no other way to know: it can only watch the spacing of
+        // arrivals, which a busy machine drags to another second.
+        let Message::Text(text) = report_message(serde_json::json!({"cpu": 12.5}), 5) else {
+            panic!("a report is a text frame");
+        };
+        let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(frame["method"], "report");
+        assert_eq!(frame["params"]["interval"], 5);
+        assert_eq!(frame["params"]["cpu"], 12.5, "the metrics it carries are untouched");
     }
 
     #[test]
