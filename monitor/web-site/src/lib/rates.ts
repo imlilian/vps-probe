@@ -101,11 +101,20 @@ export function readRates(body: unknown): Table | null {
   const fields = body as Record<string, unknown>
   const usdPer = fields.usd_per
   if (!usdPer || typeof usdPer !== "object") return null
+  // Held to the shape the hub promises to serve, and to nothing more: three
+  // letters per code, a positive finite number for a rate, and a bounded count.
+  // The hub checks its source the same way, but this end is what turns an answer
+  // into divisions, and an infinity here would print as `∞` on a price.
   const table: Record<string, number> = {}
-  for (const [code, value] of Object.entries(usdPer as Record<string, unknown>)) {
-    if (typeof value === "number" && value > 0 && code.length === 3) table[code.toUpperCase()] = value
+  for (const [code, value] of Object.entries(usdPer as Record<string, unknown>).slice(0, LIMIT)) {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0 && /^[A-Za-z]{3}$/.test(code)) {
+      table[code.toUpperCase()] = value
+    }
   }
   if (!Object.keys(table).length) return null
-  const date = typeof fields.date === "string" && fields.date ? fields.date : RATES_AS_OF
+  const date = typeof fields.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(fields.date) ? fields.date : RATES_AS_OF
   return { date, usdPer: table }
 }
+
+/** How many currencies an answer may carry: the hub's own ceiling, mirrored. */
+const LIMIT = 400

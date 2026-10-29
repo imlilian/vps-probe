@@ -42,6 +42,12 @@ console.log("an unknown code is refused, not guessed")
   assert.equal(readRates(null), null, "不是对象也不认")
   assert.equal(readRates({ date: "2026-10-28", usd_per: {} }), null, "空表等于没表")
   assert.equal(readRates({ usd_per: { USD: 1 } })?.date, RATES_AS_OF, "没给日期就用内嵌表的日期")
+  // 形状不对的一律丢掉：非三位字母的代码、非正数、非有限数，以及日期不是 YYYY-MM-DD
+  const odd = readRates({
+    date: "2026-10-28T00:00:00Z",
+    usd_per: { USD: 1, gbp: 1.3, USDT: 1, "港币": 1, JPY: Infinity, KRW: -1, SEK: null },
+  })
+  assert.deepEqual(odd, { date: RATES_AS_OF, usdPer: { USD: 1, GBP: 1.3 } }, "形状不对的汇率不进门")
   // Nothing has been published, so the estimate still quotes the baked table's
   // day: a hub that has not fetched must not claim today's rates.
   assert.equal(ratesAsOf(), RATES_AS_OF)
