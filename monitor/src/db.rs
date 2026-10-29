@@ -1069,6 +1069,9 @@ impl Db {
     /// Stores the GitHub allow list and drops the bindings of the logins it no
     /// longer names, both or neither: a removal stored without its prune would
     /// leave the old account bound when the name is added back.
+    ///
+    /// `set_oidc_allowed` below repeats this shape over the OIDC keys rather than
+    /// sharing it; a change to one belongs in both.
     pub fn set_github_allowed(&self, list: &str) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -1109,6 +1112,11 @@ impl Db {
     /// longer lists, both or neither. The names are the IdP's, so what a removal
     /// leaves behind is a binding to a `sub` that a re-created user does not
     /// carry: an entry kept here would refuse the new account for good.
+    ///
+    /// Written out rather than shared with `set_github_allowed` above, which is
+    /// the same shape over different keys: the two are deliberately separate so
+    /// that neither trust domain's rule can be changed by editing the other's.
+    /// A change here belongs in both.
     pub fn set_oidc_allowed(&self, list: &str) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -1123,6 +1131,9 @@ impl Db {
     /// when the allow list no longer names it. Read under the writer lock again:
     /// a save that removed the name during the token exchange would otherwise be
     /// followed by a binding the removal was meant to clear.
+    ///
+    /// `bind_github` above is the counterpart; see the note there and on
+    /// `set_oidc_allowed` about why the two are not one function.
     pub fn bind_oidc(&self, name: &str, sub: &str) -> Result<Option<String>> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;

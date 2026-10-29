@@ -1868,7 +1868,18 @@ pub async fn db_restore(
                 Ok(cookie) => cookie,
                 Err(e) => return fail(e),
             };
-            with_cookies(Json(json!({"ok": true})), [cookie])
+            // A backup can carry a `site_url` into a hub that is being read over
+            // plain http, which is the one write `save_settings` refuses to make:
+            // every cookie from then on is `Secure`, and the browser reading this
+            // page drops it. The restore stands -- the file is the operator's own
+            // -- so what is left is to name the cause, since the symptom ("the
+            // password is right and I am still not signed in") points nowhere
+            // near it. Answered as a field rather than a refusal because the
+            // database has already been replaced by the time this runs.
+            let warning = (!app.base_url().is_empty() && !crate::request_is_https(&headers)).then_some(
+                "恢复成功了，但备份里的站点 URL 是 https 而这次恢复走的是 http：会话 cookie 因此带上了 Secure，用 http 打开面板会登不进去。改用 https 域名打开面板，或把站点 URL 清空",
+            );
+            with_cookies(Json(json!({"ok": true, "warning": warning})), [cookie])
         }
         Err(e) => fail(e),
     }

@@ -2371,6 +2371,7 @@ function SiteAddressField({
             </span>
             <Input
               autoFocus
+              aria-label="站点 URL"
               className="rounded-none border-0 focus-visible:ring-0"
               value={draft}
               placeholder="hub.example.com"
@@ -3224,7 +3225,24 @@ function Data() {
     setSent(0)
     abort.current = new AbortController()
     try {
-      await upload("/db/restore", file, setSent, abort.current.signal, password)
+      const result = await upload<{ ok: boolean; warning?: string | null }>(
+        "/db/restore",
+        file,
+        setSent,
+        abort.current.signal,
+        password,
+      )
+      // A backup can bring back an https 站点 URL while this page is read over
+      // http. The session cookie is then `Secure`, so the reload below would drop
+      // it and land on the sign-in page with no explanation -- the warning stays
+      // on screen instead, and the reader decides when to reload.
+      if (result?.warning) {
+        toast.error(result.warning, { duration: 20000 })
+        setBusy("")
+        setPending(null)
+        setPassword("")
+        return
+      }
       toast.success("已恢复，正在重新加载")
       // Every node, setting and session on the page came from the database just
       // replaced.

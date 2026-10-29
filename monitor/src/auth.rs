@@ -376,6 +376,19 @@ fn clear_state(app: &App, headers: &HeaderMap) -> String {
 const NOT_ADDRESSED: &str = "OIDC 登录需要 hub 知道自己的对外地址，且必须是 https：\
      用 --site https://你的域名 启动，或在面板「设置」里填站点 URL";
 
+/// The `redirect_uri` both halves of the flow must carry.
+///
+/// One function rather than the same `format!` written twice: the authorize
+/// request and the token exchange must repeat this value verbatim (RFC 6749
+/// §4.1.3), so two spellings of it would be two things to keep in step. It is
+/// read from [`App::base_url`] at each call, which is what lets an operator
+/// change the address without a restart; the window that opens is a sign-in
+/// started before the change and finished after it, which the provider refuses
+/// as a mismatched `redirect_uri` -- the flow restarts, nothing is left behind.
+fn oidc_redirect(app: &App) -> String {
+    format!("{}/api/auth/oidc/callback", app.base_url())
+}
+
 /// The three endpoints of the provider, plus the issuer it claims. An id_token
 /// is not verified (see [`oidc_login`]), so no JWKS is kept; the claimed issuer
 /// is kept only to be compared with the one that was asked for.
@@ -416,6 +429,32 @@ fn parse_discovery(body: &str) -> Result<Discovery> {
     })
 }
 
+/// Whether two spellings name one issuer, as far as the comparison in
+/// [`check_discovery`] is concerned.
+///
+/// The comparison is on the URL rather than on the text, so the spellings that
+/// name one address agree: a trailing slash (Authentik writes one), the case of
+/// the scheme and host, and a default port written out (`https://host` and
+/// `https://host:443`). A path is compared as it stands, since a tenant path is
+/// exactly what this check exists to catch. Anything that does not parse falls
+/// back to the text rule -- the setting has already been held to
+/// `api::issuer_url`, so this is only ever reached by a document's own claim.
+fn same_issuer(a: &str, b: &str) -> bool {
+    fn normal(value: &str) -> Option<(String, String, Option<u16>, String)> {
+        let url = reqwest::Url::parse(value.trim()).ok()?;
+        Some((
+            url.scheme().to_ascii_lowercase(),
+            url.host_str()?.to_ascii_lowercase(),
+            url.port_or_known_default(),
+            url.path().trim_end_matches('/').to_owned(),
+        ))
+    }
+    match (normal(a), normal(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => a.trim().trim_end_matches('/').eq_ignore_ascii_case(b.trim().trim_end_matches('/')),
+    }
+}
+
 /// Holds a fetched document to the address it was fetched from, so that the
 /// three endpoints it names are the ones belonging to the issuer that was
 /// configured.
@@ -436,11 +475,13 @@ fn parse_discovery(body: &str) -> Result<Discovery> {
 ///   machine or network.
 fn check_discovery(discovery: &Discovery, issuer: &str) -> Result<()> {
     if let Some(claimed) = discovery.issuer.as_deref() {
-        let (claimed, asked) = (claimed.trim().trim_end_matches('/'), issuer.trim().trim_end_matches('/'));
-        if !claimed.eq_ignore_ascii_case(asked) {
-            return Err(anyhow!("discovery document claims issuer {claimed}, configured {asked}")).context(
+        let shown = |value: &str| value.trim().trim_end_matches('/').to_owned();
+        if !same_issuer(claimed, issuer) {
+            return Err(anyhow!("discovery document claims issuer {claimed}, configured {issuer}")).context(
                 Shown(format!(
-                    "身份系统说自己是 {claimed}，与填写的 {asked} 不一致：Issuer 多半少填或多填了一段路径"
+                    "身份系统说自己是 {}，与填写的 {} 不一致：Issuer 多半少填或多填了一段路径",
+                    shown(claimed),
+                    shown(issuer)
                 )),
             );
         }
@@ -607,14 +648,14 @@ fn oidc_failed(e: reqwest::Error) -> anyhow::Error {
 /// configured one has already met the rule.
 pub async fn oidc_start(State(app): State<crate::Shared>, headers: HeaderMap) -> Response {
     let Some(client_id) = app.db.get("oidc_client_id").filter(|v| !v.is_empty()) else {
-        return answer(StatusCode::PRECONDITION_FAILED, "没有配置 OIDC 登录");
+        return stale_flow_refused(&app, &headers, "没有配置 OIDC 登录");
     };
     // The address is a protocol input here, not a convenience: `redirect_uri`
     // travels in the authorize request and again in the token exchange, so a
     // plaintext one would put the code on the wire. Both halves are refused --
     // the panel does not draw the button, and this route is reachable by hand.
     if !app.oidc_address_ok() {
-        return answer(StatusCode::PRECONDITION_FAILED, NOT_ADDRESSED);
+        return stale_flow_refused(&app, &headers, NOT_ADDRESSED);
     }
     let discovery = match discovery_for(&app).await {
         Ok(discovery) => discovery,
@@ -622,7 +663,7 @@ pub async fn oidc_start(State(app): State<crate::Shared>, headers: HeaderMap) ->
     };
     let state = random_token();
     let verifier = random_token();
-    let redirect = format!("{}/api/auth/oidc/callback", app.base_url());
+    let redirect = oidc_redirect(&app);
     // Some providers publish an authorization endpoint that already carries a
     // query (Azure AD's policy parameter, for one); appending another `?` there
     // would drop their own parameter.
@@ -646,6 +687,16 @@ pub async fn oidc_start(State(app): State<crate::Shared>, headers: HeaderMap) ->
             set_cookie(OIDC_STATE_COOKIE, &state, 600, secure),
             set_cookie(OIDC_VERIFIER_COOKIE, &verifier, 600, secure),
         ],
+    )
+}
+
+/// Nothing to start, and a flow from an earlier click may still be half-open:
+/// its state and verifier cookies are cleared with the refusal, so a route that
+/// is refused now cannot leave a pair behind for a later click to reuse.
+fn stale_flow_refused(app: &App, headers: &HeaderMap, reason: &str) -> Response {
+    with_cookies(
+        answer(StatusCode::PRECONDITION_FAILED, reason),
+        [clear_oidc_state(app, headers), clear_oidc_verifier(app, headers)],
     )
 }
 
@@ -880,12 +931,16 @@ async fn oidc_login(app: &App, code: &str, verifier: &str) -> Result<String> {
     if !app.oidc_address_ok() {
         refuse!("{}", NOT_ADDRESSED);
     }
+    // Outside the gate below: discovery is cached, so it can cost at most one
+    // outbound request a minute per issuer however many callbacks arrive, while
+    // inside the gate a fetch on a cold cache would hold a permit for the whole
+    // 15-second timeout and starve two real sign-ins.
+    let discovery = discovery_for(app).await?;
     // Held across both outbound requests below, which are made on behalf of a
     // caller the hub cannot identify.
     let Ok(_permit) = OIDC_GATE.try_acquire() else {
         refuse!("正在进行的登录太多，稍后再试");
     };
-    let discovery = discovery_for(app).await?;
 
     #[derive(Serialize)]
     struct TokenForm<'a> {
@@ -906,7 +961,7 @@ async fn oidc_login(app: &App, code: &str, verifier: &str) -> Result<String> {
         error: Option<String>,
         error_description: Option<String>,
     }
-    let redirect_uri = format!("{}/api/auth/oidc/callback", app.base_url());
+    let redirect_uri = oidc_redirect(app);
     let secret = app.db.get("oidc_client_secret").filter(|s| !s.is_empty());
     let form = TokenForm {
         grant_type: "authorization_code",
@@ -969,15 +1024,9 @@ async fn oidc_login(app: &App, code: &str, verifier: &str) -> Result<String> {
         .unwrap_or_else(|| sub.clone())
         .trim()
         .to_lowercase();
-    // The bindings are `name:sub` pairs, so a colon in a name would be read as
-    // the start of a `sub`: the account would sign in once and then be refused
-    // as "no longer the account it first signed in as", with nothing in the
-    // message pointing at the colon. Refused here instead, and the allow list
-    // refuses to store one for the same reason.
-    if name.contains(':') {
-        warn!("OIDC user {name:?} has a colon in its name, which the binding list cannot hold");
-        refuse!("身份系统的用户名里有冒号（{}），与绑定记录的分隔符冲突，请改用别的用户名", name);
-    }
+    // Refused before the allow list is consulted, so the reader is told what is
+    // wrong with the account rather than that it is "not on the list".
+    binding_pair(&name, &sub)?;
 
     if !allowed.contains(&name) {
         // The list stays in the log and out of the reason: the reason travels back
@@ -1033,6 +1082,34 @@ pub fn keep_listed(ids: &str, list: &str) -> String {
         .filter(|pair| pair.split_once(':').is_some_and(|(l, _)| allowed.iter().any(|a| a == l)))
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// Whether a name and a `sub` survive being written as one `name:sub` pair of a
+/// comma-separated list, or the reason they do not.
+///
+/// Both separators are load-bearing, so a value carrying one is read as the
+/// other field: a colon in the *name* leaves part of the name where the `sub`
+/// belongs, and a comma in either ends the pair early and pushes the rest of the
+/// value into the next entry. Either way the account signs in once and is then
+/// refused for good as "no longer the account it first signed in as", with
+/// nothing in that message pointing at the character responsible -- so both are
+/// refused here, by name. A colon in the `sub` is harmless: [`bound_id`] splits
+/// on the first one and everything after it stays whole.
+///
+/// The values stay out of the reason, which travels back in a query string, as
+/// everywhere else in this file.
+fn binding_pair(name: &str, sub: &str) -> Result<()> {
+    let (separator, english) = if name.contains(':') {
+        ("冒号", "colon")
+    } else if name.contains(',') || sub.contains(',') {
+        ("逗号", "comma")
+    } else {
+        return Ok(());
+    };
+    warn!("OIDC user {name:?} cannot be held by the binding list: a {english} in its name or sub");
+    Err(anyhow!("binding pair cannot hold name {name:?} with sub {sub:?}")).context(Shown(format!(
+        "身份系统的用户名或用户标识里有{separator}，与绑定记录的分隔符冲突，请改用别的账号"
+    )))
 }
 
 /// Peer address, or the last hop in X-Forwarded-For when the request arrived
@@ -1327,9 +1404,17 @@ mod tests {
             ("https://id.example.com", "https://id.example.com"),
             ("https://id.example.com/", "https://id.example.com"),
             ("https://id.example.com", "https://id.example.com/"),
+            // The same address spelled differently: a default port written out,
+            // and the case of the scheme and host, which are not significant.
+            ("https://id.example.com:443", "https://id.example.com"),
+            ("HTTPS://ID.Example.COM", "https://id.example.com"),
         ] {
             assert_eq!(check(&document(Some(claimed), "https"), asked), None, "{claimed} {asked}");
         }
+
+        // A path is not a spelling difference: it names another tenant.
+        assert!(check(&document(Some("https://id.example.com/tenant"), "https"), "https://id.example.com")
+            .is_some());
 
         // A tenant path missing from what the operator typed: the document names
         // one, and the message has to carry both addresses to be readable.
@@ -1358,6 +1443,31 @@ mod tests {
         // The same endpoints under an http issuer are the loopback case the
         // issuer setting already allows, and are taken as they are.
         assert_eq!(check(&document(Some("http://127.0.0.1:1411"), "http"), "http://127.0.0.1:1411"), None);
+    }
+
+    /// Both characters that separate a `name:sub` pair inside the comma-joined
+    /// list are refused, in either field, before the allow list is consulted.
+    #[test]
+    fn a_binding_pair_refuses_the_characters_that_separate_it() {
+        // The ordinary case, and the one spelling that is harmless: a colon in
+        // the `sub` sits past the first separator, so `bound_id` keeps it whole.
+        assert!(binding_pair("alice", "8f14e45f").is_ok());
+        assert!(binding_pair("alice", "urn:example:alice").is_ok());
+
+        let shown = |name: &str, sub: &str| {
+            binding_pair(name, sub).err().and_then(|e| e.downcast::<Shown>().ok()).map(|s| s.0)
+        };
+        // A colon in the name would be read as the start of the `sub`.
+        assert!(shown("ali:ce", "8f14e45f").expect("a colon is refused").contains("冒号"));
+        // A comma ends the pair wherever it sits, and the rest of the value would
+        // land in the next entry of the list.
+        assert!(shown("ali,ce", "8f14e45f").expect("a comma in a name is refused").contains("逗号"));
+        assert!(shown("alice", "8f,14").expect("a comma in a sub is refused").contains("逗号"));
+        // Neither value is echoed: the reason travels back in a query string.
+        for (name, sub) in [("ali,ce", "8f14e45f"), ("alice", "8f,14"), ("ali:ce", "8f14e45f")] {
+            let reason = shown(name, sub).unwrap();
+            assert!(!reason.contains(name) && !reason.contains(sub), "{reason}");
+        }
     }
 
     /// The three branches of the cache rule, with a clock handed in rather than
@@ -1400,9 +1510,23 @@ mod tests {
     #[tokio::test]
     async fn the_oidc_entry_point_refuses_an_unconfigured_or_addressless_hub() {
         let app = shared();
+        // Every refusal also clears a pair from an earlier click: a state cookie
+        // left behind is a replay window, and this route is anonymous.
+        let cleared = |res: &Response| {
+            let set: Vec<String> = res
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .map(|v| v.to_str().unwrap_or_default().to_owned())
+                .collect();
+            assert_eq!(set.len(), 2, "both cookies must be cleared, got {set:?}");
+            assert!(set.iter().any(|c| c.starts_with(OIDC_STATE_COOKIE) && c.contains("Max-Age=0")));
+            assert!(set.iter().any(|c| c.starts_with(OIDC_VERIFIER_COOKIE) && c.contains("Max-Age=0")));
+        };
         let res = oidc_start(State(app.clone()), HeaderMap::new()).await;
         assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
         assert!(res.headers().get(header::LOCATION).is_none());
+        cleared(&res);
 
         // Configured, but the hub does not know the address the provider would
         // call back on, which the exchange has to repeat verbatim.
@@ -1411,6 +1535,7 @@ mod tests {
         let res = oidc_start(State(app.clone()), HeaderMap::new()).await;
         assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
         assert!(res.headers().get(header::LOCATION).is_none());
+        cleared(&res);
 
         // An address, but a plaintext one: `redirect_uri` is a protocol
         // parameter, so the code would cross the wire in the clear. Refused
@@ -1419,6 +1544,7 @@ mod tests {
         let res = oidc_start(State(app), HeaderMap::new()).await;
         assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
         assert!(res.headers().get(header::LOCATION).is_none());
+        cleared(&res);
     }
 
     /// The exchange repeats the same `redirect_uri`, so the same gate holds in
