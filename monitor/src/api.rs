@@ -2007,11 +2007,9 @@ async fn latest_versions(app: &App) -> crate::Releases {
     match parsed {
         // Any empty field means the file is not saying; the tag is the better
         // answer than a half-filled panel.
-        Some(v) if !v.hub.is_empty() && !v.agent.is_empty() => crate::Releases {
-            read_at: Utc::now().timestamp(),
-            hub: v.hub,
-            agent: v.agent,
-        },
+        Some(v) if !v.hub.is_empty() && !v.agent.is_empty() => {
+            crate::Releases { read_at: Utc::now().timestamp(), hub: v.hub, agent: v.agent }
+        }
         _ => {
             let tag = latest_tag(app, crate::REPO).await;
             crate::Releases {
@@ -2395,9 +2393,9 @@ mod tests {
     #[test]
     fn a_versions_file_parses_and_falls_back_when_it_does_not() {
         let versions = |body: &str| serde_json::from_str::<ReleaseVersions>(body).ok();
-        let read = |body: &str| versions(body)
-            .filter(|v| !v.hub.is_empty() && !v.agent.is_empty())
-            .map(|v| (v.hub, v.agent));
+        let read = |body: &str| {
+            versions(body).filter(|v| !v.hub.is_empty() && !v.agent.is_empty()).map(|v| (v.hub, v.agent))
+        };
         assert_eq!(read(r#"{"hub":"0.3.2","agent":"0.4.0"}"#), Some(("0.3.2".into(), "0.4.0".into())));
         assert_eq!(read(r#"{"hub":"0.3.2","agent":"0.3.1"}"#), Some(("0.3.2".into(), "0.3.1".into())));
         // Not JSON, missing fields, or a field with nothing to say: each is the
