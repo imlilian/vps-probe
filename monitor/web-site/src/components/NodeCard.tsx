@@ -453,7 +453,7 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
               read as a live one. */}
           {node.online && <PingPanel node={node} />}
 
-          <Billing node={node} className="mt-2.5 text-2xs" />
+          <Billing node={node} className="mt-2.5" size="md" />
         </>
       ) : (
         /* Never connected: nothing to plot, so the card stays short rather than

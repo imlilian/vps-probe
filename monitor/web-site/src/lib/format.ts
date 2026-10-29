@@ -173,24 +173,23 @@ export function splitUnit(text: string): [string, string] {
 }
 
 /**
- * The mark alone: `$`, `¥`, `€`, or the three letters of a currency the locale
- * has no symbol for.
+ * The mark: `$`, `¥`, `US$`, `HK$`, `JP¥`, `£`, or the three letters of a
+ * currency the locale has no symbol for.
  *
  * zh-CN spells the dollar `US$` and the yen `JP¥`, which is precise and is two
- * characters more than a column has room for. Inside a card whose every other
- * figure is already bare, `US$6.75` reads as a label plus an amount; `$6.75`
- * reads as a price. Only the two- or three-letter prefix a locale puts in front
- * of a symbol is dropped -- `R$` is one letter and a symbol, and stripping it
- * would turn a real into a dollar.
+ * characters more than the symbol alone. The prefix is kept, because the short
+ * spelling is ambiguous where it matters: `¥` is both the yuan and the yen on a
+ * page that can hold machines billed in either, and `$` covers the dollar, the
+ * Hong Kong dollar and the Taiwan dollar at once. The width that argued for
+ * dropping it is paid for by drawing the mark a size down and a shade lighter
+ * than the figure it belongs to -- see [Money](../components/Money.tsx) -- so
+ * the prefix costs neither the reader's eye nor the line's space.
  */
-const PREFIXED_MARK = /^[A-Z]{2,3}([$¥€£₩₹])$/
-
 export function moneyMark(currency: string): string {
   const { symbol } = moneyParts(0, currency, 0)
-  const mark = PREFIXED_MARK.exec(symbol)?.[1]
   // An unparseable code leaves `symbol` empty, and the letters of the code are
   // then the only thing that says what the number is.
-  return mark ?? (symbol || currency)
+  return symbol || currency
 }
 
 // Hub 1.3.0 and earlier store only these names; later hubs store any other

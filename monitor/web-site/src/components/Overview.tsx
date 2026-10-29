@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/card"
 import { FlowTag } from "@/components/Flow"
 import { Glyph } from "@/components/ui/glyph"
 import { percentText } from "@/components/Meter"
+import { Money } from "@/components/Money"
 import type { Node } from "@/lib/api"
 import { bytes, moneyMark, moneyParts, rate, splitUnit } from "@/lib/format"
 import { RATES_AS_OF } from "@/lib/rates"
@@ -98,16 +99,16 @@ function Note({ children, tone, title }: { children: ReactNode; tone?: string; t
 }
 
 /**
- * The estimate, split: the mark as a unit, the amount as the figure. The mark is
- * the symbol alone -- `US$795` spends two characters of a narrow card saying what
- * `$795` says, and the currency of an estimate is already in the tooltip.
+ * The estimate: a whole-dollar figure under a mark drawn as its unit, which is
+ * what [Money](../Money.tsx) is for. The card is the narrowest place the
+ * component appears, so if the two sizes ever stop reading as one price it will
+ * be here first.
  */
-function Money({ amount, currency }: { amount: number; currency: string }) {
+function Estimate({ amount, currency }: { amount: number; currency: string }) {
   const { value } = moneyParts(amount, currency, 0)
   return (
     <Big>
-      <span className="mr-1 text-base font-medium text-muted-foreground">{moneyMark(currency)}</span>
-      {value}
+      <Money mark={moneyMark(currency)} value={value} />
     </Big>
   )
 }
@@ -242,7 +243,7 @@ export function Overview({ nodes }: { nodes: Node[] }) {
           </Note>
         }
       >
-        {worth ? <Money amount={worth.usd} currency={VALUED_IN} /> : <Big>—</Big>}
+        {worth ? <Estimate amount={worth.usd} currency={VALUED_IN} /> : <Big>—</Big>}
       </Tile>
     </div>
   )

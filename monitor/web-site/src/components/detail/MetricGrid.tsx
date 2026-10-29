@@ -3,20 +3,31 @@ import {
   Gauge, HardDrive, ListOrdered, MemoryStick, Plug, Receipt, Repeat,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
+import type { ReactNode } from "react"
 
 import { priceParts } from "@/components/Billing"
+import { Money } from "@/components/Money"
 import type { Node } from "@/lib/api"
 import {
   detailBytes, detailRate, monthlyCost, remainingTime, remainingValue, trafficPct, trafficUsed, uptimeLong,
 } from "@/lib/detail"
-import { cycle, money, percent, splitUnit } from "@/lib/format"
+import { cycle, moneyMark, moneyParts, percent, splitUnit } from "@/lib/format"
 
 import { MetricTile, type MetricTone } from "./MetricTile"
+
+/**
+ * An amount in the node's own currency, with the mark set as its unit rather
+ * than glued to the figure -- the tile's figure scale is what makes that read as
+ * a price instead of a label.
+ */
+const amount = (value: number, currency: string) => (
+  <Money mark={moneyMark(currency)} value={moneyParts(value, currency).value} />
+)
 
 type Item = {
   key: string
   label: string
-  value: string
+  value: ReactNode
   unit?: string
   icon: LucideIcon
   title?: string
@@ -39,7 +50,6 @@ const pct = (value: number) => value.toFixed(1)
 export function MetricGrid({ node }: { node: Node }) {
   const m = node.metrics
   const price = priceParts(node)
-  const priceValue = price.mark ? `${price.mark}${price.value}` : price.value
   const monthly = monthlyCost(node)
   const left = remainingTime(node)
   const worth = remainingValue(node)
@@ -54,7 +64,7 @@ export function MetricGrid({ node }: { node: Node }) {
     {
       key: "price",
       label: "节点价格",
-      value: priceValue,
+      value: <Money mark={price.mark} value={price.value} />,
       unit: price.suffix ? `/ ${price.suffix}` : undefined,
       icon: Banknote,
       title: cycle(node.billing_cycle),
@@ -62,7 +72,7 @@ export function MetricGrid({ node }: { node: Node }) {
     {
       key: "monthly",
       label: "月均支出",
-      value: monthly === null ? "不适用" : monthly === 0 ? "免费" : money(monthly, node.currency),
+      value: monthly === null ? "不适用" : monthly === 0 ? "免费" : amount(monthly, node.currency),
       unit: monthly === null || monthly === 0 ? undefined : "/ 月",
       icon: Receipt,
       title: "价格 ÷ 计费周期",
@@ -79,7 +89,7 @@ export function MetricGrid({ node }: { node: Node }) {
     {
       key: "value",
       label: "剩余价值",
-      value: node.price <= 0 ? "无" : worth === null ? "—" : money(worth, node.currency),
+      value: node.price <= 0 ? "无" : worth === null ? "—" : amount(worth, node.currency),
       icon: Coins,
       title: "按本币估算，未做汇率换算",
     },

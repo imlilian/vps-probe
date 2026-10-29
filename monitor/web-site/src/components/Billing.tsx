@@ -1,3 +1,4 @@
+import { Money } from "@/components/Money"
 import type { Node } from "@/lib/api"
 import { cycleSuffix, daysUntil, moneyMark, moneyParts } from "@/lib/format"
 import { cn } from "@/lib/utils"
@@ -8,8 +9,8 @@ export function expiryDays(node: Node): number | null {
 }
 
 /**
- * The price in the pieces a tag draws it in: the mark alone (`$`, not the
- * locale's `US$`), the amount, and the period as a suffix to hang off it.
+ * The price in the pieces a tag draws it in: the mark (`US$`, `¥`, `£`), the
+ * amount, and the period as a suffix to hang off it.
  *
  * The one formatting decision lives here, so the card's footer and the detail
  * page's spec cell print the same fact the same way: cents only where there are
@@ -40,8 +41,19 @@ export function priceParts(node: Node): { mark: string; value: string; suffix: s
  *
  * Both densities use it and only the type size differs: a footer is the same
  * sentence in a card and in a row.
+ *
+ * The price is set a size above the rest of the line. Ten pixels was small
+ * enough that the mark -- now the locale's `US$` rather than a bare `$` -- could
+ * not be drawn a step down from the figure without disappearing; at fourteen
+ * and sixteen the two read as a unit and a number, and the count beside them
+ * stays where it was.
  */
-export function Billing({ node, className }: { node: Node; className?: string }) {
+export function Billing({ node, className, size = "sm" }: {
+  node: Node
+  className?: string
+  /** On a card the price may be drawn a step up from the same line in a row. */
+  size?: "sm" | "md"
+}) {
   const days = expiryDays(node)
   const { mark, value, suffix } = priceParts(node)
   const expired = days !== null && days < 0
@@ -51,19 +63,14 @@ export function Billing({ node, className }: { node: Node; className?: string })
     // `justify-end`: the price is right-aligned against the card's edge, which
     // is where a price is looked for and where the two densities line up.
     <div className={cn("tnum flex items-baseline justify-end gap-1.5 whitespace-nowrap", className)}>
-      <span className="font-semibold text-foreground">
-        {mark ? (
-          <>
-            {mark}
-            {value}
-            {suffix && <span className="font-medium text-muted-foreground">/{suffix}</span>}
-          </>
-        ) : (
-          value
-        )}
-      </span>
-      <span aria-hidden className="text-border">·</span>
-      <span className={tone} title={node.expires_at ?? undefined}>
+      <Money
+        mark={mark}
+        value={value}
+        suffix={suffix}
+        className={cn("font-semibold text-foreground", size === "md" ? "text-base" : "text-sm")}
+      />
+      <span aria-hidden className="text-xs text-border">·</span>
+      <span className={cn("text-xs", tone)} title={node.expires_at ?? undefined}>
         {days === null ? "永久" : expired ? `已过期 ${-days} 天` : `剩 ${days} 天`}
       </span>
     </div>

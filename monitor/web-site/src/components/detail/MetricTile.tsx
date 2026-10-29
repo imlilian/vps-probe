@@ -1,4 +1,5 @@
 import type { LucideIcon } from "lucide-react"
+import type { ReactNode } from "react"
 
 import { Glyph } from "@/components/ui/glyph"
 import { cn } from "@/lib/utils"
@@ -24,8 +25,12 @@ const TONE: Record<MetricTone, string> = {
 export function MetricTile({ icon: Icon, label, value, unit, title, tone, valueClass }: {
   icon: LucideIcon
   label: string
-  /** The figure; unit is separate so `30 天 10 小时` and `/ 月` are not split by accident. */
-  value: string
+  /**
+   * The figure; unit is separate so `30 天 10 小时` and `/ 月` are not split by
+   * accident. A price arrives as a node rather than a string: its mark is drawn
+   * a size down by [Money](../Money.tsx), which the tile cannot do to a string.
+   */
+  value: ReactNode
   unit?: string
   title?: string
   tone?: MetricTone

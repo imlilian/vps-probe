@@ -149,7 +149,7 @@ export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
             <Figure text={bytes(monthUsage(node))} size="xs" className="shrink-0" title="本周期已用流量" />
           </div>
 
-          <Billing node={node} className="mt-2 text-2xs" />
+          <Billing node={node} className="mt-2" />
         </>
       ) : (
         <p className="mt-2 text-2xs text-muted-foreground">还没有接入</p>

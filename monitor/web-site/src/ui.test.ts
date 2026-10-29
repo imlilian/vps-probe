@@ -93,12 +93,12 @@ try {
   for (const want of ["香港-CN2-02", "负载", "周期流量", "TCP", "进程", "59.90"]) {
     assert.ok(full.includes(want), `missing ${want}`)
   }
-  // `US$` and `JP¥`: the locale's two extra characters are what a card column
-  // cannot spare, and the mark alone is the price.
-  assert.ok(!full.includes("US$"), "the currency is its symbol alone")
+  // The mark is its own element, a size down and a shade lighter: `¥29.90` in one
+  // weight reads as a label, a mark beside a figure reads as a price.
+  assert.match(full, /text-muted-foreground">¥<\/span><span>59\.90<\/span>/, "the mark stands beside the figure")
   // The foot is a price tag: the period rides on the amount as a suffix, and the
   // count is the only other thing on the line.
-  assert.match(full, />¥(?:<!-- -->)?59\.90<span[^>]*>\/(?:<!-- -->)?月<\/span>/, "the period hangs off the price")
+  assert.match(full, /text-muted-foreground">\/(?:<!-- -->)?月<\/span>/, "the period hangs off the price")
   assert.match(full, /剩 \d+ 天/)
   assert.ok(!full.includes("月付<"), "no billing word in front of the amount")
   // The billed usage leads the quota it is a share of, tagged with the plan's
@@ -132,11 +132,12 @@ try {
   const free = renderToString(createElement(NodeCard, {
     node: { ...fleet[1], price: 0, expires_at: null, expires_in: undefined }, onOpen() {},
   }))
-  assert.match(free, />免费<\/span><span[^>]*>·<\/span><span[^>]*>永久</, "免费 · 永久")
+  assert.match(free, />免费<\/span><\/span><span[^>]*>·<\/span><span[^>]*>永久</, "免费 · 永久")
   const tri = renderToString(createElement(NodeCard, {
     node: { ...fleet[1], price: 168, currency: "USD", billing_cycle: "triennial" }, onOpen() {},
   }))
-  assert.match(tri, />\$(?:<!-- -->)?168<span[^>]*>\/(?:<!-- -->)?3年<\/span>/, "$168/3年")
+  assert.match(tri, />US\$<\/span><span>168<\/span>/, "US$168：前缀保留，符号单独成元素")
+  assert.match(tri, /text-muted-foreground">\/(?:<!-- -->)?3年<\/span>/, "周期挂在金额后面")
   // A card is a div carrying role="button", so the focus ring the browser would
   // draw for a real button is ours to draw: without it, tabbing through the list
   // moves nothing on screen.
@@ -239,9 +240,9 @@ try {
   // keeps "39.6 MB/s" from reading as one word.
   assert.match(overview, /text-2xs font-normal text-muted-foreground">MB\/s</)
   // The estimate is drawn in dollars whatever the machines are billed in, and
-  // the mark is the symbol, not the locale's `US$`.
-  assert.match(overview, /text-muted-foreground">\$<\/span>/)
-  assert.ok(!overview.includes("US$"))
+  // the mark keeps the locale's `US$`: a bare `$` beside a yuan figure reads as
+  // the same money in two spellings.
+  assert.match(overview, /text-muted-foreground">US\$<\/span>/)
   // One height for every tile, whatever it holds: the box is what gives the
   // figure its air, and a traffic card with no note must not be shorter.
   assert.equal(overview.match(/min-h-29/g)?.length, 5)
@@ -373,10 +374,11 @@ try {
   for (const title of ["硬件信息", "系统信息", "存储信息", "网络信息"]) {
     assert.ok(page.includes(`>${title}</h3>`), `missing the ${title} card`)
   }
-  // The figure and its unit are separate tokens now: `59.90` at the figure
-  // weight and `月` a step down, rather than one string split at a space.
-  assert.match(page, /font-semibold tnum break-keep sm:text-2xl">¥59\.90<\/span><span class="[^"]*text-2xs[^"]*">\/ 月<\/span>/, "price and period")
-  assert.ok(page.includes("¥13.98"), "remaining value is prorated in the node's currency")
+  // Three tokens, not one string: the mark as a unit, the figure at the tile's
+  // scale, and the period the price buys trailing behind it.
+  assert.match(page, /text-\[0\.7em\][^"]*">¥<\/span><span>59\.90<\/span>/, "the mark is a unit beside the price")
+  assert.match(page, /[^"]*text-2xs[^"]*">\/ 月<\/span>/, "the period follows the price")
+  assert.ok(page.includes("<span>13.98</span>"), "remaining value is prorated in the node's currency")
   assert.match(page, />7<\/span><span class="[^"]*text-2xs[^"]*">天<\/span>/, "seven days left")
   assert.ok(page.includes("CPU Mark"), "the CPU's public benchmark is one link away")
   assert.ok(page.includes("高端服务器级"), "EPYC 7B13 is an A/consumer-context server tier")
@@ -430,6 +432,28 @@ try {
   }
   assert.equal(load.match(/data-slot="card"/g)?.length, 6, "six load panels")
   console.log("the load grid draws six panels with their legends")
+
+  // A price on its own, in the four spellings the foot of a card can be asked
+  // for. SSR cannot measure the sizes; it can prove that the mark is a separate
+  // element, that the locale's prefix survives, and that a free machine has no
+  // mark at all -- the three things the layout depends on.
+  const { Billing } = await server.ssrLoadModule("/src/components/Billing.tsx")
+  const foot = (over: Record<string, unknown>) =>
+    renderToString(createElement(Billing, {
+      node: { name: "x", billing_cycle: "monthly", expires_in: 212, ...over },
+      size: "md",
+    }))
+  const cny = foot({ price: 29.9, currency: "CNY" })
+  assert.match(cny, />¥<\/span><span>29\.90<\/span>/, "人民币的符号单独一个元素")
+  assert.ok(!cny.includes(">¥29.90<"), "符号不跟数字粘在一起")
+  assert.match(cny, />\/(?:<!-- -->)月<\/span>/, "周期跟在数字后面")
+  const usd = foot({ price: 168, currency: "USD", billing_cycle: "yearly" })
+  assert.match(usd, />US\$<\/span><span>168<\/span>/, "美元的 US$ 前缀保留")
+  assert.match(foot({ price: 12.5, currency: "GBP" }), />£<\/span><span>12\.50<\/span>/, "英镑的符号")
+  const unpriced = foot({ price: 0 })
+  assert.ok(unpriced.includes("<span>免费</span>"), "免费就是免费，没有符号")
+  assert.ok(!unpriced.includes("¥"), "免费不带任何货币符号")
+  console.log("a price keeps its mark as a unit beside the figure")
 
   console.log("the detail page composes header, figures, info, load and latency")
 } finally {

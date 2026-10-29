@@ -4,7 +4,8 @@
 //
 // Nothing imports it, so the bundle never includes it.
 import {
-  axisBytes, axisTop, bytes, cpuName, cycle, cycleSuffix, daysUntil, despike, despikeWindow, money, moneyParts, osName,
+  axisBytes, axisTop, bytes, cpuName, cycle, cycleSuffix, daysUntil, despike, despikeWindow, money, moneyMark,
+  moneyParts, osName,
   pair, percent, loadWindows, pingWindows, quarters, RATE_FLOOR, rateAxis, sinceSeen, splitUnit, tickClock, timeTicks,
   uptime, withGaps,
 } from "./format.ts"
@@ -207,6 +208,14 @@ eq(money(100, "HKD"), "HK$100.00", "港币同样符号在前")
 eq(money(1200, "JPY"), "JP¥1,200", "日元不带小数，与人民币分开")
 eq(money(1200.5, "JPY"), "JP¥1,200.5", "日元填了小数照实显示，不取整")
 eq(money(100, "港币"), "港币 100.00", "旧 hub 存下的非法代码不抛错")
+
+// 符号连同前缀一起给：¥ 在人民币和日元之间是同一个字，$ 也同时是美元、港币和新台币
+eq(
+  ["CNY", "JPY", "USD", "HKD", "TWD", "GBP", "EUR", "SGD"].map(moneyMark),
+  ["¥", "JP¥", "US$", "HK$", "NT$", "£", "€", "SGD"],
+  "货币符号保留地区前缀",
+)
+eq(moneyMark("港币"), "港币", "拆不开的代码就是它自己")
 
 // 拆开是为了把符号排成单位：符号跟着数字走，不跟着数字一样大
 eq(moneyParts(795, "CNY", 0), { symbol: "¥", value: "795" }, "人民币拆出符号")
