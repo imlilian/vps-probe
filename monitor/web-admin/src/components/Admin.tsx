@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useId, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import { ArrowUpCircle, Bell, CalendarClock, Check, ChevronDown, ChevronRight, CircleQuestionMark, Copy, Database, Download, GripVertical, Layers, Lock, Pencil, Plus, Radio, Search, Send, Server, Settings, Shield, Trash2, Upload } from "lucide-react"
 import { toast } from "sonner"
@@ -15,6 +15,7 @@ import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { addressFromOrigin, api, badIfaceName, behind, changes, currentIface, GIB, groupsOf, ifaceChoice, ifaceSpec, inGroup, outdatedAgents, provisioningSite, shortAddress, trafficCorrection, upload, type IfaceChoice, type Node, type PingTask, type Source } from "@/lib/api"
+import { currencyHint, currencyList, searchCurrencies } from "@/lib/currency"
 import { bytes, cycleMonths, FOREVER, money, uptime } from "@/lib/format"
 
 // Counters the panel can correct after migration or an accounting error.
@@ -1056,18 +1057,135 @@ function NodeForm({ node, nodes, onClose, onSaved }: {
   )
 }
 
-const CURRENCY_NAMES = new Intl.DisplayNames(["zh-CN"], { type: "currency" })
+/**
+ * The billing currency: three letters, typed or picked from a list.
+ *
+ * The list is there for discovery, which is what the bare field lacked -- `GBP`
+ * is three letters nobody should have to know by heart, and the tooltip that
+ * explained it gave six examples that read as the whole set. Each row shows the
+ * mark, the Chinese name and the code, so the choice is made by recognition
+ * rather than by recall.
+ *
+ * Typing stays the way in: a code this browser cannot name is still saved as
+ * typed, and the hub refuses a malformed one with its own message. Built on the
+ * pattern of `GroupInput` for that reason, down to the keystrokes.
+ */
+function CurrencyInput({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const id = useId()
+  const [open, setOpen] = useState(false)
+  const [typed, setTyped] = useState(false)
+  const [active, setActive] = useState(0)
+  const input = useRef<HTMLInputElement>(null)
+  const code = value.trim().toUpperCase()
+  // Asked once per mount: building 160 names and formats costs about 20 ms,
+  // which a dialog opened for one node should not pay on every keystroke.
+  const all = useMemo(() => currencyList(), [])
+  const matches = searchCurrencies(all, typed ? value.trim() : "")
+  const shown = open && matches.length > 0
 
-// The name confirms a code the hub can only check the shape of. DisplayNames
-// echoes back a code outside ISO 4217 and throws on anything but three letters,
-// which the hub refuses with its own message.
-function currencyHint(code: string) {
-  try {
-    const name = CURRENCY_NAMES.of(code)
-    return name === code ? "未知代码，照原样显示" : name
-  } catch {
-    return undefined
+  useEffect(() => {
+    if (shown) document.getElementById(`${id}-${active}`)?.scrollIntoView({ block: "nearest" })
+  }, [id, active, shown])
+
+  const show = () => {
+    setTyped(false)
+    setActive(Math.max(0, all.findIndex((c) => c.code === code)))
+    setOpen(true)
   }
+  const pick = (picked: string) => {
+    onChange(picked)
+    setTyped(false)
+    setOpen(false)
+  }
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault()
+      if (!shown) return show()
+      if (!matches.length) return
+      const down = e.key === "ArrowDown"
+      setActive((i) => (i < 0 ? (down ? 0 : matches.length - 1) : (i + (down ? 1 : -1) + matches.length) % matches.length))
+    } else if (e.key === "Enter" && shown) {
+      e.preventDefault()
+      if (matches[active] !== undefined) pick(matches[active].code)
+      else setOpen(false)
+    }
+  }
+
+  return (
+    <Popover open={shown} onOpenChange={setOpen}>
+      <PopoverAnchor asChild>
+        <div className="relative">
+          <Input
+            ref={input}
+            role="combobox"
+            aria-expanded={shown}
+            aria-controls={id}
+            aria-autocomplete="list"
+            aria-activedescendant={shown && matches[active] !== undefined ? `${id}-${active}` : undefined}
+            maxLength={3}
+            autoCapitalize="characters"
+            spellCheck={false}
+            // Uppercased by CSS: rewriting the value mid-composition would break
+            // an input method, and the hub stores it uppercased.
+            className="pr-9 uppercase"
+            value={value}
+            placeholder="USD"
+            onChange={(e) => {
+              onChange(e.target.value)
+              setTyped(true)
+              setActive(0)
+              setOpen(true)
+            }}
+            onClick={show}
+            onKeyDown={onKeyDown}
+          />
+          {/* Not a tab stop, and keeps the focus in the box it opens a list for. */}
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-label="选择货币"
+            className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-muted-foreground"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              if (shown) return setOpen(false)
+              input.current?.focus()
+              show()
+            }}
+          >
+            <ChevronDown className={`size-4 opacity-50 transition-transform ${shown ? "rotate-180" : ""}`} />
+          </button>
+        </div>
+      </PopoverAnchor>
+      <PopoverContent
+        align="start"
+        className="w-(--radix-popover-trigger-width) p-1"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        // The box and its button sit outside the list; pressing them is not a dismissal.
+        onInteractOutside={(e) => input.current?.parentElement?.contains(e.target as Element) && e.preventDefault()}
+        onMouseDown={(e) => e.preventDefault()}
+      >
+        <div role="listbox" id={id} aria-label="货币" className="max-h-64 overflow-y-auto">
+          {matches.map((c, i) => (
+            <div
+              key={c.code}
+              id={`${id}-${i}`}
+              role="option"
+              aria-selected={c.code === code}
+              onMouseEnter={() => setActive(i)}
+              onClick={() => pick(c.code)}
+              className={`relative flex cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm select-none ${i === active ? "bg-accent text-accent-foreground" : ""}`}
+            >
+              <span className="w-9 shrink-0 text-muted-foreground">{c.mark}</span>
+              <span className="truncate">{c.name}</span>
+              <span className="tnum ml-auto shrink-0 text-xs text-muted-foreground">{c.code}</span>
+              {c.code === code && <Check className="absolute right-2 size-4" />}
+            </div>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
 }
 
 function BillingForm({ node, onClose, onSaved }: {
@@ -1136,27 +1254,12 @@ function BillingForm({ node, onClose, onSaved }: {
                 helpWidth="max-w-72"
                 help={
                   <>
-                    <p>填三个字母的货币代码，大小写都行。</p>
-                    <p>
-                      例如：
-                      {["美元 USD", "人民币 CNY", "港币 HKD", "新台币 TWD", "欧元 EUR", "日元 JPY"].map((c, i) => (
-                        <span key={c}>{i > 0 && "、"}<span className="whitespace-nowrap">{c}</span></span>
-                      ))}
-                    </p>
+                    <p>公认的货币代码都行（ISO 4217，三个字母），大小写不限；点右边的箭头可以从列表里挑。</p>
+                    <p>例如人民币 CNY、美元 USD、港币 HKD、新台币 TWD、欧元 EUR、日元 JPY、英镑 GBP。</p>
                   </>
                 }
               >
-                {/* Uppercased by CSS: rewriting the value mid-composition would
-                    break an input method, and the hub stores it uppercased. */}
-                <Input
-                  maxLength={3}
-                  autoCapitalize="characters"
-                  spellCheck={false}
-                  className="uppercase"
-                  value={form.currency}
-                  onChange={(e) => set("currency", e.target.value)}
-                  placeholder="USD"
-                />
+                <CurrencyInput value={form.currency} onChange={(v) => set("currency", v)} />
               </Field>
             </div>
             <div className="grid grid-cols-2 gap-4">
