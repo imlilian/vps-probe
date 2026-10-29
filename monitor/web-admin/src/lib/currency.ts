@@ -77,6 +77,12 @@ export function searchCurrencies(list: Currency[], query: string): Currency[] {
 /**
  * The line under the field: the name of what was typed, which is the only check
  * the panel can make of a code the hub stores by shape.
+ *
+ * It says nothing about whether the public page can convert this currency. That
+ * answer is the union of the hub's fetched table and the one the page was built
+ * with, which the panel does not have; getting it half right would be worse than
+ * leaving it to the page, whose remaining-value card already names how many
+ * machines it counted and how many it could not.
  */
 export function currencyHint(code: string): string {
   const { name } = currencyLabel(code)

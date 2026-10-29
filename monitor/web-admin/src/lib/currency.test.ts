@@ -18,6 +18,9 @@ assert.deepEqual(labels("HKD"), { name: "港元", mark: "HK$" }, "港元同样")
 assert.deepEqual(labels("港币"), { name: "港币", mark: "港币" }, "不是代码就照原样显示")
 assert.equal(currencyHint("GBP"), "英镑", "输入框下面那行是名字")
 assert.equal(currencyHint("港币"), "未知代码，照原样显示", "认不出来就说认不出来")
+// 能不能折算成美元不在这里说：那是 hub 抓来的表与页面内置表的并集，面板不知道，
+// 由公开页的总估价卡片自己交代
+assert.equal(currencyHint("THB"), "泰铢", "没有汇率也不影响名字")
 
 const list = currencyList()
 assert.ok(list.length > 150, `浏览器能给出整份 ISO 4217，拿到 ${list.length}`)

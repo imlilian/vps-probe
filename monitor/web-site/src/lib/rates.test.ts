@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import assert from "node:assert/strict"
 
-import { toUSD } from "./rates.ts"
+import { RATES_AS_OF, readRates, ratesAsOf, toUSD } from "./rates.ts"
 
 // Every currency the billing form is expected to see resolves; a table missing
 // one silently drops those nodes out of the remaining-value total.
@@ -31,3 +31,19 @@ console.log("rates run in the direction the conversion needs")
 assert.equal(toUSD(1, "XYZ"), null)
 assert.equal(toUSD(1, ""), null)
 console.log("an unknown code is refused, not guessed")
+
+// The hub's own table, as `/api/rates` answers it. It replaces the baked one, so
+// a hub that has fetched drives the estimate; the date printed beside the figure
+// is the one that belongs to the table actually used.
+{
+  const table = readRates({ fetched: "2026-10-29", date: "2026-10-28", usd_per: { USD: 1, GBP: 1.33, xyz: 0 } })
+  assert.deepEqual(table, { date: "2026-10-28", usdPer: { USD: 1, GBP: 1.33 } }, "读数：大写代码，非正数丢掉")
+  assert.equal(readRates({}), null, "没抓过的 hub 答 {}，留着内嵌表")
+  assert.equal(readRates(null), null, "不是对象也不认")
+  assert.equal(readRates({ date: "2026-10-28", usd_per: {} }), null, "空表等于没表")
+  assert.equal(readRates({ usd_per: { USD: 1 } })?.date, RATES_AS_OF, "没给日期就用内嵌表的日期")
+  // Nothing has been published, so the estimate still quotes the baked table's
+  // day: a hub that has not fetched must not claim today's rates.
+  assert.equal(ratesAsOf(), RATES_AS_OF)
+  console.log("the hub's table is read whole, and an empty answer leaves the baked one alone")
+}

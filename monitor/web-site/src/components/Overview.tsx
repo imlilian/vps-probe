@@ -8,7 +8,7 @@ import { percentText } from "@/components/Meter"
 import { Money } from "@/components/Money"
 import type { Node } from "@/lib/api"
 import { bytes, moneyMark, moneyParts, rate, splitUnit } from "@/lib/format"
-import { RATES_AS_OF } from "@/lib/rates"
+import { ratesAsOf } from "@/lib/rates"
 import { busiest, due, fleet, live, residual, today, type Due } from "@/lib/stats"
 import { cn } from "@/lib/utils"
 
@@ -236,7 +236,7 @@ export function Overview({ nodes }: { nodes: Node[] }) {
             // other expiry count the line had no room for.
             title={[
               ending.title,
-              worth ? `${worth.counted} 台计入，${worth.left} 台未计入；按 ${RATES_AS_OF} 汇率折成美元` : "没有可估价的机器",
+              worth ? `${worth.counted} 台计入，${worth.left} 台未计入；按 ${ratesAsOf()} 汇率折成美元` : "没有可估价的机器",
             ].filter(Boolean).join(" · ")}
           >
             {ending.text}

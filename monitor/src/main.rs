@@ -30,6 +30,7 @@ mod auth;
 mod db;
 mod frontend;
 mod notify;
+mod rates;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -697,6 +698,7 @@ async fn main() -> Result<()> {
         .route("/api/settings", get(api::settings).put(api::save_settings))
         .route("/api/version", get(api::versions))
         .route("/api/notify/test", post(notify::test))
+        .route("/api/rates", get(rates::public))
         .route("/api/notify/presets", get(notify::presets))
         .route("/api/db", get(api::db_stats))
         .route("/api/db/backup", get(api::db_backup))
@@ -1030,6 +1032,11 @@ async fn housekeeping(app: Shared) {
         }
         if let Err(e) = app.db.expire_sessions() {
             warn!("expiring sessions failed: {e:#}");
+        }
+        // Once a day, off the panel's path: a page keeps working without it, and
+        // the table it replaces is a day old at most.
+        if let Err(e) = rates::refresh_if_due(&app).await {
+            warn!("exchange rates: {e:#}");
         }
         // After the roll-over, so the digest lists dates as they now stand.
         match notify::expiry_digest(&app, Local::now()) {

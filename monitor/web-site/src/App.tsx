@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api, groupsOf, useNodes, type Node } from "@/lib/api"
 import { readDensity, readOrder, writeDensity, writeOrder } from "@/lib/prefs"
+import { useHubRates } from "@/lib/rates"
 import { arrange, type Density, type Order } from "@/lib/sort"
 import { useTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
@@ -52,6 +53,10 @@ function useNodeRoute() {
 }
 
 export default function App() {
+  // The exchange table the summary converts with, asked for here rather than by
+  // the card that prints the figure: the order of the list prices machines
+  // through the same table, so one caller keeps both answers on one day's rates.
+  useHubRates()
   const { mode, choose: chooseTheme } = useTheme()
   const [me, setMe] = useState<Me | null>(null)
   const [meError, setMeError] = useState("")
