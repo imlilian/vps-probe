@@ -1511,13 +1511,20 @@ function RegisterDialog({ site, reg, onClose }: {
 }
 
 // The reporting interval both install dialogs offer, opening on the node's
-// current one where the hub has read it from the reports. `flag` stays
-// undefined until the field is changed, including back to what it opened on.
+// current one where the agent states it. The command then carries what the field
+// shows: reinstalling at the value already in force changes nothing, and a
+// command that reads `--interval 3` beside a field reading 3 is the one a
+// reader can check.
+//
+// An agent released before it stated its interval leaves this unknown, and the
+// field opens empty with the default as its placeholder rather than filled with
+// a figure the machine may not hold. `flag` is then undefined, the command
+// carries no `--interval`, and install.sh keeps whatever the machine has.
 function useIntervalOption(current?: number | null) {
   const [typed, setTyped] = useState<string>()
-  const text = typed ?? String(current ?? 1)
+  const text = typed ?? (current ? String(current) : "")
   const seconds = Math.min(3600, Math.max(1, Math.round(Number(text) || 1)))
-  return { typed: text, setTyped, current, flag: typed === undefined ? undefined : seconds }
+  return { typed: text, setTyped, current, flag: typed === undefined ? (current ?? undefined) : seconds }
 }
 
 function IntervalOption({ option, batch = false }: { option: ReturnType<typeof useIntervalOption>; batch?: boolean }) {
@@ -1526,8 +1533,10 @@ function IntervalOption({ option, batch = false }: { option: ReturnType<typeof u
       title="上报间隔"
       hint={batch ? "1–3600 秒，默认 1 秒。这一批机器都按这个间隔上报，机器多时可以调大" : (
         <>
-          1–3600 秒，默认 1 秒。不改动时沿用机器上原有的间隔
-          {option.current && <span className="mt-0.5 block">当前：{option.current} 秒</span>}
+          1–3600 秒，默认 1 秒
+          {option.current
+            ? <span className="mt-0.5 block">当前：{option.current} 秒</span>
+            : <span className="mt-0.5 block">当前值未知：改这里才会写进命令，否则沿用机器上原有的间隔</span>}
         </>
       )}
     >
@@ -1537,6 +1546,7 @@ function IntervalOption({ option, batch = false }: { option: ReturnType<typeof u
         <Input
           inputMode="numeric"
           value={option.typed}
+          placeholder="1"
           onChange={(e) => option.setTyped(e.target.value.replace(/\D/g, ""))}
           aria-label="上报间隔（秒）"
           className="tnum h-8 w-20 bg-background text-right"
@@ -2342,10 +2352,24 @@ function Ping({ nodes }: { nodes: Node[] }) {
 type Settings = Record<string, string | boolean | number>
 
 // Two pages write settings, and each loads only what it displays.
+//
+// `saved` is what the hub holds, kept for the one question a form cannot answer
+// about itself: whether what it shows is a draft. A card that edits two fields and
+// offers a test needs it, because a test sends the draft and a save is a separate
+// decision -- see `Notify`.
 function useSettings() {
   const [s, setS] = useState<Settings | null>(null)
-  useEffect(() => { api<Settings>("/settings").then(setS).catch(() => {}) }, [])
+  const [saved, setSaved] = useState<Settings | null>(null)
+  useEffect(() => {
+    api<Settings>("/settings")
+      .then((next) => {
+        setS(next)
+        setSaved(next)
+      })
+      .catch(() => {})
+  }, [])
   return {
+    saved,
     s,
     set: (k: string, v: string) => setS((old) => ({ ...(old ?? {}), [k]: v })),
     // Resolves to whether the hub took the patch; a failure is already toasted.
@@ -2373,6 +2397,15 @@ function useSettings() {
           // A password the operator has just chosen stops being a generated one,
           // which is what decides whether the next change asks for it.
           if ("admin_password" in patch) next.password_generated = fresh.password_generated
+          return next
+        })
+        // The same keys, into what the hub is now known to hold. A secret is the
+        // one that cannot come back from there, so the typed value stands in for
+        // it: the field keeps it, and the card is no longer a draft.
+        setSaved((old) => {
+          const next = { ...(old ?? {}) }
+          for (const [key, value] of Object.entries(patch)) next[key] = value in fresh ? fresh[key] : value
+          for (const [key, value] of Object.entries(fresh)) if (key.endsWith("_set")) next[key] = value
           return next
         })
       } catch (e) {
@@ -2820,9 +2853,9 @@ function OfflineNodes({ nodes, refresh }: { nodes: Node[]; refresh: () => void }
 }
 
 function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
-  const { s, set, save } = useSettings()
-  // The channel being tested, or "all": one button per card, and the busy label
-  // belongs to the card that was clicked.
+  const { s, saved, set, save } = useSettings()
+  // The channel being tested: one button per card, and the busy label belongs to
+  // the card that was clicked.
   const [testing, setTesting] = useState<string | null>(null)
   const [presets, setPresets] = useState<Preset[]>([])
   useEffect(() => {
@@ -2835,9 +2868,9 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
   const typed = (...keys: string[]) =>
     Object.fromEntries(keys.filter((k) => typeof s[k] === "string" && s[k] !== "").map((k) => [k, text(k)]))
   const secretHint = (k: string) => (s[`${k}_set`] ? "已设置，留空不变" : "未设置")
-  // What each card's save button sends, so its test button sends the same patch:
-  // the hub reads the stored settings when it sends, and a test of what is still
-  // only in the form would test the previous body.
+  // What each card's save button sends, which is also what its test button sends:
+  // the hub lays the fields a test carries over the stored settings, so the test
+  // exercises the body in the form rather than the one saved last time.
   const telegramPatch = () => ({
     notify_telegram_chat: text("notify_telegram_chat"),
     notify_telegram_text: text("notify_telegram_text"),
@@ -2848,14 +2881,39 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
     ...typed("notify_webhook_url", "notify_webhook_headers"),
   })
 
-  async function test(channel?: "telegram" | "webhook", patch?: Record<string, string>) {
-    setTesting(channel ?? "all")
+  // What a channel needs before a test means anything: Telegram a bot token and a
+  // chat, Webhook a URL. The token and the URL are blank in the form when one is
+  // already stored -- the hub never sends a secret back -- so `_set` counts.
+  const filled = (key: string, stored: string) => text(key).trim() !== "" || !!s[stored]
+  const ready = {
+    telegram: filled("notify_telegram_token", "notify_telegram_token_set") && text("notify_telegram_chat").trim() !== "",
+    webhook: filled("notify_webhook_url", "notify_webhook_url_set"),
+  }
+
+  // Whether this card is only a draft. A secret cannot be compared -- the hub never
+  // sends one back -- so anything typed into one counts as a change.
+  const changed = (keys: string[], secret: string) =>
+    text(secret) !== "" || keys.some((k) => text(k) !== String(saved?.[k] ?? ""))
+  const unsaved = {
+    telegram: changed(["notify_telegram_chat", "notify_telegram_text"], "notify_telegram_token"),
+    webhook: changed(["notify_webhook_body"], "notify_webhook_url") || text("notify_webhook_headers") !== "",
+  }
+
+  // The test sends this card's form, not the saved settings: an operator tuning a
+  // channel gets that channel's own answer before committing it, and a half-typed
+  // one never lands in the settings just to be tried. No save is implied here --
+  // that is the difference between a test and a write.
+  async function test(channel: "telegram" | "webhook", form: Record<string, string>, drafting: boolean) {
+    setTesting(channel)
     try {
-      if (patch && !(await save(patch))) return
-      const { sent } = await api<{ sent: string[] }>(`/notify/test${channel ? `?channel=${channel}` : ""}`, {
+      const { sent } = await api<{ sent: string[] }>(`/notify/test?channel=${channel}`, {
         method: "POST",
+        body: JSON.stringify(form),
       })
-      toast.success(`测试通知已发送：${sent.join("、")}`)
+      // A test that went through on a draft leaves the channel still unconfigured
+      // for the alerts it is meant to carry, so the success says so once, in the
+      // place the panel already speaks.
+      toast.success(`测试通知已发送：${sent.join("、")}${drafting ? "；这一栏的改动还没保存" : ""}`)
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -2865,18 +2923,15 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
 
   return (
     <div className="space-y-4">
-      <Card className="gap-4 p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-medium">通知渠道</h3>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              Telegram 和 Webhook 配了哪个就发哪个，也可以同时用。每个渠道下面的「发送测试」只测那一个，它先保存这一栏的改动再发。离线通知在下方按节点打开；流量和到期提醒对填了额度、到期日的节点生效。
-            </p>
-          </div>
-          <Button size="sm" variant="secondary" disabled={!!testing} onClick={() => test()}>
-            <Send /> {testing === "all" ? "发送中…" : "测试全部渠道"}
-          </Button>
-        </div>
+      {/* One test button per channel, in the card whose fields it sends. A second
+          button here that tested "everything" was the same action without a
+          subject: it had to skip the empty channel, and what it tested was
+          whichever channels happened to be configured a moment ago. */}
+      <Card className="gap-1 p-5">
+        <h3 className="text-sm font-medium">通知渠道</h3>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Telegram 和 Webhook 配了哪个就发哪个，也可以同时用。每个渠道下面的「发送测试」按该栏当前的内容发一条，不需要先保存，也不会把没填完的配置写进去。离线通知在下方按节点打开；流量和到期提醒对填了额度、到期日的节点生效。
+        </p>
       </Card>
 
       <ChannelCard title="Telegram" configured={!!s.notify_telegram_token_set && text("notify_telegram_chat") !== ""}>
@@ -2898,13 +2953,26 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
           <textarea rows={3} className={TEXTAREA} value={text("notify_telegram_text")} onChange={(e) => set("notify_telegram_text", e.target.value)} />
         </Field>
         <TemplatePreview template={text("notify_telegram_text")} site={text("site_name") || "Monitor"} />
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" onClick={() => save(telegramPatch())}>
             保存 Telegram
           </Button>
-          <Button size="sm" variant="secondary" disabled={!!testing} onClick={() => test("telegram", telegramPatch())}>
+          {/* Saved or not, in the one place a reader looks after editing: the test
+              sends the draft either way, and this says which of the two the alerts
+              themselves would use. */}
+          {unsaved.telegram && <span className="text-2xs text-warn">有未保存的改动</span>}
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!!testing || !ready.telegram}
+            title={ready.telegram ? "按这一栏当前的内容发一条测试，不保存设置" : "填好 Bot Token 和 Chat ID 才能测试"}
+            onClick={() => test("telegram", telegramPatch(), unsaved.telegram)}
+          >
             <Send /> {testing === "telegram" ? "发送中…" : "发送测试"}
           </Button>
+          {/* The disabled button cannot be hovered on a touch screen and is skipped
+              by Tab, so the reason it is off is written where the button is. */}
+          {!ready.telegram && <span className="text-2xs text-muted-foreground">填好上面的两项才能测试</span>}
           {s.notify_telegram_token_set && (
             <Button size="sm" variant="ghost" onClick={() => save({ notify_telegram_token: "", notify_telegram_chat: "" }, "已清除 Telegram")}>
               清除
@@ -2965,13 +3033,21 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
           <textarea rows={4} className={TEXTAREA} value={text("notify_webhook_body")} onChange={(e) => set("notify_webhook_body", e.target.value)} />
         </Field>
         <TemplatePreview template={text("notify_webhook_body")} site={text("site_name") || "Monitor"} json />
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" onClick={() => save(webhookPatch())}>
             保存 Webhook
           </Button>
-          <Button size="sm" variant="secondary" disabled={!!testing} onClick={() => test("webhook", webhookPatch())}>
+          {unsaved.webhook && <span className="text-2xs text-warn">有未保存的改动</span>}
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!!testing || !ready.webhook}
+            title={ready.webhook ? "按这一栏当前的内容发一条测试，不保存设置" : "填好 URL 才能测试"}
+            onClick={() => test("webhook", webhookPatch(), unsaved.webhook)}
+          >
             <Send /> {testing === "webhook" ? "发送中…" : "发送测试"}
           </Button>
+          {!ready.webhook && <span className="text-2xs text-muted-foreground">填好上面的 URL 才能测试</span>}
           {s.notify_webhook_headers_set && (
             <Button size="sm" variant="ghost" onClick={() => save({ notify_webhook_headers: "" }, "已清除请求头")}>
               清除请求头

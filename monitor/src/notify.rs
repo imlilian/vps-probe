@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::Result;
+use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -294,20 +295,83 @@ impl Channel {
     }
 }
 
-fn channels(app: &App) -> Vec<Channel> {
+/// The panel's form, laid over the stored settings for one test. Every field is
+/// optional because the panel sends only what it has: a secret comes back from the
+/// hub blank, so an empty one there means "unchanged" rather than "cleared".
+#[derive(Deserialize, Default)]
+pub struct Draft {
+    #[serde(default)]
+    notify_telegram_token: Option<String>,
+    #[serde(default)]
+    notify_telegram_chat: Option<String>,
+    #[serde(default)]
+    notify_telegram_text: Option<String>,
+    #[serde(default)]
+    notify_webhook_url: Option<String>,
+    #[serde(default)]
+    notify_webhook_headers: Option<String>,
+    #[serde(default)]
+    notify_webhook_body: Option<String>,
+}
+
+impl Draft {
+    /// A secret the panel did not retype, which leaves the stored one in force.
+    fn keep(&self, stored: Option<String>, field: &Option<String>) -> Option<String> {
+        match field {
+            Some(typed) if !typed.trim().is_empty() => Some(typed.clone()),
+            _ => stored,
+        }
+    }
+
+    /// A field the panel echoes back: what it holds is the answer, empty included,
+    /// because the operator can clear one and a test then has nothing to send.
+    fn shown(stored: Option<String>, field: &Option<String>) -> Option<String> {
+        field.clone().or(stored)
+    }
+
+    /// An empty template means the default one, as on the write side.
+    fn template(&self, stored: String, field: &Option<String>) -> String {
+        field.as_deref().filter(|t| !t.trim().is_empty()).map_or(stored, str::to_owned)
+    }
+}
+
+/// The channels to send through: what the stored settings say, with `draft` laid
+/// over them where the panel has one.
+///
+/// The draft is what makes a test possible before a save: the operator types a
+/// token and a chat into the form, asks for a test, and gets Telegram's own answer
+/// -- without a half-finished channel being written to the settings first, which is
+/// what "save, then test" used to cost. Two fields decide whether a channel exists
+/// in either source: Telegram's token and chat, Webhook's URL.
+fn channels(app: &App, draft: Option<&Draft>) -> Vec<Channel> {
+    let none = Draft::default();
+    let draft = draft.unwrap_or(&none);
     let mut out = Vec::new();
-    if let (Some(token), Some(chat)) =
-        (setting(app, "notify_telegram_token"), setting(app, "notify_telegram_chat"))
-    {
+    let (token, chat) = (
+        draft.keep(setting(app, "notify_telegram_token"), &draft.notify_telegram_token),
+        Draft::shown(setting(app, "notify_telegram_chat"), &draft.notify_telegram_chat),
+    );
+    if let (Some(token), Some(chat)) = (token, chat.filter(|c| !c.trim().is_empty())) {
         out.push(Channel::Telegram {
             token,
             chat,
-            text: template(app, "notify_telegram_text", DEFAULT_TEXT),
+            text: draft
+                .template(template(app, "notify_telegram_text", DEFAULT_TEXT), &draft.notify_telegram_text),
         });
     }
-    if let Some(url) = setting(app, "notify_webhook_url") {
-        let headers = app.db.get("notify_webhook_headers").unwrap_or_default();
-        out.push(Channel::Webhook { url, headers, body: template(app, "notify_webhook_body", DEFAULT_BODY) });
+    let url = draft.keep(setting(app, "notify_webhook_url"), &draft.notify_webhook_url);
+    if let Some(url) = url {
+        let headers = Draft::shown(
+            Some(app.db.get("notify_webhook_headers").unwrap_or_default()),
+            &draft.notify_webhook_headers,
+        )
+        .unwrap_or_default();
+        out.push(Channel::Webhook {
+            url,
+            headers,
+            body: draft
+                .template(template(app, "notify_webhook_body", DEFAULT_BODY), &draft.notify_webhook_body),
+        });
     }
     out
 }
@@ -420,7 +484,7 @@ pub fn send(app: &App, mut note: Note) {
 /// records it as sent, so it is not raised again.
 pub async fn deliver(app: Shared, mut inbox: mpsc::Receiver<Note>) {
     while let Some(note) = inbox.recv().await {
-        for channel in channels(&app) {
+        for channel in channels(&app, None) {
             for attempt in 1..=ATTEMPTS {
                 match post(&app, &channel, &note).await {
                     Ok(()) => break,
@@ -461,14 +525,26 @@ pub struct Which {
 /// The panel always sends the channel: it asks from inside that channel's card,
 /// and an operator tuning a Feishu card wants Feishu's answer, not Telegram's.
 /// The unnamed form stays for a one-click check of the whole path.
-pub async fn test(_: Admin, State(app): State<Shared>, Query(which): Query<Which>) -> Response {
+///
+/// The optional body is the card's own form, which is what lets the button work on
+/// an unsaved channel: see [`Draft`]. No body means "send what is stored", which is
+/// what the unnamed whole-path form and any caller from before the draft do.
+pub async fn test(_: Admin, State(app): State<Shared>, Query(which): Query<Which>, body: Bytes) -> Response {
+    let draft = if body.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice::<Draft>(&body) {
+            Ok(draft) => Some(draft),
+            Err(e) => return answer(StatusCode::BAD_REQUEST, format!("测试参数无法解析：{e}")),
+        }
+    };
     let wanted = which.channel.as_deref().map(str::to_ascii_lowercase);
     if let Some(name) = &wanted {
         if name != "telegram" && name != "webhook" {
             return answer(StatusCode::BAD_REQUEST, "没有这个通知渠道");
         }
     }
-    let mut channels = channels(&app);
+    let mut channels = channels(&app, draft.as_ref());
     if let Some(name) = &wanted {
         channels.retain(|c| c.name().eq_ignore_ascii_case(name));
     }
@@ -531,7 +607,7 @@ pub fn expiry_digest(app: &App, now: DateTime<Local>) -> Result<Option<Note>> {
     if days == 0
         || now.hour() < 9
         || app.db.get("notify_expiry_sent") == Some(today.to_string())
-        || channels(app).is_empty()
+        || channels(app, None).is_empty()
     {
         return Ok(None);
     }
@@ -634,7 +710,7 @@ fn sweep(app: &App, watch: &mut Watch, now: i64) -> Result<Vec<Note>> {
     watch.absent.retain(|id, _| ids.contains(id));
     watch.returned.retain(|id, _| ids.contains(id));
     let grace = number(app, "notify_grace") * 60;
-    let armed = !channels(app).is_empty();
+    let armed = !channels(app, None).is_empty();
     let (mut down, mut up) = (Vec::new(), Vec::new());
     for node in &nodes {
         if online.contains(&node.id) {
@@ -787,6 +863,64 @@ mod tests {
         app.db.set("notify_webhook_url", "http://127.0.0.1:9/").unwrap();
     }
 
+    fn draft(json: Value) -> Draft {
+        serde_json::from_value(json).expect("a form the panel could send")
+    }
+
+    /// The test button sends the card's own form, so a channel can be tried before
+    /// it is saved -- and a secret the panel did not retype is the one the hub
+    /// already holds, since it never sends a stored one back.
+    #[test]
+    fn a_test_sends_the_form_before_it_is_saved() {
+        let app = app();
+        assert!(channels(&app, None).is_empty(), "nothing stored, nothing to send");
+
+        let typed = draft(json!({
+            "notify_telegram_token": "1:AA-b_c",
+            "notify_telegram_chat": "-1001234",
+            "notify_telegram_text": "",
+        }));
+        let only = channels(&app, Some(&typed));
+        assert_eq!(only.len(), 1, "a channel that was never saved can still be tested");
+        match &only[0] {
+            Channel::Telegram { token, chat, text } => {
+                assert_eq!((token.as_str(), chat.as_str()), ("1:AA-b_c", "-1001234"));
+                assert_eq!(text, DEFAULT_TEXT, "an empty template means the default one");
+            }
+            Channel::Webhook { .. } => unreachable!("a Telegram form is Telegram"),
+        }
+
+        // Stored and then edited: what the form echoes wins, the blank secret keeps
+        // the stored one, and the whole channel is one the settings never held.
+        app.db.set("notify_telegram_token", "9:ZZ").unwrap();
+        app.db.set("notify_telegram_chat", "-1009").unwrap();
+        let edited = draft(json!({
+            "notify_telegram_token": "",
+            "notify_telegram_chat": "-1001",
+            "notify_telegram_text": "typed",
+        }));
+        match &channels(&app, Some(&edited))[0] {
+            Channel::Telegram { token, chat, text } => {
+                assert_eq!(token, "9:ZZ", "the stored token carries over");
+                assert_eq!(chat, "-1001", "the edited chat does not");
+                assert_eq!(text, "typed");
+            }
+            Channel::Webhook { .. } => unreachable!("a Telegram form is Telegram"),
+        }
+        assert_eq!(channels(&app, None).len(), 1, "and none of that was written to the settings");
+
+        // A webhook needs only its URL, and clearing the chat in the form leaves no
+        // Telegram channel at all rather than testing the one that was stored.
+        let hook = draft(json!({
+            "notify_telegram_chat": "",
+            "notify_webhook_url": "http://127.0.0.1:9/",
+            "notify_webhook_body": "",
+        }));
+        let both = channels(&app, Some(&hook));
+        assert_eq!(both.len(), 1, "the emptied chat loses Telegram, the typed URL adds Webhook");
+        assert_eq!(both[0].name(), "Webhook");
+    }
+
     #[test]
     fn a_rendered_body_stays_json_whatever_the_values_contain() {
         let body = render(
@@ -894,11 +1028,12 @@ mod tests {
     #[tokio::test]
     async fn a_test_that_names_a_channel_answers_for_that_channel() {
         let app = std::sync::Arc::new(app());
-        let ask = |channel: Option<&str>| {
+        let ask = |channel: Option<&str>, form: &str| {
             let app = app.clone();
             let which = Which { channel: channel.map(str::to_owned) };
+            let body = Bytes::from(form.to_owned());
             async move {
-                let response = test(Admin, State(app), Query(which)).await;
+                let response = test(Admin, State(app), Query(which), body).await;
                 let status = response.status();
                 let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
                 (status, String::from_utf8(body.to_vec()).unwrap())
@@ -906,14 +1041,19 @@ mod tests {
         };
 
         for (channel, named) in [(Some("telegram"), "Telegram"), (Some("webhook"), "Webhook")] {
-            let (status, body) = ask(channel).await;
+            let (status, body) = ask(channel, "").await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{channel:?}");
             assert!(body.contains(named), "{channel:?}: {body}");
         }
         // Nothing configured at all, and a name no channel answers to.
-        assert!(ask(None).await.1.contains("还没有配置通知渠道"));
-        assert_eq!(ask(Some("discord")).await.0, StatusCode::BAD_REQUEST);
-        assert!(ask(Some("discord")).await.1.contains("没有这个通知渠道"));
+        assert!(ask(None, "").await.1.contains("还没有配置通知渠道"));
+        assert_eq!(ask(Some("discord"), "").await.0, StatusCode::BAD_REQUEST);
+        assert!(ask(Some("discord"), "").await.1.contains("没有这个通知渠道"));
+        // The form the button carries: an incomplete one is refused with the same
+        // words, and a body that is not a form at all says so rather than 500.
+        let half = r#"{"notify_telegram_token": "1:AA-b_c"}"#;
+        assert!(ask(Some("telegram"), half).await.1.contains("还没有配置 Telegram"));
+        assert_eq!(ask(Some("webhook"), "not json").await.0, StatusCode::BAD_REQUEST);
     }
 
     #[test]
