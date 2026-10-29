@@ -64,6 +64,21 @@ static PASSWORD_GATE: Semaphore = Semaphore::const_new(PASSWORD_CHECKS);
 #[cfg(test)]
 pub(crate) static PASSWORD_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// How many OIDC token exchanges may be in flight at once.
+///
+/// The callback is anonymous, and one that carries a matching state and verifier
+/// makes the hub open two connections to the provider: the caller obtains those
+/// cookies by starting the flow itself, so nothing but a ceiling bounds how many
+/// exchanges it can ask for. Without one, a script turns the hub into a relay
+/// pointed at whatever provider it is configured with -- and a provider that
+/// answers that by blocking the hub has taken the sign-in path down.
+///
+/// Two rather than one, unlike the password gate: this work is two I/O waits,
+/// not 19 MiB of argon2, and a phone and a laptop signing in together is a real
+/// pair. Refused rather than queued, for the reason the password gate refuses.
+const OIDC_EXCHANGES: usize = 2;
+static OIDC_GATE: Semaphore = Semaphore::const_new(OIDC_EXCHANGES);
+
 pub fn sha256(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
@@ -353,13 +368,17 @@ fn clear_state(app: &App, headers: &HeaderMap) -> String {
     set_cookie(STATE_COOKIE, "", 0, app.secure_cookies(headers))
 }
 
-/// The three endpoints of the provider, and nothing else: an id_token is not
-/// verified (see [`oidc_login`]), so no JWKS or issuer field is kept.
+/// The three endpoints of the provider, plus the issuer it claims. An id_token
+/// is not verified (see [`oidc_login`]), so no JWKS is kept; the claimed issuer
+/// is kept only to be compared with the one that was asked for.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Discovery {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub userinfo_endpoint: String,
+    /// Absent when the document does not name one. [`check_discovery`] then has
+    /// nothing to compare and judges the three endpoints on their own.
+    pub issuer: Option<String>,
 }
 
 /// Picks the three endpoints out of a discovery document. A separate function
@@ -371,6 +390,7 @@ fn parse_discovery(body: &str) -> Result<Discovery> {
         authorization_endpoint: Option<String>,
         token_endpoint: Option<String>,
         userinfo_endpoint: Option<String>,
+        issuer: Option<String>,
     }
     let document: Document = serde_json::from_str(body)
         .with_context(|| format!("discovery document: {}", body.chars().take(200).collect::<String>()))
@@ -384,7 +404,56 @@ fn parse_discovery(body: &str) -> Result<Discovery> {
         authorization_endpoint: endpoint(document.authorization_endpoint, "authorization_endpoint")?,
         token_endpoint: endpoint(document.token_endpoint, "token_endpoint")?,
         userinfo_endpoint: endpoint(document.userinfo_endpoint, "userinfo_endpoint")?,
+        issuer: document.issuer.filter(|v| !v.trim().is_empty()),
     })
+}
+
+/// Holds a fetched document to the address it was fetched from, so that the
+/// three endpoints it names are the ones belonging to the issuer that was
+/// configured.
+///
+/// Two things are checked, both about a document that answers correctly but for
+/// the wrong place:
+///
+/// * the issuer it claims. OIDC Discovery 1.0 §4.3 requires the two to match,
+///   and the failure it catches is the ordinary one: an issuer missing its
+///   tenant path (`https://host` for Authentik's
+///   `https://host/application/o/<slug>/`) is served some other tenant's
+///   document, and signing in against it would bind accounts from the wrong
+///   place. Trailing slashes are ignored, since both spellings name one issuer.
+/// * the scheme of each endpoint. A document fetched over TLS may not send the
+///   code, the verifier, the secret or the bearer token somewhere in the clear,
+///   so `https` is required -- except where the issuer itself is plain `http`,
+///   which [`crate::api::issuer_url`] has already limited to the hub's own
+///   machine or network.
+fn check_discovery(discovery: &Discovery, issuer: &str) -> Result<()> {
+    if let Some(claimed) = discovery.issuer.as_deref() {
+        let (claimed, asked) = (claimed.trim().trim_end_matches('/'), issuer.trim().trim_end_matches('/'));
+        if !claimed.eq_ignore_ascii_case(asked) {
+            return Err(anyhow!("discovery document claims issuer {claimed}, configured {asked}")).context(
+                Shown(format!(
+                    "身份系统说自己是 {claimed}，与填写的 {asked} 不一致：Issuer 多半少填或多填了一段路径"
+                )),
+            );
+        }
+    }
+    let plaintext_ok = issuer.starts_with("http://");
+    for (name, endpoint) in [
+        ("authorization_endpoint", &discovery.authorization_endpoint),
+        ("token_endpoint", &discovery.token_endpoint),
+        ("userinfo_endpoint", &discovery.userinfo_endpoint),
+    ] {
+        let scheme = reqwest::Url::parse(endpoint).map(|url| url.scheme().to_owned());
+        let ok = match scheme {
+            Ok(scheme) => scheme == "https" || (plaintext_ok && scheme == "http"),
+            Err(_) => false,
+        };
+        if !ok {
+            return Err(anyhow!("discovery document gives {name} as {endpoint:?}"))
+                .context(Shown(format!("身份系统的 {name} 不是 https 地址，这次登录不走它")));
+        }
+    }
+    Ok(())
 }
 
 /// `BASE64URL-NOPAD(SHA256(verifier))`, the S256 challenge of RFC 7636 §4.2.
@@ -473,7 +542,7 @@ pub(crate) async fn discovery_for(app: &App) -> Result<Discovery> {
     }
 
     let url = format!("{issuer}/.well-known/openid-configuration");
-    let discovery = fetch_discovery(app, &url).await?;
+    let discovery = fetch_discovery(app, &url, &issuer).await?;
     let mut cache = app.oidc.lock().unwrap_or_else(|e| e.into_inner());
     // Whatever arrived meanwhile was for this issuer -- the fetch above armed
     // it -- so replacing it is safe unless the operator changed the issuer.
@@ -484,7 +553,7 @@ pub(crate) async fn discovery_for(app: &App) -> Result<Discovery> {
     Ok(discovery)
 }
 
-async fn fetch_discovery(app: &App, url: &str) -> Result<Discovery> {
+async fn fetch_discovery(app: &App, url: &str, issuer: &str) -> Result<Discovery> {
     let response = app
         .http
         .get(url)
@@ -500,7 +569,13 @@ async fn fetch_discovery(app: &App, url: &str) -> Result<Discovery> {
         .text()
         .await
         .map_err(|e| anyhow::Error::from(e).context(Shown("连不上身份系统，稍后再试".into())))?;
-    parse_discovery(&body)
+    let discovery = parse_discovery(&body)?;
+    // Refused before it can become the cached answer. The placeholder that
+    // `discovery_for` armed stays a failure and expires in a minute, so a wrong
+    // Issuer costs one request a minute rather than one per click -- the same
+    // bound as an unreachable provider.
+    check_discovery(&discovery, issuer)?;
+    Ok(discovery)
 }
 
 /// What a sign-in says when a request to the provider fails: unanswered is the
@@ -543,8 +618,12 @@ pub async fn oidc_start(State(app): State<crate::Shared>, headers: HeaderMap) ->
     // query (Azure AD's policy parameter, for one); appending another `?` there
     // would drop their own parameter.
     let separator = if discovery.authorization_endpoint.contains('?') { '&' } else { '?' };
+    // `profile` alongside `openid`: Keycloak, Authentik and Authelia only put
+    // `preferred_username` in userinfo when it was granted, and without a name
+    // the allow list is matched against a `sub`, which never matches anything.
+    // A provider that does not know the scope ignores it.
     let url = format!(
-        "{}{separator}client_id={}&redirect_uri={}&response_type=code&scope=openid&state={}&code_challenge={}&code_challenge_method=S256",
+        "{}{separator}client_id={}&redirect_uri={}&response_type=code&scope=openid%20profile&state={}&code_challenge={}&code_challenge_method=S256",
         discovery.authorization_endpoint,
         urlencode(&client_id),
         urlencode(&redirect),
@@ -792,6 +871,11 @@ async fn oidc_login(app: &App, code: &str, verifier: &str) -> Result<String> {
     if app.site.is_empty() {
         refuse!("OIDC 登录需要 hub 以 --site 启动：身份系统要按这个地址回调");
     }
+    // Held across both outbound requests below, which are made on behalf of a
+    // caller the hub cannot identify.
+    let Ok(_permit) = OIDC_GATE.try_acquire() else {
+        refuse!("正在进行的登录太多，稍后再试");
+    };
     let discovery = discovery_for(app).await?;
 
     #[derive(Serialize)]
@@ -876,6 +960,15 @@ async fn oidc_login(app: &App, code: &str, verifier: &str) -> Result<String> {
         .unwrap_or_else(|| sub.clone())
         .trim()
         .to_lowercase();
+    // The bindings are `name:sub` pairs, so a colon in a name would be read as
+    // the start of a `sub`: the account would sign in once and then be refused
+    // as "no longer the account it first signed in as", with nothing in the
+    // message pointing at the colon. Refused here instead, and the allow list
+    // refuses to store one for the same reason.
+    if name.contains(':') {
+        warn!("OIDC user {name:?} has a colon in its name, which the binding list cannot hold");
+        refuse!("身份系统的用户名里有冒号（{}），与绑定记录的分隔符冲突，请改用别的用户名", name);
+    }
 
     if !allowed.contains(&name) {
         // The list stays in the log and out of the reason: the reason travels back
@@ -1166,6 +1259,7 @@ mod tests {
                 authorization_endpoint: "https://id.example.com/authorize".into(),
                 token_endpoint: "https://id.example.com/token".into(),
                 userinfo_endpoint: "https://id.example.com/userinfo".into(),
+                issuer: Some("https://id.example.com".into()),
             }
         );
 
@@ -1197,6 +1291,66 @@ mod tests {
         );
     }
 
+    /// A document that answers correctly for somewhere else is the failure this
+    /// check exists for: an issuer typed without its tenant path is served the
+    /// document of the wrong tenant, every endpoint in it is reachable, and
+    /// nothing else in the flow would notice.
+    #[test]
+    fn a_discovery_document_must_be_about_the_issuer_it_was_fetched_from() {
+        let document = |issuer: Option<&str>, scheme: &str| {
+            let issuer = issuer.map(|i| format!(r#""issuer": "{i}", "#)).unwrap_or_default();
+            format!(
+                r#"{{{issuer}
+                    "authorization_endpoint": "{scheme}://id.example.com/authorize",
+                    "token_endpoint": "{scheme}://id.example.com/token",
+                    "userinfo_endpoint": "{scheme}://id.example.com/userinfo"}}"#
+            )
+        };
+        let check = |body: &str, issuer: &str| {
+            check_discovery(&parse_discovery(body).unwrap(), issuer)
+                .err()
+                .and_then(|e| e.downcast::<Shown>().ok())
+                .map(|shown| shown.0)
+        };
+
+        // One issuer, however its trailing slash is spelled.
+        for (claimed, asked) in [
+            ("https://id.example.com", "https://id.example.com"),
+            ("https://id.example.com/", "https://id.example.com"),
+            ("https://id.example.com", "https://id.example.com/"),
+        ] {
+            assert_eq!(check(&document(Some(claimed), "https"), asked), None, "{claimed} {asked}");
+        }
+
+        // A tenant path missing from what the operator typed: the document names
+        // one, and the message has to carry both addresses to be readable.
+        let shown = check(&document(Some("https://host/application/o/monitor"), "https"), "https://host")
+            .expect("a document about another issuer is refused");
+        assert!(shown.contains("https://host/application/o/monitor"), "{shown}");
+        assert!(shown.contains("与填写的 https://host 不一致"), "{shown}");
+
+        // A document that names no issuer is taken at its word: its endpoints are
+        // still checked, and refusing would lock out providers that publish a
+        // minimal one.
+        assert_eq!(check(&document(None, "https"), "https://id.example.com"), None);
+
+        // Plain http endpoints under an https issuer would put the code, the
+        // verifier, the secret and the bearer token on the wire in the clear.
+        let shown = check(
+            r#"{"issuer": "https://id.example.com",
+                "authorization_endpoint": "https://id.example.com/authorize",
+                "token_endpoint": "http://id.example.com/token",
+                "userinfo_endpoint": "https://id.example.com/userinfo"}"#,
+            "https://id.example.com",
+        )
+        .expect("an endpoint off TLS is refused");
+        assert!(shown.contains("token_endpoint"), "{shown}");
+
+        // The same endpoints under an http issuer are the loopback case the
+        // issuer setting already allows, and are taken as they are.
+        assert_eq!(check(&document(Some("http://127.0.0.1:1411"), "http"), "http://127.0.0.1:1411"), None);
+    }
+
     /// The three branches of the cache rule, with a clock handed in rather than
     /// waited for: a document inside its hour is reused, a failure inside its
     /// minute is not retried, and either window ending lets the next request
@@ -1208,6 +1362,7 @@ mod tests {
             authorization_endpoint: "https://id.example.com/authorize".into(),
             token_endpoint: "https://id.example.com/token".into(),
             userinfo_endpoint: "https://id.example.com/userinfo".into(),
+            issuer: Some("https://id.example.com".into()),
         };
         let found = Cached {
             issuer: "https://id.example.com".into(),

@@ -2912,7 +2912,7 @@ function Security({ site, sited }: { site: string; sited: boolean }) {
           </p>
         )}
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Issuer URL" hint="身份系统的地址，可以带路径">
+          <Field label="Issuer URL" hint="https 地址，可以带路径；本机或内网的调试实例可以用 http">
             <Input
               placeholder="https://pocket-id.example.com"
               value={String(s.oidc_issuer ?? "")}

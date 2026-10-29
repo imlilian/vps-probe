@@ -815,6 +815,26 @@ pub(crate) fn https_domain(site: &str) -> Option<reqwest::Url> {
     .then_some(url)
 }
 
+/// Whether a host names the hub's own machine or its own network, which is the
+/// only place a plaintext identity system may live.
+///
+/// A name is accepted only where it cannot resolve anywhere but here. Guessing
+/// the other way would be the expensive mistake: an internal hostname that
+/// happens to resolve publicly would then be allowed to put the code, the
+/// verifier, the client secret and the bearer token on the wire in the clear.
+fn local_host(host: &str) -> bool {
+    // host_str keeps the brackets an IPv6 literal is written with.
+    match host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        // Unique local (fc00::/7) and link local (fe80::/10), by prefix rather
+        // than by predicate: those predicates are newer than the MSRV.
+        Ok(IpAddr::V6(v6)) => {
+            v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+        Err(_) => host == "localhost" || host.ends_with(".localhost"),
+    }
+}
+
 /// The OIDC issuer as a URL the hub can append a discovery path to, or `None`
 /// when the value is not one.
 ///
@@ -823,11 +843,22 @@ pub(crate) fn https_domain(site: &str) -> Option<reqwest::Url> {
 /// whatever the issuer names. A query or fragment is refused because the append
 /// would place the path after it, where neither the server nor the hub would
 /// read it.
+///
+/// `https` is required unless the provider is on the hub's own machine or
+/// network. The token exchange posts the code, the verifier and the client
+/// secret, and userinfo sends the bearer token: over `http` to a public
+/// address, every one of those is readable by anything on the path. The GitHub
+/// proxy setting is held to the same rule for the same reason, and a loopback
+/// port stays available for an operator testing against a provider they just
+/// started.
 pub(crate) fn issuer_url(issuer: &str) -> Option<reqwest::Url> {
-    if !(issuer.starts_with("http://") || issuer.starts_with("https://")) {
-        return None;
-    }
-    reqwest::Url::parse(issuer).ok().filter(|u| u.query().is_none() && u.fragment().is_none())
+    let url = reqwest::Url::parse(issuer).ok()?;
+    let scheme_ok = match url.scheme() {
+        "https" => true,
+        "http" => local_host(url.host_str()?),
+        _ => false,
+    };
+    (scheme_ok && url.query().is_none() && url.fragment().is_none()).then_some(url)
 }
 
 /// Whether the browser sending this request is on an https domain entry, which
@@ -2054,8 +2085,17 @@ fn setting_error(key: &str, value: &Value) -> Option<String> {
         // speak and nothing after the path: a query or fragment there would be
         // swallowed by that append without a word. A path is allowed -- Authentik
         // puts one in its issuer.
-        "oidc_issuer" if !value.is_empty() && !issuer_url(value).is_some() => {
-            Some("身份系统地址要以 http:// 或 https:// 开头，且不能带 ? 或 #".into())
+        "oidc_issuer" if !value.is_empty() && issuer_url(value).is_none() => {
+            Some("身份系统地址要以 https:// 开头（本机或内网可以用 http://），且不能带 ? 或 #".into())
+        }
+        // The bindings are stored as `name:sub` pairs, so a colon inside a name
+        // would be read as the start of a `sub` and the name would stop matching
+        // the moment it was first bound. Refused at the door rather than left to
+        // fail as a sign-in nobody can explain. A comma is the list's own
+        // separator, so a name cannot contain one either -- that needs no check,
+        // only a name the operator can actually type.
+        "oidc_allowed_users" if value.contains(':') => {
+            Some("用户名里不能有冒号：绑定记录用它分隔用户名与用户标识".into())
         }
         // The sign-in button's own label. A long one wraps the button and pushes
         // the emergency password form off the card.
@@ -4068,9 +4108,20 @@ mod tests {
     /// needs, and without the query or fragment that append would swallow.
     #[test]
     fn an_issuer_is_accepted_only_when_discovery_can_be_appended_to_it() {
-        for ok in
-            ["", "https://id.example.com", "http://127.0.0.1:1411", "https://host/application/o/monitor/"]
-        {
+        for ok in [
+            "",
+            "https://id.example.com",
+            "https://host/application/o/monitor/",
+            // Plain http only where the traffic cannot leave the machine or the
+            // operator's own network: that is what the token exchange carries.
+            "http://127.0.0.1:1411",
+            "http://localhost:1411",
+            "http://[::1]:1411",
+            "http://192.168.1.9:1411",
+            "http://10.0.0.2:1411",
+            "http://172.16.4.2:1411",
+            "http://[fd00::1]:1411",
+        ] {
             assert_eq!(setting_error("oidc_issuer", &json!(ok)), None, "{ok}");
         }
         for bad in [
@@ -4079,6 +4130,12 @@ mod tests {
             "ftp://id.example.com",
             "https://id.example.com/?tenant=1",
             "https://id.example.com/#issuer",
+            // A public address in the clear: the code, the verifier, the secret
+            // and the bearer token would all cross the internet readable.
+            "http://id.example.com",
+            "http://198.51.100.7:1411",
+            // A name is not evidence of locality, so it does not unlock http.
+            "http://id.internal:1411",
         ] {
             assert!(setting_error("oidc_issuer", &json!(bad)).is_some(), "{bad}");
         }
@@ -4094,6 +4151,18 @@ mod tests {
             setting_error("oidc_provider_name", &json!("一二三四五六七八九十一二三四五六七")).is_some(),
             "seventeen characters must be refused"
         );
+    }
+
+    /// Bindings are stored as `name:sub` pairs, so a colon in a listed name would
+    /// be read as the start of a `sub`: the account would sign in once, bind
+    /// under a mangled name, and never match again. Refused where it is typed.
+    #[test]
+    fn an_oidc_name_the_binding_list_cannot_hold_is_refused() {
+        assert_eq!(setting_error("oidc_allowed_users", &json!("")), None);
+        assert_eq!(setting_error("oidc_allowed_users", &json!("alice, bob,")), None);
+        assert_eq!(setting_error("oidc_allowed_users", &json!("alice@example.com")), None);
+        let refused = setting_error("oidc_allowed_users", &json!("alice,bob:sub-1"));
+        assert!(refused.as_ref().is_some_and(|e| e.contains("冒号")), "{refused:?}");
     }
 
     /// The OIDC secret is write-only like GitHub's, and optional: a public client
