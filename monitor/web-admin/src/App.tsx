@@ -19,7 +19,11 @@ type Me = {
   oidc_name: string
   site_name: string
   public_page: boolean
+  /** The hub's own address, empty when it knows of none: `--site` or the panel's
+   *  站点 URL setting. */
   site: string
+  /** Whether `--site` is what fixed it, which locks the setting in the panel. */
+  site_fixed: boolean
 }
 
 // `/admin` alone is not a page; it is normalised to the first section so that a
@@ -227,10 +231,12 @@ export default function App() {
               // panel is frequently reached over a loopback port behind a proxy,
               // while the install command and OAuth callback need the real one.
               site={me.site || location.origin}
-              // Whether `site` above is the hub's own address or this browser's,
-              // which decides if OIDC can call back at all: the provider has to
-              // reach the hub, and a loopback port behind a proxy is not it.
-              sited={!!me.site}
+              // The hub's own address, which is empty when it knows of none --
+              // `site` above falls back to this browser's, which behind a proxy
+              // may be a loopback port no identity provider can reach.
+              hubSite={me.site}
+              // Whether `--site` fixed it, which locks the setting in the panel.
+              siteFixed={me.site_fixed}
               // Why this page cannot add nodes, measured by the rule the hub applies
               // to the `Origin` it receives; empty when it can.
               refusal={provisionRefusal(location.origin, me.site)}

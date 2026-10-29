@@ -133,32 +133,77 @@ impl App {
         self.db.get("public_page").as_deref() == Some("on")
     }
 
-    /// Whether a session cookie may be marked Secure. With `--site` this follows
-    /// its scheme; without one the hub does not know the address it was reached
-    /// on and must rely on the request, where three headers can say https: the
-    /// browser's `Origin`, a TLS-terminating proxy's `X-Forwarded-Proto`, and
-    /// Cloudflare's `CF-Visitor`. A hub answering plain HTTP directly sees none.
-    /// Marking the cookie Secure over plain HTTP would cause the browser to
-    /// discard the session.
+    /// The address this hub knows itself by, empty when it knows of none.
+    ///
+    /// Two ways to give it, and the command line wins when both are given: a
+    /// flag on the process is the more explicit statement of intent, it is what
+    /// the unit file carries across upgrades, and it is what the startup log
+    /// prints. The panel's own setting exists for the deployment that has a
+    /// domain and no wish to reinstall for it -- the hub cannot reconstruct the
+    /// address from the request, which is why it has to be told either way.
+    ///
+    /// Read through `Db`, so every caller sees a change made in the panel
+    /// without a restart. A trailing slash is dropped: this value is prefixed to
+    /// `/api/...` paths, where a doubled slash is a different URL.
+    pub fn base_url(&self) -> String {
+        if !self.site.is_empty() {
+            return self.site.trim_end_matches('/').to_owned();
+        }
+        self.db.get("site_url").map(|value| value.trim().trim_end_matches('/').to_owned()).unwrap_or_default()
+    }
+
+    /// Whether a session cookie may be marked Secure. With a known address this
+    /// follows its scheme; without one the hub does not know the address it was
+    /// reached on and must rely on the request, where three headers can say
+    /// https: the browser's `Origin`, a TLS-terminating proxy's
+    /// `X-Forwarded-Proto`, and Cloudflare's `CF-Visitor`. A hub answering plain
+    /// HTTP directly sees none. Marking the cookie Secure over plain HTTP would
+    /// cause the browser to discard the session.
     ///
     /// Any one of them suffices. A false https costs only the sender's own
     /// session, while a missed one leaves the cookie in the clear -- and each
     /// header alone misses a common shape: a proxy behind a TLS edge rewrites
     /// `X-Forwarded-Proto` to its own `http` hop, `CF-Visitor` exists only behind
     /// Cloudflare, and `Origin` is absent from the navigation that ends GitHub
-    /// sign-in. Only that last case still depends on the proxies; `--site
-    /// https://...` sets the flag regardless.
+    /// sign-in. Only that last case still depends on the proxies; a known
+    /// `https://...` address sets the flag regardless.
     pub fn secure_cookies(&self, headers: &HeaderMap) -> bool {
-        if !self.site.is_empty() {
-            return !self.site.starts_with("http://");
+        let site = self.base_url();
+        if !site.is_empty() {
+            return !site.starts_with("http://");
         }
-        let header = |name| headers.get(name).and_then(|v| v.to_str().ok());
-        header("origin").is_some_and(|o| o.starts_with("https://"))
-            || forwarded_proto(headers) == Some("https")
-            || header("cf-visitor")
-                .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
-                .is_some_and(|v| v["scheme"] == "https")
+        request_is_https(headers)
     }
+
+    /// Whether this hub's known address is one OIDC may be offered on.
+    ///
+    /// `redirect_uri` is a protocol parameter: the authorize request carries it
+    /// and the token exchange repeats it verbatim (RFC 6749 §4.1.3). A plaintext
+    /// address therefore puts the authorization code on the wire in the clear,
+    /// so the flow is not offered at all -- neither as a button nor as a route.
+    /// GitHub is unaffected: it never sends a `redirect_uri`, taking the callback
+    /// from the OAuth app's own registration, so the address plays no part.
+    ///
+    /// Empty means the hub does not know its address, which is the same refusal.
+    pub fn oidc_address_ok(&self) -> bool {
+        self.base_url().starts_with("https://")
+    }
+}
+
+/// Whether the browser reached the hub over https, from the request alone.
+///
+/// Three headers can say so and any one suffices, because each alone misses a
+/// common shape: a proxy behind a TLS edge rewrites `X-Forwarded-Proto` to its
+/// own `http` hop, `CF-Visitor` exists only behind Cloudflare, and `Origin` is
+/// absent from the navigation that ends sign-in. See [`App::secure_cookies`],
+/// which is the same question asked for a different purpose.
+pub fn request_is_https(headers: &HeaderMap) -> bool {
+    let header = |name| headers.get(name).and_then(|v| v.to_str().ok());
+    header("origin").is_some_and(|o| o.starts_with("https://"))
+        || forwarded_proto(headers) == Some("https")
+        || header("cf-visitor")
+            .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
+            .is_some_and(|v| v["scheme"] == "https")
 }
 
 /// The scheme the browser used, as reported by a reverse proxy. Chained proxies
@@ -1289,6 +1334,54 @@ mod tests {
         assert!(!bare.secure_cookies(&with("cf-visitor", r#"{"scheme":"http"}"#)));
         assert!(bare.secure_cookies(&with("cf-visitor", r#"{ "scheme": "https" }"#)), "re-serialized");
         assert!(!bare.secure_cookies(&with("origin", "null")));
+    }
+
+    /// The address reaches the rest of the hub the same way whether it came from
+    /// the command line or the panel, and the command line wins when both are
+    /// given -- it is the more explicit statement, and the one the unit file
+    /// carries across upgrades.
+    #[test]
+    fn the_address_comes_from_the_flag_first_and_the_setting_second() {
+        let configured = app("https://flag.example.com/");
+        configured.db.set("site_url", "https://panel.example.com").unwrap();
+        assert_eq!(configured.base_url(), "https://flag.example.com", "the flag wins, slash dropped");
+
+        // No flag: the setting answers, which is the deployment that has a
+        // domain and no wish to reinstall for it.
+        let panel = app("");
+        assert_eq!(panel.base_url(), "", "nothing configured");
+        panel.db.set("site_url", "https://panel.example.com").unwrap();
+        assert_eq!(panel.base_url(), "https://panel.example.com");
+        // Read on every call, so a save takes effect without a restart, and the
+        // trailing slash a reader might paste is not part of the address.
+        panel.db.set("site_url", "https://other.example.com/").unwrap();
+        assert_eq!(panel.base_url(), "https://other.example.com");
+
+        // The cookie flag follows the same address, so an https setting makes a
+        // session Secure even when the request itself says nothing.
+        assert!(panel.secure_cookies(&proto(None)));
+        assert!(panel.oidc_address_ok());
+        // A flag in the clear is still the operator's word, and OIDC is off
+        // there: its `redirect_uri` would put the code on the wire.
+        assert!(!app("http://hub.example.com").oidc_address_ok());
+        assert!(!app("").oidc_address_ok(), "an unknown address is not an https one");
+    }
+
+    /// The same question the cookie flag asks, from the request alone: the one
+    /// signal a `site_url` save is allowed to depend on.
+    #[test]
+    fn a_request_knows_whether_it_arrived_over_https() {
+        assert!(!request_is_https(&proto(None)));
+        assert!(request_is_https(&proto(Some("https"))));
+        let with = |name: &str, value: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(name.parse::<header::HeaderName>().unwrap(), value.parse().unwrap());
+            headers
+        };
+        assert!(request_is_https(&with("origin", "https://hub.example.com")));
+        assert!(!request_is_https(&with("origin", "http://hub.example.com")));
+        assert!(request_is_https(&with("cf-visitor", r#"{"scheme":"https"}"#)));
+        assert!(!request_is_https(&with("cf-visitor", "null")));
     }
 
     /// A hub serving in the clear must report it, and a wildcard listener is not

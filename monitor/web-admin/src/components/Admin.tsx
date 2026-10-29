@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useId, useRef, useState } from "react"
 import { flushSync } from "react-dom"
-import { ArrowUpCircle, Bell, CalendarClock, Check, ChevronDown, ChevronRight, CircleQuestionMark, Copy, Database, Download, GripVertical, Layers, Pencil, Plus, Radio, Search, Send, Server, Settings, Shield, Trash2, Upload } from "lucide-react"
+import { ArrowUpCircle, Bell, CalendarClock, Check, ChevronDown, ChevronRight, CircleQuestionMark, Copy, Database, Download, GripVertical, Layers, Lock, Pencil, Plus, Radio, Search, Send, Server, Settings, Shield, Trash2, Upload } from "lucide-react"
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { api, badIfaceName, behind, changes, currentIface, GIB, groupsOf, ifaceChoice, ifaceSpec, inGroup, outdatedAgents, provisioningSite, shortAddress, trafficCorrection, upload, type IfaceChoice, type Node, type PingTask, type Source } from "@/lib/api"
+import { addressFromOrigin, api, badIfaceName, behind, changes, currentIface, GIB, groupsOf, ifaceChoice, ifaceSpec, inGroup, outdatedAgents, provisioningSite, shortAddress, trafficCorrection, upload, type IfaceChoice, type Node, type PingTask, type Source } from "@/lib/api"
 import { bytes, cycleMonths, FOREVER, money, uptime } from "@/lib/format"
 
 // Counters the panel can correct after migration or an accounting error.
@@ -2314,8 +2314,97 @@ async function siteIcons(file: File) {
   }
 }
 
+/** The hub's own address, which much of this panel is built from: install
+ *  commands, both sign-in callbacks, and whether a session cookie may be marked
+ *  Secure. Edited behind a button rather than in place, because it is the one
+ *  setting that can lock its own author out -- an address saved while reading the
+ *  panel over http makes every cookie afterwards `Secure`, and a browser discards
+ *  such a cookie on exactly that page. The hub refuses that write; this is the
+ *  same rule at the point where the value is typed. */
+function SiteAddressField({
+  value,
+  current,
+  fixed,
+  onSave,
+}: {
+  /** What is stored. Empty means the panel follows the browser's own address. */
+  value: string
+  /** What the hub uses now: the flag, the setting, or nothing at all. */
+  current: string
+  /** Given by `--site`, so the field shows it and offers no edit. */
+  fixed: boolean
+  onSave: (next: string) => void
+}) {
+  // The reader's own domain, which is usually the one they want.
+  const offered = addressFromOrigin(location.origin)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState("")
+  const edit = () => {
+    setDraft(value ? value.replace(/^https:\/\//, "").replace(/\/$/, "") : offered)
+    setEditing(true)
+  }
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5">
+        <Label className="text-sm font-medium">站点 URL</Label>
+        {fixed && <Lock aria-hidden className="size-3.5 text-muted-foreground" />}
+      </div>
+      {!editing || fixed ? (
+        <div className="flex items-center gap-2">
+          <p className="min-w-0 flex-1 truncate rounded-md border border-input bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            {current || "跟随浏览器地址"}
+          </p>
+          {!fixed && (
+            <Button size="sm" variant="outline" onClick={edit}>
+              <Pencil aria-hidden /> {value ? "修改" : "设置"}
+            </Button>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center overflow-hidden rounded-md border border-input">
+            {/* Pinned, not typed: this value is https by definition, and a
+                field that cannot be given a scheme cannot be given the wrong
+                one. */}
+            <span className="shrink-0 border-r border-input bg-muted px-3 py-2 text-sm text-muted-foreground">
+              https://
+            </span>
+            <Input
+              autoFocus
+              className="rounded-none border-0 focus-visible:ring-0"
+              value={draft}
+              placeholder="hub.example.com"
+              onChange={(e) => setDraft(e.target.value)}
+            />
+          </div>
+          <Button
+            size="sm"
+            disabled={!draft.trim()}
+            onClick={() => {
+              onSave(draft)
+              setEditing(false)
+            }}
+          >
+            保存
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+            取消
+          </Button>
+        </div>
+      )}
+      <p className="text-xs leading-relaxed text-muted-foreground break-keep wrap-anywhere">
+        {fixed
+          ? "由启动参数 --site 固定，面板里改不了：要改它得编辑 systemd 的 ExecStart 再重启。"
+          : editing && !offered
+            ? "当前不是 https 连接，所以没法自动填入。只填域名（可以带端口），别填路径。"
+            : "安装命令、OIDC 与 GitHub 的回调地址都用它。只填域名（可以带端口）；留空则跟随浏览器地址栏。"}
+      </p>
+    </div>
+  )
+}
+
 // `onSaved` refreshes what the header shows, the site name among it.
-function SettingsTab({ onSaved }: { onSaved: () => void }) {
+function SettingsTab({ onSaved, hubSite, siteFixed }: { onSaved: () => void; hubSite: string; siteFixed: boolean }) {
   const { s, set, save } = useSettings()
   const iconPicker = useRef<HTMLInputElement>(null)
   if (!s) return null
@@ -2333,6 +2422,12 @@ function SettingsTab({ onSaved }: { onSaved: () => void }) {
   return (
     <div className="space-y-4">
       <Card className="gap-4 p-5">
+        <SiteAddressField
+          value={String(s.site_url ?? "")}
+          current={hubSite}
+          fixed={siteFixed}
+          onSave={(next) => save({ site_url: next }).then((ok) => ok && onSaved())}
+        />
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="站点名称">
             <Input value={String(s.site_name ?? "")} onChange={(e) => set("site_name", e.target.value)} placeholder="Monitor" />
@@ -2822,7 +2917,7 @@ function Sessions({ rows, reload }: { rows: Session[]; reload: () => void }) {
 
 // The ways into this panel, on their own page: the sessions signed in, the two
 // identities it trusts and the password that works when neither does.
-function Security({ site, sited }: { site: string; sited: boolean }) {
+function Security({ site, hubSite, siteFixed }: { site: string; hubSite: string; siteFixed: boolean }) {
   const { s, set, save } = useSettings()
   const sessions = useSessions()
   // The password being set, and the one it replaces: a change asks for both.
@@ -2903,16 +2998,30 @@ function Security({ site, sited }: { site: string; sited: boolean }) {
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             回调地址 <code className="rounded bg-muted px-1 break-all">{oidcCallback}</code>
-            {!sited && <span className="ml-1">（从地址栏推出来的，hub 自己并不知道）</span>}
+            {!hubSite && <span className="ml-1">（从地址栏推出来的，hub 自己并不知道）</span>}
           </p>
         </div>
-        {!sited && (
+        {/* OIDC needs the hub to state its own address -- `redirect_uri` travels
+            in the authorize request and again in the token exchange -- so it is
+            off until that address exists and is https. Which of the two is
+            missing is what the reader came here to find out. */}
+        {!hubSite ? (
           <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            hub 没有用 --site 启动，它不知道自己对外的地址。上面那个回调地址是从你的浏览器地址栏
-            推出来的——浏览器知道，hub 不知道；而 OIDC 的授权请求和换 token 都必须原样带上它，
-            所以现在点登录按钮会直接失败。给 hub 加上 --site https://你的域名 后重启即可。
+            hub 还不知道自己的对外地址，OIDC 登录因此不可用（登录页不显示这个按钮）。上面那个回调地址
+            是从你的浏览器地址栏推出来的——浏览器知道，hub 不知道，而授权请求必须由 hub 自己说出它。
+            {siteFixed
+              ? "给它加上 --site https://你的域名 后重启即可。"
+              : "到「设置」里填一下站点 URL 就好。"}
           </p>
-        )}
+        ) : !hubSite.startsWith("https://") ? (
+          <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            hub 的站点地址是 {hubSite}，不是 https，OIDC 登录因此不可用：授权码要沿这个地址回到 hub，
+            明文就等于把它交给路径上的任何人。
+            {siteFixed
+              ? "这个地址由启动参数固定，要改它得编辑 systemd 的 ExecStart 再重启。"
+              : "到「设置」里把站点 URL 改成 https 域名即可。"}
+          </p>
+        ) : null}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Issuer URL" hint="https 地址，可以带路径；本机或内网的调试实例可以用 http">
             <Input
@@ -3447,7 +3556,8 @@ export function Admin({
   nodes,
   refresh,
   site,
-  sited,
+  hubSite,
+  siteFixed,
   refusal,
   reloadMe,
 }: {
@@ -3455,10 +3565,14 @@ export function Admin({
   go: (to: string) => void
   nodes: Node[]
   refresh: () => void
+  /** The address to build commands from: the hub's own, or this browser's as a
+   *  fallback. */
   site: string
-  /** Whether the hub was started with `--site`, i.e. whether `site` is its own
-   *  address rather than the one this browser happens to use. */
-  sited: boolean
+  /** The address the hub knows, empty when it knows of none. The two differ
+   *  when the panel is reached over a loopback port behind a tunnel. */
+  hubSite: string
+  /** Whether `--site` is what fixed `hubSite`, which locks the setting. */
+  siteFixed: boolean
   refusal: string
   reloadMe: () => void
 }) {
@@ -3500,9 +3614,9 @@ export function Admin({
         ) : path === "/admin/data" ? (
           <Data />
         ) : path === "/admin/security" ? (
-          <Security site={site} sited={sited} />
+          <Security site={site} hubSite={hubSite} siteFixed={siteFixed} />
         ) : path === "/admin/settings" ? (
-          <SettingsTab onSaved={reloadMe} />
+          <SettingsTab onSaved={reloadMe} hubSite={hubSite} siteFixed={siteFixed} />
         ) : path === "/admin/update" ? (
           <Update versions={versions} reload={reload} nodes={nodes} site={site} refusal={refusal} />
         ) : (

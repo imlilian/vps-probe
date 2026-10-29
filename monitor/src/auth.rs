@@ -368,6 +368,14 @@ fn clear_state(app: &App, headers: &HeaderMap) -> String {
     set_cookie(STATE_COOKIE, "", 0, app.secure_cookies(headers))
 }
 
+/// What OIDC sign-in says when the hub does not know an https address of its own.
+///
+/// Names both ways to give one, because the reader is one line away from fixing
+/// it either way and the route is anonymous: whoever follows a stale bookmark
+/// gets the same sentence.
+const NOT_ADDRESSED: &str = "OIDC 登录需要 hub 知道自己的对外地址，且必须是 https：\
+     用 --site https://你的域名 启动，或在面板「设置」里填站点 URL";
+
 /// The three endpoints of the provider, plus the issuer it claims. An id_token
 /// is not verified (see [`oidc_login`]), so no JWKS is kept; the claimed issuer
 /// is kept only to be compared with the one that was asked for.
@@ -601,11 +609,12 @@ pub async fn oidc_start(State(app): State<crate::Shared>, headers: HeaderMap) ->
     let Some(client_id) = app.db.get("oidc_client_id").filter(|v| !v.is_empty()) else {
         return answer(StatusCode::PRECONDITION_FAILED, "没有配置 OIDC 登录");
     };
-    if app.site.is_empty() {
-        return answer(
-            StatusCode::PRECONDITION_FAILED,
-            "OIDC 登录需要 hub 以 --site 启动：身份系统要按这个地址回调",
-        );
+    // The address is a protocol input here, not a convenience: `redirect_uri`
+    // travels in the authorize request and again in the token exchange, so a
+    // plaintext one would put the code on the wire. Both halves are refused --
+    // the panel does not draw the button, and this route is reachable by hand.
+    if !app.oidc_address_ok() {
+        return answer(StatusCode::PRECONDITION_FAILED, NOT_ADDRESSED);
     }
     let discovery = match discovery_for(&app).await {
         Ok(discovery) => discovery,
@@ -613,7 +622,7 @@ pub async fn oidc_start(State(app): State<crate::Shared>, headers: HeaderMap) ->
     };
     let state = random_token();
     let verifier = random_token();
-    let redirect = format!("{}/api/auth/oidc/callback", app.site);
+    let redirect = format!("{}/api/auth/oidc/callback", app.base_url());
     // Some providers publish an authorization endpoint that already carries a
     // query (Azure AD's policy parameter, for one); appending another `?` there
     // would drop their own parameter.
@@ -867,9 +876,9 @@ async fn oidc_login(app: &App, code: &str, verifier: &str) -> Result<String> {
         refuse!("没有设置允许登录的 OIDC 用户");
     }
     // The exchange must repeat the exact `redirect_uri` of the authorize request,
-    // so a hub without `--site` has none to repeat.
-    if app.site.is_empty() {
-        refuse!("OIDC 登录需要 hub 以 --site 启动：身份系统要按这个地址回调");
+    // so a hub that does not know its own address has none to repeat.
+    if !app.oidc_address_ok() {
+        refuse!("{}", NOT_ADDRESSED);
     }
     // Held across both outbound requests below, which are made on behalf of a
     // caller the hub cannot identify.
@@ -897,7 +906,7 @@ async fn oidc_login(app: &App, code: &str, verifier: &str) -> Result<String> {
         error: Option<String>,
         error_description: Option<String>,
     }
-    let redirect_uri = format!("{}/api/auth/oidc/callback", app.site);
+    let redirect_uri = format!("{}/api/auth/oidc/callback", app.base_url());
     let secret = app.db.get("oidc_client_secret").filter(|s| !s.is_empty());
     let form = TokenForm {
         grant_type: "authorization_code",
@@ -1399,9 +1408,31 @@ mod tests {
         // call back on, which the exchange has to repeat verbatim.
         app.db.set("oidc_issuer", "https://id.example.com").unwrap();
         app.db.set("oidc_client_id", "monitor").unwrap();
+        let res = oidc_start(State(app.clone()), HeaderMap::new()).await;
+        assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
+        assert!(res.headers().get(header::LOCATION).is_none());
+
+        // An address, but a plaintext one: `redirect_uri` is a protocol
+        // parameter, so the code would cross the wire in the clear. Refused
+        // rather than attempted, and without any outbound request.
+        app.db.set("site_url", "http://id.example.com").unwrap();
         let res = oidc_start(State(app), HeaderMap::new()).await;
         assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
         assert!(res.headers().get(header::LOCATION).is_none());
+    }
+
+    /// The exchange repeats the same `redirect_uri`, so the same gate holds in
+    /// front of the two outbound requests rather than only in front of the
+    /// button. Nothing here reaches the network: the refusal comes first.
+    #[tokio::test]
+    async fn a_plaintext_address_stops_the_exchange_before_it_is_made() {
+        let app = shared();
+        app.db.set("oidc_issuer", "https://id.example.com").unwrap();
+        app.db.set("oidc_client_id", "monitor").unwrap();
+        app.db.set("oidc_allowed_users", "alice").unwrap();
+        app.db.set("site_url", "http://id.example.com").unwrap();
+        let refused = oidc_login(&app, "a-code", "a-verifier").await.unwrap_err();
+        assert!(format!("{refused:#}").contains("https"), "{refused:#}");
     }
 
     /// As with the GitHub callback: a callback the browser did not start is

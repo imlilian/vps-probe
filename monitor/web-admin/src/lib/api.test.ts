@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import assert from "node:assert/strict"
-import { badIfaceName, behind, changes, currentIface, GIB, groupsOf, ifaceChoice, ifaceSpec, inGroup, loopbackOrigin, outdatedAgents, provisioningSite, provisionRefusal, shortAddress, trafficCorrection } from "./api.ts"
+import { addressFromOrigin, badIfaceName, behind, changes, currentIface, GIB, groupsOf, ifaceChoice, ifaceSpec, inGroup, loopbackOrigin, outdatedAgents, provisioningSite, provisionRefusal, shortAddress, trafficCorrection } from "./api.ts"
 
 assert.deepEqual(changes({ public: true, price: 5 }, { price: 20 }), { price: 20 })
 assert.deepEqual(changes({ total_rx: "100", month_tx: "2" }, { total_rx: "100", month_tx: "3" }), { month_tx: "3" })
@@ -17,13 +17,22 @@ for (const origin of ["http://127.0.0.1:9911", "http://localhost:9911", "http://
 for (const origin of ["https://monitor.example.com", "http://127.0.0.1.example.com", "ftp://127.0.0.1", "nonsense"]) {
   assert.equal(loopbackOrigin(origin), false, origin)
 }
+// The address the panel offers to fill in, taken from the bar: only an https
+// entry qualifies, and the port travels with it because the setting keeps one.
+assert.equal(addressFromOrigin("https://monitor.example.com"), "monitor.example.com")
+assert.equal(addressFromOrigin("https://monitor.example.com:8443"), "monitor.example.com:8443")
+for (const origin of ["http://monitor.example.com", "http://127.0.0.1:28080", "nonsense", ""]) {
+  assert.equal(addressFromOrigin(origin), "", origin)
+}
+
 // The refusal names the cause the operator can act on, as the hub decides it.
-// A loopback --site is a bad --site, not a missing one.
+// A loopback address is a bad address, not a missing one -- and "missing" now
+// names both ways to give it, the flag and the panel's own setting.
 for (const [origin, site, cause] of [
   ["https://monitor.example.com", "", ""],
   ["https://monitor.example.com", "https://hub.example.com", ""],
   ["http://127.0.0.1:9911", "https://hub.example.com", ""],
-  ["http://127.0.0.1:9911", "", "加 --site"],
+  ["http://127.0.0.1:9911", "", "站点 URL"],
   ["http://127.0.0.1:9911", "http://127.0.0.1:28080", "不是 https 域名"],
   ["https://monitor.example.com", "https://198.51.100.1", "不是 https 域名"],
   ["http://198.51.100.1:28080", "https://hub.example.com", "请通过 HTTPS 域名"],

@@ -773,15 +773,16 @@ async fn stream_live(app: Shared, mut socket: WebSocket, session: Option<String>
 
 // ---- panel write paths ----
 
-/// Names all three causes. `--site` is the one input to this decision that
-/// nothing about the request reveals: a hub started with
+/// Names all three causes. The hub's own address is the one input to this
+/// decision that nothing about the request reveals: a hub started with
 /// `--site https://198.51.100.7` refuses every provisioning call from an
 /// otherwise valid https domain entry, and a tunnelled panel is refused until
 /// one is given. `main` warns about the first at startup; this is for whoever
 /// reads the panel rather than the journal.
 const PROVISIONING_DENIED: &str = "请通过 HTTPS 域名访问面板后添加或安装节点；\
-     从隧道或回环地址进面板时，给 hub 加 --site 指定节点可达的域名；\
-     --site 必须是 https:// 加域名，不能是 IP、不能带路径";
+     从隧道或回环地址进面板时，要告诉 hub 节点可达的域名：\
+     在面板「设置」里填站点 URL，或用 --site https://你的域名 启动；\
+     这个地址必须是 https 加域名，不能是 IP、不能带路径";
 
 /// Every browser sends `Origin` with these writes, so its absence points at a
 /// proxy clearing it. The panel judges from its own address bar and offers the
@@ -861,6 +862,22 @@ pub(crate) fn issuer_url(issuer: &str) -> Option<reqwest::Url> {
     (scheme_ok && url.query().is_none() && url.fragment().is_none()).then_some(url)
 }
 
+/// The address a `site_url` value names, in the one spelling the rest of the hub
+/// uses: `https://host[:port]`, without a trailing slash.
+///
+/// The panel asks for the bare host -- the `https://` is shown in the field and
+/// pinned there, so that a plaintext address cannot be typed at all -- and the
+/// scheme is added here rather than demanded. A pasted full URL is normalised
+/// instead of refused: the value the reader pasted is the value they meant, and
+/// rejecting it would be a refusal they cannot act on.
+pub(crate) fn http_address(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        return String::new();
+    }
+    format!("https://{}", value.strip_prefix("https://").unwrap_or(value).trim_end_matches('/'))
+}
+
 /// Whether the browser sending this request is on an https domain entry, which
 /// is the only address the panel may build install commands from.
 ///
@@ -874,24 +891,26 @@ pub(crate) fn issuer_url(issuer: &str) -> Option<reqwest::Url> {
 /// https, and none can be told apart here from a genuine plaintext entry.
 /// `Origin` crosses all of them unchanged, and a page cannot forge its own.
 ///
-/// `--site` is measured by the same rule, because it takes this origin's place
-/// in the command: an IP or a path there is refused however the panel is
+/// The hub's own address -- `--site`, or the panel's `site_url` setting, which
+/// is held to the same rule for the same reason: it takes this origin's place in
+/// the command, so an IP or a path there is refused however the panel is
 /// reached. It also answers for the one entry this origin cannot: a panel opened
 /// over a tunnel reads `http://127.0.0.1:PORT`, which names no address a node
-/// could reach, while `--site` names one and the tunnel carries the session
-/// under its own encryption.
+/// could reach, while the configured address names one and the tunnel carries the
+/// session under its own encryption.
 ///
 /// The error is the message the panel shows.
 fn provisioning_allowed(app: &App, headers: &HeaderMap) -> Result<(), &'static str> {
-    if !app.site.is_empty() && https_domain(&app.site).is_none() {
-        debug!("provisioning refused: --site {:?} is not an https domain entry", app.site);
+    let site = app.base_url();
+    if !site.is_empty() && https_domain(&site).is_none() {
+        debug!("provisioning refused: the hub's address {site:?} is not an https domain entry");
         return Err(PROVISIONING_DENIED);
     }
     let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
         debug!("provisioning refused: the request carries no readable Origin");
         return Err(ORIGIN_MISSING);
     };
-    if https_domain(origin).is_none() && !(loopback_origin(origin) && !app.site.is_empty()) {
+    if https_domain(origin).is_none() && !(loopback_origin(origin) && !site.is_empty()) {
         debug!("provisioning refused: Origin {origin:?} is not an https domain entry");
         return Err(PROVISIONING_DENIED);
     }
@@ -1027,10 +1046,20 @@ pub async fn me(
 ) -> Response {
     let mut answered = Json(json!({
         "authed": authed(&app, &headers),
+        // Unchanged by the address: GitHub takes the callback from its own app
+        // registration and never sends a `redirect_uri`, so it works wherever
+        // the hub is reachable.
         "github": app.db.get("github_client_id").is_some_and(|v| !v.is_empty()),
         // Every sign-in path stands on its own: an empty setting hides that
         // button and nothing else, so a broken IdP cannot lock the owner out.
-        "oidc": app.db.get("oidc_issuer").is_some_and(|v| !v.is_empty())
+        //
+        // The address is part of "configured" here rather than a separate flag,
+        // because OIDC cannot work without it: a plaintext address would put the
+        // authorization code on the wire, so the button is not offered at all.
+        // The security page says which of the two is missing, so an operator
+        // who has filled every field is not left guessing.
+        "oidc": app.oidc_address_ok()
+            && app.db.get("oidc_issuer").is_some_and(|v| !v.is_empty())
             && app.db.get("oidc_client_id").is_some_and(|v| !v.is_empty()),
         // The button's label, defaulted here so the panel carries no fallback of
         // its own.
@@ -1053,12 +1082,16 @@ pub async fn me(
         // Whether this browser may provision is not answered here: a GET carries
         // no `Origin`, so the panel applies `provisioning_allowed`'s rule itself.
         //
-        // The hub's own public URL when one was given, which is what belongs in an
+        // The hub's own public URL when it knows one, which is what belongs in an
         // install command and in the OAuth callback -- not whichever address this
-        // browser used, which behind a proxy may be a loopback port. Empty by
-        // default, in which case the browser's address is the only one available
-        // and the panel falls back to its own origin.
-        "site": app.site,
+        // browser used, which behind a proxy may be a loopback port. Empty when
+        // it knows of none, in which case the browser's address is the only one
+        // available and the panel falls back to its own origin.
+        "site": app.base_url(),
+        // Whether that address came from the command line rather than the panel.
+        // The setting is then inert, and the field that writes it says so instead
+        // of taking an edit that changes nothing.
+        "site_fixed": !app.site.is_empty(),
     }))
     .into_response();
     // It carries `authed` and now an address: a shared cache holding either one
@@ -1540,6 +1573,10 @@ pub async fn delete_ping_task(_: Admin, State(app): State<Shared>, Path(id): Pat
 /// set the GitHub or OIDC secret but never read it back.
 const READABLE_SETTINGS: &[&str] = &[
     "site_name",
+    // The hub's own address, for the deployment that has a domain and no wish to
+    // reinstall for it. Held to `https_domain`'s rule, so it can only ever name
+    // an https domain entry.
+    "site_url",
     "public_page",
     "github_client_id",
     "github_allowed_users",
@@ -2080,6 +2117,17 @@ fn setting_error(key: &str, value: &Value) -> Option<String> {
         }
         "admin_password" if value.len() < 12 => Some("密码至少 12 位".into()),
         "admin_password" => None,
+        // The hub's own address, as the panel knows it. `https_domain` is the
+        // rule the install commands already apply to `--site`, so a value saved
+        // here is by construction one the rest of the panel can use: an https
+        // domain entry, no path, no port, no userinfo. A path is refused because
+        // this address is prefixed to `/api/...`, and a plaintext one because the
+        // sign-in it exists for carries the authorization code and the session
+        // cookie.
+        "site_url" if !value.trim().is_empty() && https_domain(&http_address(value)).is_none() => Some(
+            "站点 URL 只填域名（例如 hub.example.com），也可以是 host:端口；不能是 IP、不能带路径、? 或 #"
+                .into(),
+        ),
         // Empty turns OIDC off. A value has to be a base URL the hub can append
         // `/.well-known/openid-configuration` to, so it needs a scheme it can
         // speak and nothing after the path: a query or fragment there would be
@@ -2138,6 +2186,17 @@ pub async fn save_settings(
             return bad(&message);
         }
     }
+    // An address saved from a plaintext request would lock its own author out:
+    // every cookie issued afterwards carries `Secure`, and the browser discards
+    // such a cookie on the http page they are reading. They would then be unable
+    // to reach this setting to undo it -- the one failure a panel must not let a
+    // reader talk themselves into. A hub started with `--site` is exempt: the
+    // setting is inert there and writing it changes nothing.
+    let address = map.get("site_url").and_then(|v| v.as_str()).unwrap_or_default();
+    if app.site.is_empty() && !address.trim().is_empty() && !crate::request_is_https(&headers) {
+        return bad("请用 https 域名访问面板后再设置站点 URL：从 http 保存会让会话 cookie 带上 Secure，
+             而浏览器在 http 页面上会丢弃它，你就再也登不进来了");
+    }
     // Set when the password changed: the change signs every session out, and the
     // caller receives a replacement rather than being logged out by it.
     let mut reissued = String::new();
@@ -2160,6 +2219,11 @@ pub async fn save_settings(
             "github_allowed_users" => app.db.set_github_allowed(value),
             // Both savers also prune bindings, so neither may go through `set`.
             "oidc_allowed_users" => app.db.set_oidc_allowed(value),
+            // Stored as `https://host`, without a trailing slash: it is prefixed
+            // to `/api/...`, where `https://host/` + `/api/me` is a different
+            // URL. The panel asks for the bare host, but a pasted full URL
+            // arrives here too and is normalised rather than refused.
+            "site_url" => app.db.set("site_url", &http_address(value)),
             _ => app.db.set(key, value),
         };
         if let Err(e) = saved {
@@ -2262,6 +2326,94 @@ mod tests {
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["ip"], "198.51.100.7", "the peer's own address");
         assert_eq!(body["authed"], false, "and nothing else about the visitor");
+    }
+
+    /// The panel builds install commands, the OIDC callback and both sign-in
+    /// cards from this address, so it reports what the hub actually knows --
+    /// from the flag or the setting -- and whether the flag is what fixed it.
+    #[tokio::test]
+    async fn me_reports_the_address_and_whether_the_flag_fixed_it() {
+        let read = |app: App| async move {
+            let answered = me(State(std::sync::Arc::new(app)), peer(), HeaderMap::new()).await;
+            let body = axum::body::to_bytes(answered.into_body(), 64 * 1024).await.unwrap();
+            serde_json::from_slice::<Value>(&body).unwrap()
+        };
+        let configured = |app: App| {
+            app.db.set("oidc_issuer", "https://id.example.com").unwrap();
+            app.db.set("oidc_client_id", "monitor").unwrap();
+            app.db.set("github_client_id", "gh").unwrap();
+            app
+        };
+
+        // Nothing configured: the panel falls back to the browser's own address.
+        let bare = read(configured(app())).await;
+        assert_eq!(bare["site"], "", "no address known");
+        assert_eq!(bare["site_fixed"], false);
+        assert_eq!(bare["oidc"], false, "no address, no OIDC");
+
+        // The setting answers for the deployment that has a domain and no flag.
+        let by_setting = configured(app());
+        by_setting.db.set("site_url", "https://panel.example.com").unwrap();
+        let answered = read(by_setting).await;
+        assert_eq!(answered["site"], "https://panel.example.com");
+        assert_eq!(answered["site_fixed"], false, "the panel may still change it");
+        assert_eq!(answered["oidc"], true);
+
+        // The flag wins, and the panel is told so that it can lock the field.
+        let mut by_flag = configured(app());
+        by_flag.site = "https://flag.example.com".into();
+        by_flag.db.set("site_url", "https://panel.example.com").unwrap();
+        let answered = read(by_flag).await;
+        assert_eq!(answered["site"], "https://flag.example.com");
+        assert_eq!(answered["site_fixed"], true);
+
+        // A plaintext address takes OIDC away and leaves GitHub alone: GitHub
+        // takes its callback from the OAuth app and never sends a redirect_uri,
+        // so the address plays no part in it.
+        let mut clear = configured(app());
+        clear.site = "http://hub.example.com".into();
+        let answered = read(clear).await;
+        assert_eq!(answered["oidc"], false, "the code would cross the wire in the clear");
+        assert_eq!(answered["github"], true, "unaffected: it sends no redirect_uri");
+    }
+
+    /// The panel's address field is the one setting that can lock its own author
+    /// out: every cookie issued after it carries `Secure`, and a browser on the
+    /// http page they are reading discards such a cookie. So it is refused from
+    /// a request that did not arrive over https.
+    #[tokio::test]
+    async fn the_address_is_not_saved_from_a_plaintext_request() {
+        let app = std::sync::Arc::new(app());
+        let put = |headers: HeaderMap, body: Value| {
+            save_settings(Admin, State(app.clone()), peer(), headers, Json(body))
+        };
+        let https = || {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-proto", "https".parse().unwrap());
+            headers
+        };
+
+        let refused = put(HeaderMap::new(), json!({"site_url": "hub.example.com"})).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "http is not where this is set");
+        assert_eq!(app.db.get("site_url"), None, "a refused save leaves nothing behind");
+
+        assert_eq!(
+            put(https(), json!({"site_url": " https://hub.example.com/ "})).await.status(),
+            StatusCode::OK
+        );
+        assert_eq!(app.db.get("site_url").as_deref(), Some("https://hub.example.com"), "normalised");
+
+        // Clearing it is allowed from anywhere: the risk is in setting an
+        // address, not in going back to following the browser.
+        assert_eq!(put(HeaderMap::new(), json!({"site_url": ""})).await.status(), StatusCode::OK);
+        assert_eq!(app.db.get("site_url").as_deref(), Some(""), "cleared");
+
+        // A hub whose address the flag already fixed is exempt: the setting is
+        // inert there, and writing it changes nothing about the cookies.
+        let flagged = std::sync::Arc::new(app_with_site("https://flag.example.com"));
+        let put_flagged =
+            |body: Value| save_settings(Admin, State(flagged.clone()), peer(), HeaderMap::new(), Json(body));
+        assert_eq!(put_flagged(json!({"site_url": "hub.example.com"})).await.status(), StatusCode::OK);
     }
 
     /// A peer behind a proxy is the address the proxy forwarded, by the same
@@ -4187,6 +4339,45 @@ mod tests {
         assert!(!body.to_string().contains("oidc-super-secret"));
         // Empty is a valid value for this key, and travels to the store as such.
         assert_eq!(setting_error("oidc_client_secret", &json!("")), None);
+    }
+
+    /// The hub's own address, as typed in the panel: a bare host, optionally
+    /// with a port, and always https by the time it is stored.
+    #[test]
+    fn a_site_address_is_a_bare_https_domain() {
+        for ok in [
+            "",
+            " ",
+            "hub.example.com",
+            "hub.example.com/",
+            "https://hub.example.com/",
+            "hub.example.com:8443",
+        ] {
+            assert_eq!(setting_error("site_url", &json!(ok)), None, "{ok}");
+        }
+        // Normalised to one spelling, so the value can be prefixed to a path.
+        assert_eq!(http_address(""), "");
+        assert_eq!(http_address("hub.example.com"), "https://hub.example.com");
+        assert_eq!(http_address(" https://hub.example.com/ "), "https://hub.example.com");
+        assert_eq!(http_address("hub.example.com:8443"), "https://hub.example.com:8443");
+
+        for bad in [
+            // Plaintext is the one thing this value may never be: the sign-in it
+            // exists for carries the authorization code and the session cookie.
+            "http://hub.example.com",
+            // An IP names no host a certificate can match, and a path would be
+            // swallowed when `/api/...` is appended.
+            "198.51.100.7",
+            "hub.example.com/panel",
+            "hub.example.com?x=1",
+            "hub.example.com#top",
+            // The hub's own machine is what `--site` is for; the setting exists
+            // to name the public address.
+            "localhost",
+            "localhost:8443",
+        ] {
+            assert!(setting_error("site_url", &json!(bad)).is_some(), "{bad}");
+        }
     }
 
     /// What every error response is held to: text written for the reader passes

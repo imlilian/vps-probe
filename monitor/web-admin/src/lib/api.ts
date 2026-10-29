@@ -176,16 +176,35 @@ export function loopbackOrigin(origin: string): boolean {
 }
 
 /**
+ * The address a reader's own address bar offers for the hub's 站点 URL setting,
+ * or "" when it offers none.
+ *
+ * Only an https origin qualifies. The setting is https by definition -- the
+ * sign-in it exists for carries the authorization code and the session cookie --
+ * so an http entry is not a value that could be filled in, and offering it would
+ * be offering a refusal.
+ */
+export function addressFromOrigin(origin: string): string {
+  try {
+    const url = new URL(origin)
+    return url.protocol === "https:" ? url.host : ""
+  } catch {
+    return ""
+  }
+}
+
+/**
  * Why nodes cannot be added or installed from this page, or "" when they can.
- * `origin` is the page's own, which reaches the hub as `Origin`; `site` is
- * `--site`, empty when none is set. The hub's `provisioning_allowed` applies the
- * same rule, and a GET carries no `Origin` for it to answer this in advance.
+ * `origin` is the page's own, which reaches the hub as `Origin`; `site` is the
+ * hub's own address -- `--site` or the panel's 站点 URL setting -- empty when it
+ * knows of none. The hub's `provisioning_allowed` applies the same rule, and a
+ * GET carries no `Origin` for it to answer this in advance.
  */
 export function provisionRefusal(origin: string, site: string): string {
-  if (site && !provisioningSite(site)) return "hub 的 --site 不是 https 域名，改正后才能添加或安装节点。"
+  if (site && !provisioningSite(site)) return "hub 的站点 URL 不是 https 域名，改正后才能添加或安装节点。"
   if (provisioningSite(origin) || (loopbackOrigin(origin) && site)) return ""
   return loopbackOrigin(origin)
-    ? "从隧道或回环地址进面板时，要给 hub 加 --site 指定节点可达的 https 域名。"
+    ? "从隧道或回环地址进面板时，要告诉 hub 节点可达的 https 域名：在「设置」里填站点 URL，或用 --site 启动。"
     : "请通过 HTTPS 域名访问面板后添加或安装节点。"
 }
 

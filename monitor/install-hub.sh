@@ -386,11 +386,11 @@ UNIT
 		printf '     配好之后用域名访问面板，我相信这难不倒你。\n'
 		[ "$PORT" = 28080 ] || printf '     反代要指向 %s 这个端口。\n' "$PORT"
 		# Everything the panel derives from the browser address follows from the
-		# domain working, which is why --site is not asked for here. OIDC is the
-		# exception: the hub has to send the callback address itself, and only
-		# --site tells it what that is.
-		printf '     另外：要用 OIDC 登录（面板「安全」页那张卡），得再跑一次带\n'
-		printf '     --site https://你的域名 的安装——OIDC 的回调地址只能来自它。\n'
+		# domain working, which is why --site is not asked for here. One thing
+		# cannot: OIDC, where the hub has to state the callback address itself.
+		# That is a field in the panel now, so this is a signpost, not a reinstall.
+		printf '     另外：要用 OIDC 登录，光有域名还不够——hub 得自己说出回调地址，\n'
+		printf '     它不会从请求里猜。用域名打开面板后，到「设置」里填一下站点 URL。\n'
 	fi
 }
 
@@ -497,19 +497,21 @@ probe hub 安装器
                                        重置面板密码，登出所有会话
 
   --port <n>     本机监听端口，默认 $PORT
-  --site <url>   一般不用填。面板拼安装命令用的是浏览器地址栏，配好反代
-                 用域名访问就自动对了。四种情况要填：要用 OIDC 登录（面板
-                 「安全」页那张卡——它必须原样带上回调地址，hub 只能从
-                 --site 知道它，不填则点登录按钮直接失败）；节点该连的域名
-                 和你进面板的域名不是同一个；走 SSH 隧道进面板（地址栏是
-                 127.0.0.1，节点连不上它）；反代不发 X-Forwarded-Proto
-                 （那时会话 cookie 拿不到 Secure 标志）
+  --site <url>   一般不用填：装完用域名打开面板，到「设置」里填站点 URL
+                 是一样的效果，而且会自动填入你正在用的地址；填在这里的话
+                 面板里那一项就锁死成这个值、不能改。要用 OIDC 登录就必须
+                 有一个（面板会提示）——它得原样把回调地址发给身份系统，只能
+                 从这两处之一知道。其它要填的情况：节点该连的域名和你进面板
+                 的域名不是同一个；走 SSH 隧道进面板（地址栏是 127.0.0.1，
+                 节点连不上它）；反代不发 X-Forwarded-Proto（那时会话 cookie
+                 拿不到 Secure 标志）
   --from <file>  不从发布源取，改用本地文件；同名 .sig 要放在它旁边
   --yes, -y      跳过确认
   --help, -h     显示这段
 
 hub 只监听 127.0.0.1，公网访问不到，需要自己配 nginx / caddy / CF 隧道把
-域名指过来，装完用 --site 填你的域名。
+域名指过来。hub 默认不知道自己的对外地址：用域名打开面板后，到「设置」里
+填站点 URL 即可（或用 --site 把它钉死在命令行）。
 
 二进制按 ed25519 签名校验：签名私钥只在发布流水线里，任何机器上都没有，
 所以发布源被换掉也装不进来。校验不过直接拒绝，不落盘。
