@@ -4,8 +4,8 @@
 //
 // Nothing imports it, so the bundle never includes it.
 import {
-  axisBytes, axisTop, bytes, cpuName, cycle, cycleSuffix, daysUntil, despike, despikeWindow, money, moneyMark,
-  moneyParts, osName,
+  absence, axisBytes, axisTop, bytes, cpuName, cycle, cycleSuffix, daysUntil, despike, despikeWindow, money,
+  moneyMark, moneyParts, osName,
   pair, percent, loadWindows, pingWindows, quarters, RATE_FLOOR, rateAxis, sinceSeen, splitUnit, tickClock, timeTicks,
   uptime, withGaps,
 } from "./format.ts"
@@ -192,6 +192,11 @@ eq(uptime(2 * 86400 + 5 * 3600), "2 天 5 小时", "超过一天不再写分钟"
 
 // 旧 hub 存名称，新 hub 把其余长度存成 `<n>m`；两种写法同一个长度读法一致。
 eq(["yearly", "12m", "60m", "18m", "once", "weekly"].map(cycle), ["年付", "年付", "5 年付", "18 个月付", "一次性", "weekly"], "付款周期")
+
+// 离线多久：小时级说「3 小时」，不到一分钟干脆不说，省得印出 `0 分钟`
+eq([0, 59, 60, 119, 3599, 3600, 7200, 86_399, 86_400, 3 * 86_400].map(absence),
+  ["", "", "1 分钟", "1 分钟", "59 分钟", "1 小时", "2 小时", "23 小时", "1 天", "3 天"],
+  "离线时长的说法")
 
 // 价格后缀：贴在金额后面的那个周期，`$168/3年` 里的 `3年`。一次性买断没有周期。
 eq(

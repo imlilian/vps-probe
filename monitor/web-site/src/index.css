@@ -89,6 +89,11 @@
   --warn: light-dark(oklch(0.555 0.163 48.998), oklch(0.828 0.189 84.429)); /* amber-700 / amber-400 */
   --online: light-dark(oklch(0.508 0.118 165.612), oklch(0.765 0.177 163.223));
   --offline: light-dark(oklch(0.554 0.046 257.417), oklch(0.704 0.04 256.788)); /* slate-500 / slate-400 */
+  /* The hatch a card wears once its node goes quiet: `--destructive` at the
+     weight of a wash, not of a block. Its figures are still true, only old, so
+     the veil says "not now" without hiding what it says. A fraction of the hue
+     rather than a new step -- the colour is already spoken for. */
+  --offline-veil: light-dark(oklch(0.505 0.213 27.518 / 7%), oklch(0.704 0.191 22.216 / 10%));
 
   /* Five latency steps, worst last, and the same five for a block of a strip.
      Steps of Tailwind's palette again, chosen so the ramp climbs monotonically
@@ -268,6 +273,19 @@
    mixed toward white there. `--brand` is set per icon, inline. */
 .distro-mark { fill: var(--brand); }
 .dark .distro-mark { fill: color-mix(in oklab, var(--brand) 60%, white); }
+
+/* A node that has stopped reporting is drawn behind a red hatch, so a glance
+   down the grid finds the dark one without reading a word.
+   Drawn OVER the card's figures rather than under them: under, the wells inside
+   the card (`--card-2`) would cover it and the hatch would read as a frame
+   around the content instead of a veil across it.
+   Diagonal because nothing else on the page is -- a horizontal rule reads as a
+   table row, a vertical one as a column edge, and the page has both. 5px on,
+   8px off, at the weight of a wash: the figures underneath stay the thing the
+   eye lands on, which is the point -- they are old, not wrong. */
+.offline-veil {
+  background-image: repeating-linear-gradient(135deg, var(--offline-veil) 0 5px, transparent 5px 13px);
+}
 
 /* Everything that moves on this page moves in CSS: the meter's width, a card's
    shadow under the pointer, the skeleton's pulse. (The charts are the one

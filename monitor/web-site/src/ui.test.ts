@@ -147,6 +147,18 @@ try {
   // An offline node has no live line, and the hour it last reported would read
   // as current if the strip were drawn from it.
   assert.ok(!card(7).includes("grid-cols-20"))
+  // A machine that has gone quiet is drawn behind a red hatch with a red edge,
+  // and the badge beside its name says how long it has been gone: the figures on
+  // the card are still true, only old, so the veil says "not now" rather than
+  // hiding them. A card that is merely live wears neither.
+  const words = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/<!-- -->/g, "").replace(/\s+/g, " ")
+  const quiet = card(7)
+  assert.ok(quiet.includes("offline-veil"), "离线的卡片盖一层斜纹")
+  assert.match(quiet, /class="[^"]*border-destructive\/40[^"]*"[^>]*role="button"/, "离线的卡片边是红的")
+  assert.match(words(quiet), /离线\s*·\s*\d+\s*(分钟|小时|天)/, "徽章里写着离线多久")
+  // Online: neither the hatch nor the red edge, and the uptime capsule instead.
+  assert.ok(!full.includes("offline-veil"), "在线的卡片没有斜纹")
+  assert.ok(!/class="[^"]*border-destructive/.test(full), "在线的卡片边不是红的")
   // And no renewal date is drawn as no mark at all. It used to be a lone `∞`
   // whose meaning lived in a tooltip, in the column that squeezed the OS line.
   // Node 7 (上海-家宽) is the undated one; node 8 is also undated but has no

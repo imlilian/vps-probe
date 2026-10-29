@@ -9,7 +9,7 @@ import { Country, deployed, Figure, statusDot, statusLabel } from "@/components/
 import { monthUsage } from "@/lib/stats"
 import { ProbeLines } from "@/components/PingPanel"
 import type { Node } from "@/lib/api"
-import { bytes, percent, rate, splitUnit, uptimeShort } from "@/lib/format"
+import { absence, bytes, percent, rate, sinceSeen, splitUnit, uptimeShort } from "@/lib/format"
 import { ArrowDown, ArrowUp, Clock, WifiOff } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -75,6 +75,11 @@ export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
   const m = node.online ? node.metrics : null
   const loadPct = node.cpu_cores > 0 && m ? (m.load[0] / node.cpu_cores) * 100 : null
   const status = statusLabel(node)
+  const down = absence(sinceSeen(node))
+  // The card's red edge, without its veil: a row is four figures across forty
+  // pixels of height, and stripes under text that small would cost more than the
+  // state is worth. The pill beside it carries the same words either way.
+  const offline = !node.online && deployed(node)
 
   return (
     <Card
@@ -87,7 +92,10 @@ export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
       data-node={node.id}
       // Focus is drawn as the same border the pointer gets on hover, plus the
       // button's ring.
-      className="min-w-0 cursor-pointer gap-0 p-3 outline-none transition-[box-shadow,border-color] duration-200 hover:border-ring/50 hover:shadow-raise focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+      className={cn(
+        "min-w-0 cursor-pointer gap-0 p-3 outline-none transition-[box-shadow,border-color] duration-200 hover:shadow-raise focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50",
+        offline ? "border-destructive/40 hover:border-destructive/60" : "hover:border-ring/50",
+      )}
     >
       <div className="flex items-center gap-1.5">
         <Country node={node} />
@@ -102,9 +110,18 @@ export function NodeRow({ node, onOpen }: { node: Node; onOpen: () => void }) {
             {m ? uptimeShort(m.uptime) : "—"}
           </span>
         ) : deployed(node) ? (
-          <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-3xs font-semibold text-destructive">
+          <span
+            className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-3xs font-semibold text-destructive"
+            title={status}
+          >
             <Glyph icon={WifiOff} box="sm" className="size-3" />
             离线
+            {down && (
+              <>
+                <span aria-hidden className="opacity-50">·</span>
+                <span className="tnum font-medium">{down}</span>
+              </>
+            )}
           </span>
         ) : null}
       </div>

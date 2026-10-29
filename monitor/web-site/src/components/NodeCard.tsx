@@ -15,7 +15,7 @@ import { monthUsage } from "@/lib/stats"
 import { PingPanel } from "@/components/PingPanel"
 import type { Node } from "@/lib/api"
 import {
-  bytes, cpuName, FOREVER, osName, pair, percent, rate, sinceSeen,
+  absence, bytes, cpuName, FOREVER, osName, pair, percent, rate, sinceSeen,
   splitUnit, uptimeShort,
 } from "@/lib/format"
 import { cn } from "@/lib/utils"
@@ -63,11 +63,10 @@ export function deployed(node: Node) {
  * bare dot, and the two must not disagree about which of the three it is.
  */
 export function statusLabel(node: Node): string {
-  const down = sinceSeen(node)
   return node.online
     ? `在线 ${node.metrics ? uptimeShort(node.metrics.uptime) : ""}`.trim()
     : deployed(node)
-      ? `离线 ${down >= 60 ? uptimeShort(down) : ""}`.trim()
+      ? ["离线", absence(sinceSeen(node))].filter(Boolean).join(" ")
       : "未接入"
 }
 
@@ -161,14 +160,22 @@ export function Uptime({ node }: { node: Node }) {
 /**
  * The same slot, once the node stops reporting. Words rather than a grey dot:
  * offline is the one state a visitor has to be told about, and the pill says it
- * for as long as it lasts. An expanded node keeps the pill too -- the head has
- * room for one badge, and which one that is follows the state.
+ * for as long as it lasts -- how long is the first question the word raises, and
+ * the answer is the figure the hatch has no room for. Under a minute the count
+ * is left off rather than printed as `0 分钟`.
  */
-function Offline() {
+function Offline({ node }: { node: Node }) {
+  const down = absence(sinceSeen(node))
   return (
     <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-2xs font-semibold text-destructive">
       <Glyph icon={WifiOff} box="sm" />
       离线
+      {down && (
+        <>
+          <span aria-hidden className="opacity-50">·</span>
+          <span className="tnum font-medium">{down}</span>
+        </>
+      )}
     </span>
   )
 }
@@ -363,6 +370,8 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
   // machine has room. A load of 1.0 is idle on four cores and saturated on one.
   const loadPct = m && node.cpu_cores > 0 ? (m.load[0] / node.cpu_cores) * 100 : null
   const cpu = cpuName(node.cpu_name)
+  // Gone, as opposed to never arrived: the second has nothing behind it to keep.
+  const offline = !node.online && deployed(node)
 
   return (
     <Card
@@ -375,7 +384,16 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
       // A card is a button here, so it draws the button's focus: the ring and the
       // border the pointer gets on hover, since a list walked with Tab otherwise
       // moves nothing on screen.
-      className="min-w-0 cursor-pointer gap-0 p-3.5 outline-none transition-[box-shadow,border-color] duration-200 hover:border-ring/50 hover:shadow-raise focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+      //
+      // A card whose node has gone quiet keeps a red edge under the pointer, so
+      // hover cannot make it look live, and carries the hatch drawn at the end of
+      // this component. `relative` + `overflow-hidden` clip that veil to the
+      // rounded corner; the focus ring is the card's own shadow, which neither
+      // clips.
+      className={cn(
+        "relative min-w-0 cursor-pointer gap-0 overflow-hidden p-3.5 outline-none transition-[box-shadow,border-color] duration-200 hover:shadow-raise focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50",
+        offline ? "border-destructive/40 hover:border-destructive/60" : "hover:border-ring/50",
+      )}
       role="button"
       tabIndex={0}
       // Without a name of its own the card is announced as its whole subtree --
@@ -404,7 +422,7 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
           </p>
         </div>
         {/* One badge in the corner, and which one follows the state. */}
-        {node.online ? <Uptime node={node} /> : deployed(node) ? <Offline /> : null}
+        {node.online ? <Uptime node={node} /> : deployed(node) ? <Offline node={node} /> : null}
       </div>
 
       {/* One layout for both states: a disconnected node still knows its
@@ -462,6 +480,10 @@ export function NodeCard({ node, onOpen }: { node: Node; onOpen: () => void }) {
           还没有接入。在后台生成安装命令并执行一次。
         </p>
       )}
+
+      {/* Last, so it paints over the figures: the veil is the state, not a
+          backdrop. Not announced -- the badge already says it in words. */}
+      {offline && <span aria-hidden className="offline-veil pointer-events-none absolute inset-0" />}
     </Card>
   )
 }

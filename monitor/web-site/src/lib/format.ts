@@ -80,6 +80,21 @@ export function uptimeShort(seconds: number): string {
   return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 
+/**
+ * How long a machine has been silent, in words: `1 分钟`, `2 小时`, `3 天`.
+ *
+ * Words rather than [uptimeShort]'s `1m`: this one is read in the pill that sits
+ * where the uptime capsule sits, and an absence spelled the way a live figure is
+ * spelled reads as uptime that happens to be growing. Under a minute it says
+ * nothing -- the caller leaves the count off rather than printing `0 分钟`.
+ */
+export function absence(seconds: number): string {
+  if (!(seconds >= 60)) return ""
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)} 分钟`
+  if (seconds < 86_400) return `${Math.floor(seconds / 3_600)} 小时`
+  return `${Math.floor(seconds / 86_400)} 天`
+}
+
 /** Whole days until a date, negative once it has passed. */
 export function daysUntil(date?: string | null): number | null {
   if (!date) return null
