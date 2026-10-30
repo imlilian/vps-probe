@@ -207,12 +207,13 @@ try {
     // Colour is data, and it is now one of five tokens rather than a palette
     // step picked per line: a block means the same thing on every card.
     assert.ok(/bg-signal-[1-5]/.test(strip), "the blocks are the signal scale")
-    // The two columns are named once, at the top of the well, and the numbers
-    // they name are the three this release splits apart.
-    for (const want of ["延迟", "丢包", "重传"]) {
-      assert.ok(strip.includes(want), `the card says ${want}`)
-    }
-    assert.ok(strip.includes("丢包 · 重传"), "the quality column names both figures")
+    // No column header: at this width it was 12px of words over figures whose
+    // units already say what they are. Each figure sits over the bar it colours,
+    // labelled in two or three Latin letters so a translation cannot overflow it.
+    assert.ok(!strip.includes(">延迟<"), "no header row")
+    assert.ok(strip.includes("LOSS "), "the loss figure is labelled")
+    assert.ok(strip.includes("RTX "), "and so is the retransmit rate")
+    assert.ok(!strip.includes("丢包 · 重传"), "and the header's words are gone")
     // Each probe is one sentence to a screen reader, because the strips above are
     // aria-hidden and twenty unlabelled boxes say nothing.
     assert.match(
@@ -291,10 +292,10 @@ try {
     assert.match(solo, /<svg[^>]*class="[^"]*text-(emerald|amber|orange|red)-700/, "the svg carries the band's ink")
     // Two figures, the ends of the hour: the median is already the number above
     // them, and a timestamp on a card being watched says nothing.
-    for (const want of ["最佳", "最差"]) {
+    for (const want of ["MIN", "MAX"]) {
       assert.ok(solo.includes(want), `a solo link says ${want}`)
     }
-    for (const gone of ["最近", "中位"]) {
+    for (const gone of ["最近", "中位", "最佳", "最差"]) {
       assert.ok(!solo.includes(gone), `a solo link no longer says ${gone}`)
     }
     // And each figure is set in its own band's ink, so a bad `最差` is coloured
@@ -305,11 +306,12 @@ try {
     // A hub that reports no retransmit rate gets no quality strip: the card is
     // exactly what it was before this release.
     assert.ok(!solo.includes("bg-signal-1/35"), "no quality strip without the figure")
-    assert.ok(!solo.includes("重传"), "and no retransmit figure either")
-    // The well is a floor, not a fixed height: the row decides how tall it is, so
-    // a fourth line can never be pushed over the footer.
-    assert.ok(solo.includes("min-h-31"), "the well has a 124px floor")
-    assert.ok(!solo.includes("h-[7.25rem]"), "and no fixed height")
+    assert.ok(!solo.includes("RTX"), "and no retransmit figure either")
+    // One height for all three probe counts: three rows of 24 and the 8px
+    // between them is 88px, two rows carrying MIN/MAX come to the same, and the
+    // 16px of padding makes 104.
+    assert.ok(solo.includes("mt-2.5 flex h-26 flex-col"), "the well is 104px, whatever the probe count")
+    assert.ok(!solo.includes("min-h-31"), "and no longer grows with the row")
   } finally {
     globalThis.fetch = asked
   }
@@ -320,10 +322,10 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 100))
     const pair = card(1)
     assert.ok(pair.includes("上海电信") && pair.includes("上海联通"), "both probes are named")
-    assert.ok(pair.includes("min-h-31"), "and the well is the same floor")
+    assert.ok(pair.includes("h-26"), "and the well is the same fixed box")
     assert.equal(pair.match(/grid-cols-20/g)?.length, 2, "two probes keep two strips")
     assert.ok(!pair.includes("linearGradient"), "and no curve: two rows of blocks stay scannable")
-    for (const want of ["最佳", "最差"]) {
+    for (const want of ["MIN", "MAX"]) {
       assert.ok(pair.includes(want), `two probes can afford ${want}`)
     }
   } finally {
@@ -343,10 +345,14 @@ try {
     assert.equal(solo.match(/grid-cols-20/g)?.length, 1, "one strip, at the card's full width")
     assert.ok(solo.includes("bg-signal-1/35"), "and it is the quality strip")
     assert.ok(solo.match(/bg-signal-4/g), "with an amber block where a handshake came back late")
-    for (const want of ["最佳", "最差", "重传", "丢包"]) {
+    for (const want of ["MIN", "MAX", "RTX", "LOSS"]) {
       assert.ok(solo.includes(want), `a solo link's bottom row says ${want}`)
     }
     assert.ok(!solo.includes(">延迟<"), "no column header on a one-probe card")
+    // The two figures are in the bottom row here, and a figure that measured
+    // nothing prints a dash rather than a zero.
+    assert.match(words(solo), /RTX [\d.]+%/, "the bottom row carries the retransmit rate")
+    assert.match(words(solo), /LOSS [\d.]+%/, "beside the loss")
     // The colour of the strip's blocks and the figure above are the same reading.
     assert.match(solo, /aria-label="上海电信，延迟 [^"]*，丢包 [^"]*，重传 [^"]*"/)
   } finally {
@@ -359,14 +365,12 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 100))
     const pair = card(1)
     assert.equal(pair.match(/grid-cols-20/g)?.length, 4, "two probes, two strips each")
-    assert.ok(pair.includes(">延迟<"), "and the columns are named once, above them")
-    assert.ok(pair.includes("丢包 · 重传"), "as the quality column")
-    // The figures are laid out in a grid so a card's rows line up: the reading in
-    // a 3.25rem column, the quality pair in 4.5rem.
-    assert.ok(pair.includes("min-w-[3.25rem] shrink-0 text-right"), "the reading has its own column")
-    assert.ok(pair.includes("min-w-[4.5rem] shrink-0 text-right"), "and the percentages theirs")
-    assert.ok(pair.includes("grid-cols-[3fr_2fr]"), "the latency strip takes three fifths")
-    assert.ok(pair.includes("flex-1"), "and the well takes what the row leaves")
+    // Both rows use one grid, so each figure sits over the bar it colours: the
+    // reading at the right of the latency column, LOSS and RTX at the two ends of
+    // the quality one.
+    assert.equal(pair.match(/grid-cols-\[3fr_2fr\]/g)?.length, 4, "figures and strips share a grid")
+    assert.ok(pair.includes("LOSS ") && pair.includes("RTX "), "the two labels sit over their strip")
+    assert.ok(pair.includes("h-26"), "and the well is the one fixed height")
   } finally {
     globalThis.fetch = asked
     fetchPing(2)
@@ -707,15 +711,18 @@ try {
     // wrong. `波动` moved into the ⓘ with the rest of the statistics.
     assert.ok(card.includes("延迟 51 ms"), "the card leads with the latency")
     assert.ok(card.includes("P50 51 ms / P99 62 ms"), "and its two quantiles beside it")
-    assert.ok(card.includes("重传 2.1%") && card.includes("丢包 0%"), "then the two failure figures")
+    assert.ok(card.includes("RTX 2.1%") && card.includes("LOSS -"), "then the two failure figures")
+    // A zero is a dash: the hub leaves it out of the answer, and the panel prints
+    // the same absence.
+    assert.ok(!card.includes("LOSS 0%"), "a clean window prints a dash, not a zero")
     assert.ok(!card.includes("波动 1.21"), "the spread is in the tooltip, not the row")
     assert.match(card, /aria-label="上海电信，已显示；延迟 51 ms，P50 51 ms，P99 62 ms，重传 2.1%，丢包 0%，样本 60"/)
     // A hub without the figure: one row fewer, and no invented zero.
     const old = tidy(renderToString(createElement(ProbeCard, {
       stat: { ...stat, retx: null }, color: "#22c55e", on: false, onClick() {},
     })))
-    assert.ok(!old.includes("重传"), "no retransmit row without the figure")
-    assert.ok(old.includes("丢包 0%") && old.includes("opacity-30"), "and a hidden probe is dimmed")
+    assert.ok(!old.includes("RTX"), "no retransmit figure without it")
+    assert.ok(old.includes("LOSS -") && old.includes("opacity-30"), "and a hidden probe is dimmed")
 
     const { QualitySection } = await server.ssrLoadModule("/src/components/detail/QualitySection.tsx")
     const newest = Math.ceil(Date.now() / 1000 / 60) * 60
@@ -737,7 +744,8 @@ try {
     assert.ok(quality.includes("线路质量"), "the quality card is titled")
     // The block length is the window's, and the title says which.
     assert.ok(quality.includes("首包重传与丢包 · 每块 3 分钟"), "the block length is stated")
-    assert.ok(quality.includes("丢包 3.3%") && quality.includes("重传 4.7%"), "each row carries both figures")
+    assert.ok(quality.includes("LOSS 3.3%") && quality.includes("RTX 4.7%"), "each row carries both figures")
+    assert.ok(quality.includes("LOSS -"), "and a quiet line shows a dash")
     // One row per probe, at the window's block count: an hour is twenty blocks of
     // three minutes, and the strip is a template rather than the card's twenty
     // fixed columns.

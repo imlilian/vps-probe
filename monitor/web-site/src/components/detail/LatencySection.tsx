@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import type { Node } from "@/lib/api"
 import { AXIS, GRID, LINE, TOOLTIP, probeStyle, timeAxis } from "@/lib/chart"
 import { pingWindows } from "@/lib/format"
-import { fmtLoss } from "@/lib/ping"
+import { fmtLoss, fmtPct } from "@/lib/ping"
 import { usePingHistory } from "@/lib/history"
 import { useInView } from "@/lib/useInView"
 import { buildLatencyRows, probeStats, type ProbeSeries, type ProbeStat } from "@/lib/pingDetail"
@@ -22,20 +22,24 @@ import { RangeBar } from "./RangeBar"
 const ms = (value: number | null) => value === null ? "—" : `${Math.round(value)} ms`
 
 /**
- * A percentage with the card's own precision: one decimal below ten, the whole
- * number above it, `<0.1` for the nearly-nothing case.
+ * A percentage as a screen reader hears it: the card's own precision, and zero
+ * spoken as zero.
  *
- * The detail page rounded to whole per cents, which is fine for a loss row and
- * useless for a retransmit rate: 4.7% and 5.2% are the same figure at that
- * precision, and they are the difference between a line that loses a SYN now and
- * then and one that is in trouble. The card has printed `fmtLoss` all along; two
- * surfaces naming the same line's number differently was the bug.
+ * The panels print a dash where there is nothing to report (`fmtPct`), which is
+ * the right mark on a row of figures and the wrong thing to read out -- "-" is
+ * not a number. The visible row and the spoken sentence therefore differ by
+ * exactly this: a dash on screen, `0%` in the label.
  */
-const pct = (value: number | null) => value === null ? "—" : `${fmtLoss(value)}%`
+const spokenPct = (value: number) => `${fmtLoss(value)}%`
 
 /**
  * One probe's card: the colour that keys it to the chart, then the three numbers
  * a reader acts on, then the two that say how often the line went wrong.
+ *
+ * The two failure figures are labelled in Latin -- LOSS and RTX -- because they
+ * sit in a row of columns where a two-word Chinese label is both wider and, in
+ * another language, unbounded. The words live in the tooltip and in the spoken
+ * label, which is where they are read rather than measured.
  *
  * The split is the point. `平均 51 ms · 丢包 0% · 波动 1.42` was four figures and
  * a verb in one grey run, and the figure a reader compares across probes was
@@ -56,11 +60,11 @@ export function ProbeCard({ stat, color, on, onClick }: {
 }) {
   // Only where the hub produces it: `重传 —` would be a figure with its value
   // missing, where the truth is that this hub has no such column.
-  const retxInfo = stat.retx === null ? [] : [`重传 ${pct(stat.retx)}`]
+  const retxInfo = stat.retx === null ? [] : [`重传 ${spokenPct(stat.retx)}`]
   const spoken = [
     `${stat.name}，${on ? "已显示" : "已隐藏"}；延迟 ${ms(stat.avg)}，P50 ${ms(stat.p50)}，P99 ${ms(stat.p99)}`,
     ...retxInfo,
-    `丢包 ${pct(stat.loss)}，样本 ${stat.samples}`,
+    `丢包 ${spokenPct(stat.loss)}，样本 ${stat.samples}`,
   ].join("，")
   const info = [
     `最小 ${ms(stat.min)}`,
@@ -72,7 +76,7 @@ export function ProbeCard({ stat, color, on, onClick }: {
     `波动率 ${stat.volatility === null ? "—" : stat.volatility.toFixed(2)}`,
     `样本 ${stat.samples} · 有效 ${stat.valid}`,
     ...retxInfo,
-    `丢包 ${pct(stat.loss)}`,
+    `丢包 ${spokenPct(stat.loss)}`,
   ].join("\n")
   return (
     <button
@@ -99,13 +103,13 @@ export function ProbeCard({ stat, color, on, onClick }: {
           <span>P50 {ms(stat.p50)} / P99 {ms(stat.p99)}</span>
         </span>
         <span className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 text-2xs text-muted-foreground">
+          <span>LOSS {fmtPct(stat.loss)}</span>
           {stat.retx !== null && (
             <>
-              <span>重传 {pct(stat.retx)}</span>
               <span>·</span>
+              <span>RTX {fmtPct(stat.retx)}</span>
             </>
           )}
-          <span>丢包 {pct(stat.loss)}</span>
         </span>
       </span>
     </button>

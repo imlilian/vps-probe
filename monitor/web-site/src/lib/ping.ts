@@ -344,6 +344,27 @@ export const fmtMs = (ms: number) => (ms < 10 ? ms.toFixed(1) : Math.round(ms).t
 export const fmtLoss = (pct: number) =>
   pct === 0 ? "0" : pct < 0.1 ? "<0.1" : pct < 10 ? pct.toFixed(1) : Math.round(pct).toString()
 
+/**
+ * A percentage as the panels print it: a dash wherever there is nothing to
+ * report.
+ *
+ * The hub already leaves a zero out of the answer -- an absent key is "none" --
+ * so `0%` on screen was the one place that told the reader "there is a number
+ * here and it is zero" about a figure that measured nothing. A dash says the
+ * same thing as the missing key, and it leaves the eye free to find the two
+ * figures that are not dashes.
+ */
+export const fmtPct = (pct: number | null) => (pct === null || pct <= 0 ? "-" : `${fmtLoss(pct)}%`)
+
+/**
+ * A latency as the panels print it: a dash when the window has no reading.
+ *
+ * Including all-timeout. `超时` in that position was a word doing a number's job
+ * -- it broke the column, it needed a rule for every language, and the strip
+ * under it is already rose end to end, which is what says the line is down.
+ */
+export const fmtLatency = (ms: number | null) => (ms === null ? "-" : `${fmtMs(ms)} ms`)
+
 // ---- fetching ----------------------------------------------------------------
 
 type Entry = { data: PingData | null; error: string; at: number }
