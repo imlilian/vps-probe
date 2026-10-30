@@ -193,15 +193,46 @@ try {
     fetchPing(2)
     await new Promise((resolve) => setTimeout(resolve, 100))
     const strip = card(1)
-    // Four pixels tall, not six: three probes of twenty blocks give sixty.
+    // Four pixels tall, not six, and two strips per probe since this hub reports
+    // retransmits: three probes of twenty blocks each, twice.
     const blocks = strip.match(/h-1 rounded-xs/g)?.length ?? 0
-    assert.equal(blocks, 60, `three probes of twenty blocks, got ${blocks}`)
+    assert.equal(blocks, 120, `three probes, a latency strip and a quality strip each, got ${blocks}`)
+    assert.equal(strip.match(/grid-cols-20/g)?.length, 6, "six strips of twenty blocks")
+    // Twenty blocks per strip is the resolution, not a number that shrinks when
+    // the card has to fit two strips: the gap goes from 2px to 1px instead.
+    assert.equal(strip.match(/gap-px/g)?.length, 6, "the blocks gave up the gap, not the count")
     for (const want of ["上海电信", "上海联通", "上海移动", "ms"]) {
       assert.ok(strip.includes(want), `missing ${want}`)
     }
     // Colour is data, and it is now one of five tokens rather than a palette
     // step picked per line: a block means the same thing on every card.
     assert.ok(/bg-signal-[1-5]/.test(strip), "the blocks are the signal scale")
+    // The two columns are named once, at the top of the well, and the numbers
+    // they name are the three this release splits apart.
+    for (const want of ["延迟", "丢包", "重传"]) {
+      assert.ok(strip.includes(want), `the card says ${want}`)
+    }
+    assert.ok(strip.includes("丢包 · 重传"), "the quality column names both figures")
+    // Each probe is one sentence to a screen reader, because the strips above are
+    // aria-hidden and twenty unlabelled boxes say nothing.
+    assert.match(
+      strip,
+      /aria-label="上海移动，延迟 \d+(\.\d)? 毫秒，丢包 \d+(\.\d)?%，重传 \d+(\.\d)?%"/,
+      "a probe row is spoken: name, latency, loss, retransmit",
+    )
+    // The quality strip marks exceptions only: a third-strength green where
+    // nothing went wrong, amber where a handshake came back late, rose where one
+    // did not come back at all. The demo's congested line supplies both.
+    assert.ok(strip.includes("bg-signal-1/35"), "a clean block is a quiet green")
+    assert.ok(strip.includes("bg-signal-4"), "a retransmit is amber")
+    // The quality strip's one green is the muted tint of a clean block -- no
+    // second ladder of `bg-signal-2/3` beside the latency strip. Most blocks are
+    // clean, and not all of them: the demo's congested line is what the two
+    // exception fills are drawn from.
+    const clean = strip.match(/bg-signal-1\/35/g)?.length ?? 0
+    assert.ok(clean > 30 && clean < 60, `most quality blocks clean, got ${clean} of 60`)
+    // The block's tooltip carries the two figures, so a pointer can ask.
+    assert.match(strip, /title="[^"]*丢包 \d+(\.\d)?% · 重传 \d+(\.\d)?%"/)
   } finally {
     globalThis.fetch = asked
   }
@@ -210,6 +241,11 @@ try {
     const { ProbeLines } = await server.ssrLoadModule("/src/components/PingPanel.tsx")
     const block = renderToString(createElement(ProbeLines, { node: fleet[1] }))
     assert.ok(block.includes("min-h-[3.25rem]"), "three lines reserved, whatever the probe count")
+    // A retransmit on the compact card is one amber dot and a title, not a second
+    // strip: the card already carries four resource cells and two rates.
+    assert.ok(block.includes("bg-signal-4"), "a line that retransmits is marked")
+    assert.match(block, /title="重传 \d+(\.\d)?%"/, "with the figure in its own title")
+    assert.ok(!block.includes("grid-cols-20"), "and no strip, as before")
   }
   console.log("a card with a history draws three strips of twenty blocks")
 
@@ -217,15 +253,26 @@ try {
   // so the card draws the hour as a line and spends the room three probes do not
   // have on the numbers that describe a link. Two probes keep the strips and gain a
   // second line of figures.
-  const row = (task: number, ts: number, latency: number | null) => ({ task_id: task, ts, latency })
-  const served = (probes: Record<string, string>, tasks: number[]) => {
+  //
+  // These two answers carry no `retx` map: that is a hub from before the metric,
+  // and the card has to keep the shape it has today -- one strip per probe, the
+  // loss figure beside the reading, no quality column anywhere.
+  const row = (task: number, ts: number, latency: number | null, retx?: number) =>
+    retx === undefined ? { task_id: task, ts, latency } : { task_id: task, ts, latency, retx }
+  const served = (probes: Record<string, string>, tasks: number[], retxed = false) => {
     const newest = Math.ceil(Date.now() / 1000 / 60) * 60
     const ping = tasks.flatMap((task) =>
-      Array.from({ length: 40 }, (_, i) => row(task, newest - (39 - i) * 90, i % 13 === 5 ? null : 200 + task * 10 + (i % 7) * 5)),
+      Array.from({ length: 40 }, (_, i) =>
+        // Every fifth bucket of the first probe came back only after the kernel's
+        // retransmit, which is what draws an amber block.
+        retxed && task === tasks[0] && i % 5 === 3
+          ? row(task, newest - (39 - i) * 90, 200 + task * 10, 100)
+          : row(task, newest - (39 - i) * 90, i % 13 === 5 ? null : 200 + task * 10 + (i % 7) * 5),
+      ),
     )
-    return new Response(JSON.stringify({ ping, probes, loss: Object.fromEntries(tasks.map((t) => [t, 3.4])) }), {
-      headers: { "content-type": "application/json" },
-    })
+    const answer: Record<string, unknown> = { ping, probes, loss: Object.fromEntries(tasks.map((t) => [t, 3.4])) }
+    if (retxed) answer.retx = Object.fromEntries(tasks.map((t) => [t, 4.7]))
+    return new Response(JSON.stringify(answer), { headers: { "content-type": "application/json" } })
   }
 
   globalThis.fetch = async () => served({ "9": "上海电信" }, [9])
@@ -255,9 +302,14 @@ try {
     assert.ok((solo.match(/text-(emerald|amber|orange|red)-700 dark:text-\1-400">\d/g)?.length ?? 0) >= 3,
       "the figures carry the scale, the two under the curve included")
     assert.ok(!solo.includes("grid-cols-20"), "and drops the twenty blocks")
-    // One height for the well whatever the probe count: three rows of 24px, their
-    // paddings and two hairlines is 116px, and a curve is drawn inside it.
-    assert.ok(solo.includes("h-[7.25rem]"), "the well is a fixed box")
+    // A hub that reports no retransmit rate gets no quality strip: the card is
+    // exactly what it was before this release.
+    assert.ok(!solo.includes("bg-signal-1/35"), "no quality strip without the figure")
+    assert.ok(!solo.includes("重传"), "and no retransmit figure either")
+    // The well is a floor, not a fixed height: the row decides how tall it is, so
+    // a fourth line can never be pushed over the footer.
+    assert.ok(solo.includes("min-h-31"), "the well has a 124px floor")
+    assert.ok(!solo.includes("h-[7.25rem]"), "and no fixed height")
   } finally {
     globalThis.fetch = asked
   }
@@ -268,12 +320,53 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 100))
     const pair = card(1)
     assert.ok(pair.includes("上海电信") && pair.includes("上海联通"), "both probes are named")
-    assert.ok(pair.includes("h-[7.25rem]"), "and the well is the same fixed box")
+    assert.ok(pair.includes("min-h-31"), "and the well is the same floor")
     assert.equal(pair.match(/grid-cols-20/g)?.length, 2, "two probes keep two strips")
     assert.ok(!pair.includes("linearGradient"), "and no curve: two rows of blocks stay scannable")
     for (const want of ["最佳", "最差"]) {
       assert.ok(pair.includes(want), `two probes can afford ${want}`)
     }
+  } finally {
+    globalThis.fetch = asked
+    fetchPing(2)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  // The same two layouts from a hub that does report retransmits: one probe keeps
+  // its curve and gains a quality strip across the card's full width plus the
+  // fourth figure in its bottom row; two probes get a strip each and a header.
+  globalThis.fetch = async () => served({ "9": "上海电信" }, [9], true)
+  try {
+    fetchPing(2)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const solo = card(1)
+    assert.ok(solo.includes("linearGradient"), "the curve is still the subject")
+    assert.equal(solo.match(/grid-cols-20/g)?.length, 1, "one strip, at the card's full width")
+    assert.ok(solo.includes("bg-signal-1/35"), "and it is the quality strip")
+    assert.ok(solo.match(/bg-signal-4/g), "with an amber block where a handshake came back late")
+    for (const want of ["最佳", "最差", "重传", "丢包"]) {
+      assert.ok(solo.includes(want), `a solo link's bottom row says ${want}`)
+    }
+    assert.ok(!solo.includes(">延迟<"), "no column header on a one-probe card")
+    // The colour of the strip's blocks and the figure above are the same reading.
+    assert.match(solo, /aria-label="上海电信，延迟 [^"]*，丢包 [^"]*，重传 [^"]*"/)
+  } finally {
+    globalThis.fetch = asked
+  }
+
+  globalThis.fetch = async () => served({ "8": "上海电信", "9": "上海联通" }, [8, 9], true)
+  try {
+    fetchPing(2)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const pair = card(1)
+    assert.equal(pair.match(/grid-cols-20/g)?.length, 4, "two probes, two strips each")
+    assert.ok(pair.includes(">延迟<"), "and the columns are named once, above them")
+    assert.ok(pair.includes("丢包 · 重传"), "as the quality column")
+    // The figures are laid out in a grid so a card's rows line up: the reading in
+    // a 3.25rem column, the quality pair in 4.5rem.
+    assert.ok(pair.includes("min-w-[3.25rem] shrink-0 text-right"), "the reading has its own column")
+    assert.ok(pair.includes("min-w-[4.5rem] shrink-0 text-right"), "and the percentages theirs")
+    assert.ok(pair.includes("grid-cols-[3fr_2fr]"), "the latency strip takes three fifths")
+    assert.ok(pair.includes("flex-1"), "and the well takes what the row leaves")
   } finally {
     globalThis.fetch = asked
     fetchPing(2)

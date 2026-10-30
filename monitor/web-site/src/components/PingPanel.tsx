@@ -4,8 +4,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import type { Node } from "@/lib/api"
 import { clockFor } from "@/lib/format"
 import {
-  cardProbes, fmtLoss, fmtMs, HOURS, latencySignal, lossSignal, probeLatencySignal, slotSignal,
-  useNodePing, type ProbeStats, type Slot,
+  cardProbes, fmtLoss, fmtMs, HOURS, latencySignal, lossSignal, probeLatencySignal, qualitySignal, slotSignal,
+  useNodePing, type ProbeStats, type Quality, type Slot,
 } from "@/lib/ping"
 import { cn } from "@/lib/utils"
 
@@ -43,11 +43,28 @@ const INK = [
   "text-red-700 dark:text-red-400",
 ]
 
+/**
+ * The quality strip's fills: what went wrong in a block, or nothing.
+ *
+ * Deliberately not the latency ramp. That one is a continuous scale where every
+ * block is coloured and the colour says how far away the target was; this one
+ * marks exceptions, because "clean" is the state almost every block is in and a
+ * second full ladder beside the first would compete with it. A clean block is a
+ * third of the way to the best green -- present, so the strip reads as twenty
+ * blocks rather than as gaps, and quiet enough to be skipped by the eye.
+ */
+const QUALITY_FILL: Record<Quality, string> = {
+  none: "bg-muted",
+  clean: "bg-signal-1/35",
+  retx: "bg-signal-4",
+  lost: "bg-signal-5",
+}
+
 function slotTitle(slot: Slot, clock: (ms: number) => string) {
   if (!slot) return "无采样"
   const at = clock(slot.ts * 1000)
   if (slot.latency === null) return `${at} · 超时`
-  return `${at} · ${fmtMs(slot.latency)} ms · 丢包 ${fmtLoss(slot.loss)}%`
+  return `${at} · ${fmtMs(slot.latency)} ms · 丢包 ${fmtLoss(slot.loss)}% · 重传 ${fmtLoss(slot.retx)}%`
 }
 
 /**
@@ -58,19 +75,69 @@ function slotTitle(slot: Slot, clock: (ms: number) => string) {
  * point of it is the reference theme's: at a glance down the page, which machine
  * is smooth and which is not. Four pixels of colour still says `mostly green,
  * one bad quarter of an hour`, and hands the height back to the numbers.
+ *
+ * One pixel of gap rather than two: two strips share the card's width now, and
+ * the block count is fixed at twenty because that is the resolution -- three
+ * minutes of the hour. Narrower blocks are the trade; fewer of them would be a
+ * different claim about the hour.
  */
-function Strip({ slots, clock, className }: { slots: Slot[]; clock: (ms: number) => string; className?: string }) {
+function Blocks({
+  slots, clock, fill, className,
+}: {
+  slots: Slot[]
+  clock: (ms: number) => string
+  fill: (slot: Slot) => string
+  className?: string
+}) {
   return (
     // The figures above carry the reading; the strip is the same data drawn, so
     // a screen reader is spared twenty unlabelled boxes. The title on each block
     // is still there for a pointer, which is the only way to ask a block what it
     // was.
-    <div className={cn("grid grid-cols-20 gap-0.5", className)} aria-hidden>
+    <div className={cn("grid grid-cols-20 gap-px", className)} aria-hidden>
       {slots.map((slot, i) => (
-        <span key={i} title={slotTitle(slot, clock)} className={cn("h-1 rounded-xs", FILL[slotSignal(slot)])} />
+        <span key={i} title={slotTitle(slot, clock)} className={cn("h-1 rounded-xs", fill(slot))} />
       ))}
     </div>
   )
+}
+
+/** The hour's latency, in the five-step ramp. */
+function Strip({ slots, clock, className }: { slots: Slot[]; clock: (ms: number) => string; className?: string }) {
+  return <Blocks slots={slots} clock={clock} fill={(slot) => FILL[slotSignal(slot)]} className={className} />
+}
+
+/** The same twenty blocks, judged for what went missing and whether it came back. */
+function QualityStrip({ slots, clock, className }: { slots: Slot[]; clock: (ms: number) => string; className?: string }) {
+  return <Blocks slots={slots} clock={clock} fill={(slot) => QUALITY_FILL[qualitySignal(slot)]} className={className} />
+}
+
+/**
+ * `丢包% · 重传%`: the two figures the quality strip colours, in one column of
+ * fixed width so the rows of a card line up. Amber ink for a retransmit at any
+ * rate -- the block beside it is amber for the same reason, and there is no
+ * second degree of "it came back".
+ */
+function QualityNums({ probe }: { probe: ProbeStats }) {
+  return (
+    <span className="tnum min-w-[4.5rem] shrink-0 text-right">
+      <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>
+        {probe.loss === null ? "—" : `${fmtLoss(probe.loss)}%`}
+      </span>
+      <span aria-hidden className="text-border"> · </span>
+      <span className={cn("font-medium", INK[probe.retx ? 4 : 0])}>
+        {probe.retx === null ? "—" : `${fmtLoss(probe.retx)}%`}
+      </span>
+    </span>
+  )
+}
+
+/** What a screen reader hears for one probe: the name and the three figures. */
+function spoken(probe: ProbeStats, quality: boolean) {
+  const latency = probe.timedOut ? "超时" : probe.reading !== null ? `${fmtMs(probe.reading)} 毫秒` : "无读数"
+  const loss = probe.loss === null ? "无样本" : `丢包 ${fmtLoss(probe.loss)}%`
+  const retx = quality && probe.retx !== null ? `，重传 ${fmtLoss(probe.retx)}%` : ""
+  return `${probe.name}，延迟 ${latency}，${loss}${retx}`
 }
 
 /**
@@ -299,47 +366,147 @@ function Curve({ probe, className }: { probe: ProbeStats; className?: string }) 
 /**
  * The single-probe card: the same height as three probes, spent on one link.
  *
- * The name and its two figures on top, the hour drawn below them, and the three
- * numbers that describe a link rather than a moment underneath. It is the same
- * well as a three-probe card's -- the card grid asks for one height for the row
- * -- so the curve grows into whatever room the row leaves.
+ * The name and its reading on top, the hour drawn below them, the quality strip
+ * under the curve -- the same twenty blocks, at the card's full width, because
+ * one link has the room and "when it went wrong" is the one thing the curve
+ * cannot say -- and the four numbers that describe a link underneath. It is the
+ * same well as a three-probe card's -- the card grid asks for one height for the
+ * row -- so the curve grows into whatever room the row leaves.
+ *
+ * No column header: the curve is the subject here, and the figures at the bottom
+ * name themselves.
  */
-function Solo({ probe, hours }: { probe: ProbeStats; hours: number }) {
+function Solo({ probe, hours, quality }: { probe: ProbeStats; hours: number; quality: boolean }) {
+  const clock = clockFor(hours)
   const latency = probe.timedOut ? "超时" : probe.reading !== null ? `${fmtMs(probe.reading)} ms` : "—"
   return (
-    <div className="flex min-h-0 flex-1 flex-col" title={`${probe.name} · 近 ${hours} 小时的延迟与丢包`}>
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      title={`${probe.name} · 近 ${hours} 小时的延迟${quality ? "、丢包与重传" : "与丢包"}`}
+      aria-label={spoken(probe, quality)}
+    >
       <div className="flex items-baseline justify-between gap-2 text-2xs">
         <span className="truncate font-medium text-muted-foreground">{probe.name}</span>
         <span className="tnum flex shrink-0 items-baseline gap-1.5">
           <span className={cn("font-semibold", INK[probeLatencySignal(probe)])}>{latency}</span>
-          <span aria-hidden className="text-border">·</span>
-          <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>
-            丢包 {probe.loss === null ? "—" : `${fmtLoss(probe.loss)}%`}
-          </span>
+          {/* One probe, no header: the loss figure stays beside the reading it
+              belongs to, and the bottom row carries all four numbers when the
+              hub reports retransmits. */}
+          {!quality && (
+            <>
+              <span aria-hidden className="text-border">·</span>
+              <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>
+                丢包 {probe.loss === null ? "—" : `${fmtLoss(probe.loss)}%`}
+              </span>
+            </>
+          )}
         </span>
       </div>
       <Curve probe={probe} className="mt-1.5 min-h-8 flex-1" />
-      <StatRow probe={probe} className="mt-1.5" />
+      {quality && <QualityStrip slots={probe.slots} clock={clock} className="mt-1.5" />}
+      {quality ? <SoloRow probe={probe} className="mt-1.5" /> : <StatRow probe={probe} className="mt-1.5" />}
     </div>
   )
 }
 
-function Probe({ probe, hours, extra = false }: { probe: ProbeStats; hours: number; extra?: boolean }) {
+/**
+ * The four numbers under a solo curve: the ends of the hour, and the two
+ * percentages that say how often it went wrong. `最佳 41 ms` / `最差 62 ms` /
+ * `重传 2.1%` / `丢包 0%` fits 297px with room to spare.
+ *
+ * All-timeout keeps the one sentence: two dashes and two percentages are four
+ * ways of saying the line is down, and the strip above is already rose end to
+ * end.
+ */
+function SoloRow({ probe, className }: { probe: ProbeStats; className?: string }) {
+  const worst = worstMs(probe)
+  if (worst === null) return <StatRow probe={probe} className={className} />
+  return (
+    <div className={cn("tnum flex items-baseline justify-between gap-2 text-3xs text-muted-foreground", className)}>
+      {stats(probe).map(({ label, ms }) => (
+        <span key={label}>
+          {label} <span className={cn("font-medium", INK[latencySignal(ms)])}>{ms === null ? "—" : `${fmtMs(ms)} ms`}</span>
+        </span>
+      ))}
+      <span>
+        重传 <span className={cn("font-medium", INK[probe.retx ? 4 : 0])}>
+          {probe.retx === null ? "—" : `${fmtLoss(probe.retx)}%`}
+        </span>
+      </span>
+      <span>
+        丢包 <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>
+          {probe.loss === null ? "—" : `${fmtLoss(probe.loss)}%`}
+        </span>
+      </span>
+    </div>
+  )
+}
+
+/**
+ * The column header, over two or three probes only.
+ *
+ * It names what the two columns of figures are, in the same grid the rows use so
+ * the words sit over the numbers they label. One probe has no header: the curve
+ * is the subject and the four numbers at the bottom name themselves.
+ *
+ * Plain spans rather than `role="columnheader"`: this is not a table, and a
+ * reader is handed the whole row as one sentence (see [spoken]).
+ */
+function Heads() {
+  return (
+    <div className="grid grid-cols-[1fr_auto] items-baseline gap-x-3 text-3xs text-muted-foreground">
+      <span className="text-right">延迟</span>
+      <span className="min-w-[4.5rem] text-right">丢包 · 重传</span>
+    </div>
+  )
+}
+
+/**
+ * One probe of two or three: two rows, the figures above and the two strips
+ * under them.
+ *
+ * The figures use `grid-cols-[1fr_auto]`: the name and its reading share the
+ * left column (`justify-between`, the reading at its right edge) and the quality
+ * column keeps a fixed width so `51 ms` in one row sits over `51 ms` in the next.
+ * Under them `grid-cols-[3fr_2fr]` gives the latency strip three fifths and the
+ * quality strip two: the latency strip is a bar to be scanned, the quality one a
+ * line of markers, and markers need less room to say the same thing.
+ */
+function Probe({
+  probe, hours, extra = false, quality,
+}: {
+  probe: ProbeStats
+  hours: number
+  extra?: boolean
+  quality: boolean
+}) {
   const clock = clockFor(hours)
   const latency = probe.timedOut ? "超时" : probe.reading !== null ? `${fmtMs(probe.reading)} ms` : "—"
   return (
-    <div className="py-1.5 first:pt-0 last:pb-0" title={`${probe.name} · 近 ${hours} 小时的延迟与丢包`}>
-      <div className="flex items-baseline justify-between gap-2 text-2xs">
-        <span className="truncate text-muted-foreground">{probe.name}</span>
-        <span className="tnum flex shrink-0 items-baseline gap-1.5">
-          <span className={cn("font-semibold", INK[probeLatencySignal(probe)])}>{latency}</span>
-          <span aria-hidden className="text-border">·</span>
-          <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>
-            {probe.loss === null ? "—" : `${fmtLoss(probe.loss)}%`}
+    <div
+      className="py-1 first:pt-0 last:pb-0"
+      title={`${probe.name} · 近 ${hours} 小时的延迟${quality ? "、丢包与重传" : "与丢包"}`}
+      aria-label={spoken(probe, quality)}
+    >
+      <div className="grid grid-cols-[1fr_auto] items-baseline gap-x-3 text-2xs">
+        <span className="flex min-w-0 items-baseline justify-between gap-2">
+          <span className="truncate text-muted-foreground">{probe.name}</span>
+          <span className={cn("tnum min-w-[3.25rem] shrink-0 text-right font-semibold", INK[probeLatencySignal(probe)])}>
+            {latency}
           </span>
         </span>
+        {quality ? (
+          <QualityNums probe={probe} />
+        ) : (
+          <span className={cn("tnum min-w-[2.5rem] shrink-0 text-right font-medium", INK[lossSignal(probe.loss)])}>
+            {probe.loss === null ? "—" : `${fmtLoss(probe.loss)}%`}
+          </span>
+        )}
       </div>
-      <Strip slots={probe.slots} clock={clock} className="mt-1" />
+      <div className={cn("mt-1 grid gap-2", quality ? "grid-cols-[3fr_2fr]" : "grid-cols-1")}>
+        <Strip slots={probe.slots} clock={clock} />
+        {quality && <QualityStrip slots={probe.slots} clock={clock} />}
+      </div>
       {/* Two probes leave the room three do not, and a link is worth more than its
           last five minutes: the hour's median and its worst bucket are what tell
           `a steady 230 ms` from `230 ms with a cliff`. */}
@@ -398,7 +565,12 @@ export function ProbeLines({ node, hours = HOURS }: { node: Node; hours?: number
     <div ref={ref} className="mt-1.5 min-h-[3.25rem] space-y-0.5">
       {probes.length ? (
         probes.map((probe) => (
-          <div key={probe.id} className="flex items-baseline justify-between gap-2 text-2xs" title={probe.name}>
+          <div
+            key={probe.id}
+            className="flex items-baseline justify-between gap-2 text-2xs"
+            title={spoken(probe, probe.retxKnown)}
+            aria-label={spoken(probe, probe.retxKnown)}
+          >
             <span className="truncate text-muted-foreground">{probe.name}</span>
             <span className="tnum flex shrink-0 items-baseline gap-1.5">
               <span className={cn("font-semibold", INK[probeLatencySignal(probe)])}>
@@ -407,6 +579,14 @@ export function ProbeLines({ node, hours = HOURS }: { node: Node; hours?: number
               <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>
                 {probe.loss === null ? "—" : `${fmtLoss(probe.loss)}%`}
               </span>
+              {/* A retransmit is a low-frequency exception, and this card has no
+                  room for a second strip: one dot says "something came back
+                  late in this hour", and the figure is in the title. Nothing at
+                  all when the line was clean -- this line's layout must not
+                  change on a healthy fleet. */}
+              {probe.retx ? (
+                <span className="ml-0.5 size-[3px] shrink-0 self-center rounded-full bg-signal-4" title={`重传 ${fmtLoss(probe.retx)}%`} />
+              ) : null}
             </span>
           </div>
         ))
@@ -440,28 +620,43 @@ export function PingPanel({ node, hours = HOURS }: { node: Node; hours?: number 
   // `flex-1` here rather than a measured height constant, because the row already
   // tells this card how tall it must be.
   const solo = probes.length === 1
+  // One answer for the whole card, so one flag decides for every probe on it: a
+  // hub that does not produce the retransmit rate has no quality column at all
+  // (the card keeps the layout it has today), where a hub answering zero has one
+  // that reads 0%.
+  const quality = probes[0]?.retxKnown ?? false
 
   return (
-    // One height for the well, whatever the probe count: three rows of
-    // (16px line + 4px gap + 4px strip) with their 6px paddings, two hairlines and
-    // the 8px padding either side, is 116px.
+    // The well eats whatever the row leaves over, with a 124px floor.
     //
-    // `h-` and not `min-h-`: every variant has to end at the same pixel, and a
-    // minimum only binds the short ones. The row still decides the card's height
-    // (`mt-auto` on the footer gives the rest of the slack a place to go), so this
-    // number is what makes the probe area itself identical on all four cards.
+    // Not a fixed height. The old `h-[7.25rem]` wrote the row's height out as
+    // "three rows of 24px plus their paddings plus two hairlines", so a fourth
+    // line, a size step in the type or the header this release adds would push
+    // the content over the footer with nothing to stop it. Every well in a row
+    // gets the same height only if the height comes from the row: the three
+    // blocks above this one (header lines, resource cells, traffic well) are the
+    // same components with the same number of lines on every card, so what is
+    // left over is the same number, and `flex-1` hands it to the well.
+    //
+    // The invariant, and it is load-bearing: everything above this well must stay
+    // "the same components, a fixed number of lines per card". Give one of them a
+    // line that appears only on some cards and the wells of that row stop
+    // matching, silently.
     <div
       ref={ref}
-      className="mt-2.5 flex h-[7.25rem] flex-col rounded-lg border border-border-soft bg-card-2 px-2.5 py-2"
+      className="mt-2.5 flex min-h-31 flex-1 flex-col rounded-lg border border-border-soft bg-card-2 px-2.5 py-2"
     >
       {probes.length ? (
         solo ? (
-          <Solo probe={probes[0]} hours={hours} />
+          <Solo probe={probes[0]} hours={hours} quality={quality} />
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col justify-between divide-y divide-border-soft">
-            {probes.map((probe) => (
-              <Probe key={probe.id} probe={probe} hours={hours} extra={probes.length === 2} />
-            ))}
+          <div className="flex min-h-0 flex-1 flex-col">
+            {quality && <Heads />}
+            <div className="flex min-h-0 flex-1 flex-col justify-between divide-y divide-border-soft">
+              {probes.map((probe) => (
+                <Probe key={probe.id} probe={probe} hours={hours} extra={probes.length === 2} quality={quality} />
+              ))}
+            </div>
           </div>
         )
       ) : (
