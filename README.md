@@ -96,7 +96,7 @@ UptimeRobot、Better Stack、Grafana 合成监控这些换汤不换药：别只�
 make theme    # 公开页：装依赖 + 构建（全新 clone 先跑这一次）
 make hub      # 后台前端 + hub 二进制（公开页随后由 build.rs 按源码指纹同步）
 make agent    # 采集端
-make check    # 两个前端的 lint + cargo check
+make check    # 测试不进包的守卫 + 两个前端的 lint + cargo check
 make test     # 前端测试 + cargo test
 ```
 

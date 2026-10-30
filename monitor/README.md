@@ -30,7 +30,7 @@ agent (Linux)  ──WebSocket / JSON-RPC 2.0──▶  hub (axum + SQLite)  ─
 ```bash
 make hub      # 后台前端 + 主题 + hub 二进制（三者顺序自动编排）
 make agent    # 采集端
-make check    # cargo check + 两个前端的 lint
+make check    # cargo check + 两个前端的 lint + 测试不进包的守卫
 make test     # cargo test + 前端测试
 ```
 

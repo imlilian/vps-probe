@@ -27,7 +27,10 @@ hub: admin
 agent:
 	cd agent && cargo build --release
 
+# 测试文件就住在 src/ 旁边，靠"没人 import 它"才不进包：第一条把那前提钉住，
+# 任何模块 import 了 *.test.ts 就失败。CI 跑同一个脚本。
 check: admin
+	sh monitor/scripts/no-tests-in-bundle.sh
 	cd $(THEME_DIR) && { [ -d node_modules ] || npm ci; } && npm run lint
 	cd $(ADMIN_DIR) && npm run lint
 	cd monitor && cargo fmt --check && cargo check

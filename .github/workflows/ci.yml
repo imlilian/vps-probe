@@ -29,6 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # A test file reaches a bundle only if a module imports it: the entry is
+      # index.html -> main.tsx. This keeps that true in both frontends, and it
+      # needs nothing but grep, so it fails before any dependency is installed.
+      - name: no test in a bundle
+        run: sh monitor/scripts/no-tests-in-bundle.sh
+
       - uses: actions/setup-node@v7
         with:
           node-version: 24
