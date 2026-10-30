@@ -8,10 +8,10 @@ import { Card } from "@/components/ui/card"
 import { Chip } from "@/components/ui/chip"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { Node } from "@/lib/api"
-import { AXIS, GRID, hideZero, LINE, TOOLTIP, probeStyle, timeAxis } from "@/lib/chart"
+import { AXIS, GRID, hideZero, LINE, MARGIN, tickCount, TOOLTIP, probeStyle, timeAxis } from "@/lib/chart"
 import { pingWindows } from "@/lib/format"
 import { fmtLoss, fmtPct } from "@/lib/ping"
-import { usePingHistory } from "@/lib/history"
+import { useElementWidth, usePingHistory } from "@/lib/history"
 import { useInView } from "@/lib/useInView"
 import { buildLatencyRows, probeStats, type ProbeSeries, type ProbeStat } from "@/lib/pingDetail"
 import { cn } from "@/lib/utils"
@@ -21,6 +21,24 @@ import { QualitySection } from "./QualitySection"
 import { RangeBar } from "./RangeBar"
 
 const ms = (value: number | null) => value === null ? "—" : `${Math.round(value)} ms`
+
+/**
+ * A latency tick, printed at the precision the figure needs.
+ *
+ * Whole milliseconds on the internet links these cards mostly draw -- but a
+ * probe on the same LAN, or a hub probing itself, answers in hundredths, and a
+ * rounded axis printed `1ms` on five consecutive gridlines: one number, five
+ * lines, no axis. The figure keeps a decimal as soon as it is under ten and two
+ * under one, so each gridline prints a different number.
+ */
+const tickMs = (value: number) => {
+  const digits = value >= 10 ? 0 : value >= 1 ? 1 : 2
+  const text = value
+    .toFixed(digits)
+    .replace(/(\.\d*?)0+$/, "$1")
+    .replace(/\.$/, "")
+  return `${text}ms`
+}
 
 /** A bucket's length as the chart's subtitle says it: 5 分钟, 1 小时. */
 const span = (seconds: number) =>
@@ -141,6 +159,13 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
   const [smoothPick, setSmoothPick] = useState<boolean | null>(null)
   const smooth = smoothPick ?? hours >= 24
   const [sectionRef, seen] = useInView<HTMLElement>()
+  // The card's width decides how many clock labels fit: eight on a desktop card,
+  // four on a phone, where eight meant recharts dropped one in two and with them
+  // the midnight. Measured on the section rather than the plot, because the plot
+  // is not mounted until the card scrolls into view and a measured `0` would ask
+  // for two labels. 93 is the card's padding, the value axis and the right
+  // margin.
+  const ticks = tickCount(useElementWidth(sectionRef) - 93)
   const answer = usePingHistory(node.id, hours, seen)
   const stepMs = (answer.step || 60) * 1000
 
@@ -254,22 +279,22 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
                 <p className="py-8 text-center text-sm">没有选中任何探测</p>
               ) : (
                 <ResponsiveContainer>
-                  <ComposedChart data={rows}>
+                  <ComposedChart data={rows} margin={MARGIN}>
                     <CartesianGrid {...GRID} />
-                    <XAxis {...timeAxis(rows, hours)} />
+                    <XAxis {...timeAxis(rows, hours, ticks)} />
                     {/* Not anchored at zero: these lines live in a narrow band
                         far from it, and zero flattens every wobble. */}
-                    {/* 48px: enough for `180ms` and for the first clock tick's
-                        label to hang beside it -- an axis fitted exactly to its
-                        own text (`width="auto"`) leaves the time label nowhere to
-                        go. No label at zero: the first clock tick sits in the
-                        corner directly below it, and two labels for one gap read
-                        as a collision. The baseline stays, so a line at rest hugs
-                        the floor rather than floating. */}
+                    {/* `auto`, like the six panels above: the column is as wide
+                        as `180ms` and no wider, and recharts cannot wrap a label
+                        it was not given a width for. No label at zero: the first
+                        clock tick sits in the corner directly below it, and two
+                        labels for one gap read as a collision. The baseline
+                        stays, so a line at rest hugs the floor rather than
+                        floating. */}
                     <YAxis
-                      width={48}
+                      width="auto"
                       domain={["auto", "auto"]}
-                      tickFormatter={hideZero((value) => `${Math.round(value)}ms`)}
+                      tickFormatter={hideZero(tickMs)}
                       {...AXIS}
                     />
                     <Tooltip

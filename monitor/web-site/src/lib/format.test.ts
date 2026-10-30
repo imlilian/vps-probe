@@ -6,7 +6,7 @@
 import {
   absence, axisBytes, axisTop, bytes, cpuName, cycle, cycleSuffix, daysUntil, despike, despikeWindow, money,
   moneyMark, moneyParts, osName,
-  pair, percent, loadWindows, pingWindows, quarters, RATE_FLOOR, rateAxis, sinceSeen, splitUnit, tickClock, timeTicks,
+  countAxis, pair, percent, loadWindows, pingWindows, quarters, RATE_FLOOR, rateAxis, sinceSeen, splitUnit, tickClock, timeTicks,
   uptime, withGaps,
 } from "./format.ts"
 
@@ -70,14 +70,36 @@ const axis = (low: number, high: number) => {
 }
 eq(axis(209, 70 * 1024 ** 2), [["1 KB", "100 MB"], ["1 KB", "10 KB", "100 KB", "1 MB", "10 MB", "100 MB"]],
    "空闲 209 B/s 落在标了的底上，突发 70 MB/s")
-eq(axis(744, 229 * 1024 ** 2), [["1 KB", "1 GB"], ["1 KB", "100 KB", "10 MB", "1 GB"]], "七档隔一档标")
-eq(axis(300, 1.5 * 1024 ** 3), [["1 KB", "10 GB"], ["10 KB", "1 MB", "100 MB", "10 GB"]], "八档从顶往下数")
-eq(axis(5 * 1024 ** 2, 80 * 1024 ** 2), [["1 MB", "100 MB"], ["1 MB", "10 MB", "100 MB"]], "底随最慢的速率上移")
-eq(axis(1100, 5100), [["1 KB", "10 KB"], ["1 KB", "10 KB"]], "不到一档时也有一档")
-eq(axis(1024, 1024), [["1 KB", "10 KB"], ["1 KB", "10 KB"]], "正好落在档上")
-eq(axis(0, 0), [["1 KB", "10 KB"], ["1 KB", "10 KB"]], "全是零")
-eq(axis(Infinity, 0), [["1 KB", "10 KB"], ["1 KB", "10 KB"]], "空窗口：最小值的初值是 Infinity")
+eq(axis(744, 229 * 1024 ** 2), [["1 KB", "500 MB"], ["2 KB", "50 KB", "1 MB", "20 MB", "500 MB"]],
+   "七档隔一档标，仍然都是整数档")
+eq(axis(300, 1.5 * 1024 ** 3), [["1 KB", "2 GB"], ["10 KB", "200 KB", "5 MB", "100 MB", "2 GB"]], "八档从顶往下数")
+eq(axis(1100, 5100), [["1 KB", "5 KB"], ["1 KB", "2 KB", "5 KB"]], "不到一档时也有一档")
+eq(axis(1024, 1024), [["1 KB", "2 KB"], ["1 KB", "2 KB"]], "正好落在档上")
+eq(axis(0, 0), [["1 KB", "2 KB"], ["1 KB", "2 KB"]], "全是零")
+eq(axis(Infinity, 0), [["1 KB", "2 KB"], ["1 KB", "2 KB"]], "空窗口：最小值的初值是 Infinity")
 eq(RATE_FLOOR, 1024, "底是 1 KB/s")
+
+// countAxis: both ends are multiples of one round step, and the step is chosen
+// before the ends so every label printed divides by it.
+const count = (low: number, high: number) => {
+  const { domain, ticks } = countAxis(low, high)
+  return [domain, ticks]
+}
+eq(count(240, 270), [[240, 270], [240, 250, 260, 270]], "进程 240-270 画在 240-270，不是 0-280")
+eq(count(6, 456), [[0, 600], [0, 200, 400, 600]], "连接数从 0 起是因为数据就在 0 附近")
+eq(count(0, 3), [[0, 3], [0, 1, 2, 3]], "个位数也能铺满四格")
+eq(count(240, 240), [[220, 260], [220, 230, 240, 250, 260]], "一条不动的线落在带子中间")
+eq(count(0, 0), [[0, 1], [0, 1]], "全是零时不画负半轴")
+eq(count(Infinity, -Infinity), [[0, 1], [0, 1]], "空窗口")
+
+// The two ends follow the line rather than the floor and the next decade up:
+// this is the card that printed 1 KB/s under a 13 MB/s line, and a plot whose
+// top gridline said 100 MB/s about a line that never left the teens.
+eq(axis(1.2 * 1024 ** 2, 13 * 1024 ** 2), [["1 MB", "20 MB"], ["1 MB", "2 MB", "5 MB", "10 MB", "20 MB"]],
+   "兆级的线不标 1 KB/s，顶也不出去一个数量级")
+eq(axis(5 * 1024 ** 2, 80 * 1024 ** 2), [["5 MB", "100 MB"], ["5 MB", "10 MB", "20 MB", "50 MB", "100 MB"]],
+   "底随最慢的速率上移")
+eq(axis(209, 3 * 1024 ** 2), [["1 KB", "5 MB"], ["5 KB", "50 KB", "500 KB", "5 MB"]], "一快一慢时两头都跟着走")
 
 // timeTicks: round clock values, phased on local midnight rather than the epoch,
 // and never more than requested.

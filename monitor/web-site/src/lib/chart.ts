@@ -19,18 +19,37 @@ export const COLOR = {
 export const AXIS = { stroke: "currentColor", fontSize: 11, tickLine: false, axisLine: false } as const
 
 /**
- * The stacked panels' value axes.
+ * The stacked panels' value axes, and the reason they are `auto` rather than a
+ * constant.
  *
- * 56 and not `auto`. `auto` fits the axis to its own labels and nothing more,
- * which sounds ideal and is not: the first clock tick of the X axis sits at the
- * plot's left edge, its label centred on it, so half that label falls in the
- * axis's column -- with the column exactly as wide as the Y labels, the two sets
- * of text land on top of each other and the time looks like it was dropped. The
- * axis keeps a few pixels of room for its neighbour, which is also why it is not
- * the 68 it started as: `100 MB` needs 44, and the rest was a phone's fifth of
- * the drawing.
+ * A number here is not only the column's width: recharts hands it to its tick
+ * text as the width the text may occupy, and it *measures* the strings at the
+ * font size they inherit -- the card's 16px -- while the axis *draws* them at
+ * 11. `512 MB` is 39px on screen and 57px to the measurer, so a 56px column
+ * wrapped it onto two lines, and the network card's `100 MB/s` -- 70 to the
+ * measurer -- was cut by the plot's top edge because a wrapped label is two
+ * lines tall. `auto` measures the labels as drawn: nothing wraps, and the
+ * column is the widest label plus the 8px of tick spacing.
+ *
+ * The overhang this leaves for the first clock tick's half-label is why the
+ * chart's own left margin is 0 (see `MARGIN`): that half falls into the axis's
+ * column, where the baseline label would have been -- and the baseline label is
+ * gone, `hideZero`.
  */
-export const VALUE_AXIS = { ...AXIS, width: 56, interval: 0 } as const
+export const VALUE_AXIS = { ...AXIS, width: "auto", interval: 0 } as const
+
+/**
+ * The box the plot has inside the card.
+ *
+ * `top` and not recharts' 5: the top gridline's label is centred on the line, so
+ * half of its 11px stands above the plot, and at 5 the top of `100%` was
+ * clipped by the SVG's edge. `left: 0` gives the drawing the 5px recharts
+ * reserves there -- the Y labels are right-aligned against the plot, and the
+ * first time label's overhang is absorbed by the axis's own column. The right
+ * and bottom margins stay: they are what keeps the *last* clock tick's label
+ * inside the drawing.
+ */
+export const MARGIN = { top: 9, right: 5, bottom: 5, left: 0 } as const
 
 /** The grid and crosshair the panels share; `2 4` at the hairline token. */
 export const GRID = { strokeDasharray: "2 4", className: "stroke-border-soft", vertical: false } as const
@@ -90,19 +109,36 @@ export const TOOLTIP = {
 } as const
 
 /**
+ * How many clock labels fit across a plot `plotWidth` px wide.
+ *
+ * One per 66px, which is `21:30` at 30px of 11px text plus the 34px the axis
+ * keeps between labels (see `minTickGap` in `timeAxis`). Eight of them need
+ * 528px, so a desktop panel's plot -- 570-odd -- keeps the eight half-hours it
+ * has always drawn, and a phone's 270 keeps four hours.
+ *
+ * Below the desktop width it matters. Handed eight ticks, recharts keeps the
+ * ones that fit and drops the rest working in from the right, so a phone's
+ * four-hour panel came out `22:00 23:30 01:00`: unevenly spaced, and missing the
+ * midnight that is the one label a reader looks for. Asking for the number that
+ * fits makes `timeTicks` choose a whole-hour step instead, and then every label
+ * it draws is a label it kept.
+ */
+export const tickCount = (plotWidth: number) => Math.min(8, Math.max(2, Math.round(plotWidth / 66)))
+
+/**
  * A real time axis rather than recharts' category axis: ticks are placed on
  * clock boundaries, and an offline stretch is a gap rather than a collapsed
  * category.
  */
-export function timeAxis(rows: { ts: number }[], hours: number) {
-  const ticks = rows.length ? timeTicks(rows[0].ts, rows[rows.length - 1].ts) : []
+export function timeAxis(rows: { ts: number }[], hours: number, count = 8) {
+  const ticks = rows.length ? timeTicks(rows[0].ts, rows[rows.length - 1].ts, count) : []
   return {
     dataKey: "ts",
     type: "number" as const,
     domain: ["dataMin", "dataMax"] as const,
     ticks,
     tickFormatter: tickClock(ticks, hours),
-    minTickGap: hours > 24 ? 72 : 40,
+    minTickGap: hours > 24 ? 72 : 34,
     ...AXIS,
   }
 }

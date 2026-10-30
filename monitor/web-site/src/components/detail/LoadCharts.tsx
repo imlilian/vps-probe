@@ -7,11 +7,11 @@ import {
 import { ChartFade } from "./ChartFade"
 import type { Node } from "@/lib/api"
 import {
-  AXIS, COLOR, CPU_TICKS, DERIVED, GRID, hideZero, LINE, PEAK, TOOLTIP, VALUE_AXIS, timeAxis,
+  COLOR, CPU_TICKS, DERIVED, GRID, hideZero, LINE, MARGIN, PEAK, tickCount, TOOLTIP, VALUE_AXIS, timeAxis,
 } from "@/lib/chart"
 import { detailBytes, detailRate, diskForecast } from "@/lib/detail"
 import { decimate } from "@/lib/downsample"
-import { axisBytes, despike, despikeWindow, quarters, RATE_FLOOR, rateAxis, withGaps } from "@/lib/format"
+import { axisBytes, countAxis, despike, despikeWindow, quarters, RATE_FLOOR, rateAxis, withGaps } from "@/lib/format"
 import { useElementWidth, type MetricPoint } from "@/lib/history"
 import { renderBudget } from "@/lib/sampling"
 
@@ -38,6 +38,18 @@ function Num({ value, unit }: { value: string; unit?: string }) {
 /** Every series of a panel switched off: a sentence rather than a pair of empty axes. */
 const NO_SERIES = "没有选中任何序列"
 
+/** The lowest and highest of the readings a panel is actually drawing. */
+function extent(values: (number | null | undefined)[]): [number, number] {
+  let low = Number.POSITIVE_INFINITY
+  let high = Number.NEGATIVE_INFINITY
+  for (const value of values) {
+    if (typeof value !== "number") continue
+    if (value < low) low = value
+    if (value > high) high = value
+  }
+  return [low, high]
+}
+
 function useHidden() {
   const [hidden, setHidden] = useState<string[]>([])
   return {
@@ -46,7 +58,7 @@ function useHidden() {
   }
 }
 
-function CpuPanel({ node, rows, hours, smooth, budget }: { node: Node; rows: ChartRow[]; hours: number; smooth: boolean; budget: number }) {
+function CpuPanel({ node, rows, hours, smooth, budget, ticks }: { node: Node; rows: ChartRow[]; hours: number; smooth: boolean; budget: number; ticks: number }) {
   const { hidden, toggle } = useHidden()
   const fade = useId().replace(/:/g, "")
   const hasPeak = rows.some((r) => (r.cpu_max ?? 0) > 0)
@@ -77,10 +89,10 @@ function CpuPanel({ node, rows, hours, smooth, budget }: { node: Node; rows: Cha
     >
       {!empty && (
         <ResponsiveContainer>
-          <ComposedChart data={chart}>
+          <ComposedChart data={chart} margin={MARGIN}>
             <ChartFade id={fade} color={COLOR.cpu} />
             <CartesianGrid {...GRID} />
-            <XAxis {...timeAxis(chart, hours)} />
+            <XAxis {...timeAxis(chart, hours, ticks)} />
             <YAxis domain={[0, 100]} ticks={CPU_TICKS} tickFormatter={hideZero((v) => `${v}%`)} {...VALUE_AXIS} />
             <Tooltip {...TOOLTIP} formatter={(value, name) => [`${Number(value).toFixed(1)}%`, name]} />
             {!hidden.includes("cpu") && (
@@ -96,10 +108,18 @@ function CpuPanel({ node, rows, hours, smooth, budget }: { node: Node; rows: Cha
   )
 }
 
-function MemoryPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]; hours: number; budget: number }) {
+function MemoryPanel({ node, rows, hours, budget, ticks }: { node: Node; rows: ChartRow[]; hours: number; budget: number; ticks: number }) {
   const { hidden, toggle } = useHidden()
   const fade = useId().replace(/:/g, "")
   const hasSwap = node.swap_total > 0 && rows.some((r) => "swap_used" in r)
+  /**
+   * The axis has to hold the tallest reference line on the plot, and that is not
+   * always RAM: a swap file of twice the RAM is a common recipe on a 2 GB box,
+   * and with the ceiling pinned to `mem_total` its `Swap 总量` line was drawn
+   * above the top of the plot -- clipped away, so the card said "memory and
+   * swap" while showing no swap ceiling at all.
+   */
+  const ceiling = hasSwap ? Math.max(node.mem_total, node.swap_total) : node.mem_total
   const data = useMemo(() => decimate(rows, budget, [
     (row) => row.mem_used,
     ...(hasSwap ? [(row: ChartRow) => row.swap_used] : []),
@@ -131,13 +151,13 @@ function MemoryPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow
     >
       {items.some((item) => !hidden.includes(item.key)) && (
         <ResponsiveContainer>
-          <ComposedChart data={data}>
+          <ComposedChart data={data} margin={MARGIN}>
             <ChartFade id={fade} color={COLOR.mem} />
             <CartesianGrid {...GRID} />
-            <XAxis {...timeAxis(data, hours)} />
+            <XAxis {...timeAxis(data, hours, ticks)} />
             <YAxis
-              domain={[0, node.mem_total]}
-              ticks={quarters(node.mem_total)}
+              domain={[0, ceiling]}
+              ticks={quarters(ceiling)}
               tickFormatter={hideZero(axisBytes)}
               {...VALUE_AXIS}
             />
@@ -161,7 +181,7 @@ function MemoryPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow
   )
 }
 
-function DiskPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]; hours: number; budget: number }) {
+function DiskPanel({ node, rows, hours, budget, ticks }: { node: Node; rows: ChartRow[]; hours: number; budget: number; ticks: number }) {
   const { hidden, toggle } = useHidden()
   const fade = useId().replace(/:/g, "")
   const data = useMemo(() => decimate(rows, budget, [(row) => row.disk_used]), [rows, budget])
@@ -187,10 +207,10 @@ function DiskPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]
     >
       {items.some((item) => !hidden.includes(item.key)) && (
         <ResponsiveContainer>
-          <ComposedChart data={data}>
+          <ComposedChart data={data} margin={MARGIN}>
             <ChartFade id={fade} color={COLOR.disk} />
             <CartesianGrid {...GRID} />
-            <XAxis {...timeAxis(data, hours)} />
+            <XAxis {...timeAxis(data, hours, ticks)} />
             <YAxis
               domain={[0, node.disk_total]}
               ticks={quarters(node.disk_total)}
@@ -211,7 +231,7 @@ function DiskPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]
   )
 }
 
-function NetworkPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]; hours: number; budget: number }) {
+function NetworkPanel({ node, rows, hours, budget, ticks }: { node: Node; rows: ChartRow[]; hours: number; budget: number; ticks: number }) {
   const { hidden, toggle } = useHidden()
   const hasPeak = rows.some((r) => (r.net_rx_max ?? 0) > 0 || (r.net_tx_max ?? 0) > 0)
   const data = useMemo(() => decimate(rows, budget, [
@@ -220,8 +240,30 @@ function NetworkPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRo
     ...(hasPeak ? [(row: ChartRow) => row.net_rx_max, (row: ChartRow) => row.net_tx_max] : []),
   ]), [rows, budget, hasPeak])
   const live = node.metrics
-  const max = rows.reduce((hi, r) => Math.max(hi, r.net_rx_max ?? r.net_rx ?? 0, r.net_tx_max ?? r.net_tx ?? 0), RATE_FLOOR)
-  const { domain, ticks } = rateAxis(RATE_FLOOR, max)
+  /**
+   * The axis runs from the slowest rate on screen to the fastest, not from the
+   * floor: `rateAxis` was being handed `RATE_FLOOR` as its low end, so a link
+   * drawing 2 to 13 MB/s printed 1 KB/s, 10 KB/s and 100 KB/s under the line --
+   * five sixths of the plot empty, and the top label a decade above the data.
+   *
+   * Which series are on screen decides the ends, because switching one off is
+   * what moves the axis: with the peaks hidden the axis is the two lines.
+   */
+  const drawn = [
+    { key: "down", field: "net_rx" as const },
+    { key: "up", field: "net_tx" as const },
+    ...(hasPeak
+      ? [
+          { key: "downMax", field: "net_rx_max" as const },
+          { key: "upMax", field: "net_tx_max" as const },
+        ]
+      : []),
+  ]
+  const rates = data.flatMap((row) => drawn.flatMap(({ key, field }) => {
+    const value = hidden.includes(key) ? undefined : row[field]
+    return typeof value === "number" && value > 0 ? [value] : []
+  }))
+  const { domain, ticks: rateTicks } = rateAxis(Math.min(...rates), Math.max(...rates, RATE_FLOOR))
   const items: LegendItem[] = [
     { key: "down", label: "下载", color: COLOR.down },
     { key: "up", label: "上传", color: COLOR.up },
@@ -249,17 +291,15 @@ function NetworkPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRo
     >
       {items.some((item) => !hidden.includes(item.key)) && (
         <ResponsiveContainer>
-          <ComposedChart data={data}>
+          <ComposedChart data={data} margin={MARGIN}>
             <CartesianGrid {...GRID} />
-            <XAxis {...timeAxis(data, hours)} />
+            <XAxis {...timeAxis(data, hours, ticks)} />
             <YAxis
               scale="log"
               domain={domain}
-              ticks={ticks}
+              ticks={rateTicks}
               tickFormatter={hideZero((value) => `${axisBytes(value)}/s`)}
-              {...AXIS}
-              width={68}
-              interval={0}
+              {...VALUE_AXIS}
             />
             <Tooltip {...TOOLTIP} formatter={(value) => detailRate(Number(value))} />
             {hasPeak && !hidden.includes("downMax") && (
@@ -277,10 +317,14 @@ function NetworkPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRo
   )
 }
 
-function ConnectionsPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]; hours: number; budget: number }) {
+function ConnectionsPanel({ node, rows, hours, budget, ticks }: { node: Node; rows: ChartRow[]; hours: number; budget: number; ticks: number }) {
   const { hidden, toggle } = useHidden()
   const data = useMemo(() => decimate(rows, budget, [(row) => row.tcp, (row) => row.udp]), [rows, budget])
   const live = node.metrics
+  const { domain, ticks: countTicks } = countAxis(...extent(data.flatMap((row) => [
+    ...(hidden.includes("tcp") ? [] : [row.tcp]),
+    ...(hidden.includes("udp") ? [] : [row.udp]),
+  ])))
   const items: LegendItem[] = [
     { key: "tcp", label: "TCP", color: COLOR.tcp },
     { key: "udp", label: "UDP", color: COLOR.udp },
@@ -297,11 +341,18 @@ function ConnectionsPanel({ node, rows, hours, budget }: { node: Node; rows: Cha
     >
       {items.some((item) => !hidden.includes(item.key)) && (
         <ResponsiveContainer>
-          <LineChart data={data}>
+          <LineChart data={data} margin={MARGIN}>
             <CartesianGrid {...GRID} />
-            <XAxis {...timeAxis(data, hours)} />
+            <XAxis {...timeAxis(data, hours, ticks)} />
+            {/* Not anchored at zero, and for the same reason the latency card is
+                not: these are lines, not areas, so the axis carries no fill to
+                be honest about. A box holding 200 sockets and an idle one both
+                read as "several hundred" only if the axis starts near them --
+                pinned to zero, every second of a day of TCP traffic is a flat
+                line at the top of an empty plot. */}
             <YAxis
-              domain={[0, "auto"]}
+              domain={domain}
+              ticks={countTicks}
               allowDecimals={false}
               tickFormatter={hideZero((value) => String(Math.round(value)))}
               {...VALUE_AXIS}
@@ -316,9 +367,10 @@ function ConnectionsPanel({ node, rows, hours, budget }: { node: Node; rows: Cha
   )
 }
 
-function ProcessPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]; hours: number; budget: number }) {
+function ProcessPanel({ node, rows, hours, budget, ticks }: { node: Node; rows: ChartRow[]; hours: number; budget: number; ticks: number }) {
   const live = node.metrics
   const data = useMemo(() => decimate(rows, budget, [(row) => row.procs]), [rows, budget])
+  const { domain, ticks: countTicks } = countAxis(...extent(data.map((row) => row.procs)))
   return (
     <ChartCard
       icon={Activity}
@@ -327,11 +379,15 @@ function ProcessPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRo
       note={<Num value={live ? String(live.procs) : "—"} />}
     >
       <ResponsiveContainer>
-        <LineChart data={data}>
+        <LineChart data={data} margin={MARGIN}>
           <CartesianGrid {...GRID} />
-          <XAxis {...timeAxis(data, hours)} />
+          <XAxis {...timeAxis(data, hours, ticks)} />
+          {/* `auto` to `auto`, like the connections card: a process count lives
+              in a band around its own level, and zero-anchored it drew 240 to
+              270 along the top of a plot whose lower third said nothing. */}
           <YAxis
-            domain={[0, "auto"]}
+            domain={domain}
+            ticks={countTicks}
             allowDecimals={false}
             tickFormatter={hideZero((value) => String(Math.round(value)))}
             {...VALUE_AXIS}
@@ -354,6 +410,16 @@ const TWO_COLUMNS = 768
 const GAP = 16
 
 /**
+ * What a panel spends before its plot begins: 34 of card padding and border,
+ * the value axis (38 to 56, measured from its own labels) and the chart's 5px
+ * right margin. Checked against the rendered panels rather than derived,
+ * because it decides a tick count, not a layout: four pixels out moves a label,
+ * not a line, and 90 is the wide end -- 34 + 56 -- so the count is never one
+ * label more than the plot can hold.
+ */
+const PANEL_CHROME = 90
+
+/**
  * The six load panels over one row set. The hub already returned time buckets;
  * this only breaks the line where the node was silent, then hands each panel
  * its own colour and axis. It never averages the buckets again.
@@ -370,6 +436,7 @@ export function LoadCharts({ node, rows, hours, smooth, live = false }: {
   const width = useElementWidth(grid)
   const panelWidth = width > 0 ? (width >= TWO_COLUMNS ? (width - GAP) / 2 : width) : 0
   const budget = panelWidth > 0 ? renderBudget(panelWidth) : Number.POSITIVE_INFINITY
+  const ticks = tickCount(panelWidth - PANEL_CHROME)
   const chart = useMemo(() => (live ? rows : withGaps(rows)).map((row) => (
     "mem_used" in row
       ? { ...row, mem_total: node.mem_total, swap_total: node.swap_total, disk_total: node.disk_total }
@@ -380,12 +447,12 @@ export function LoadCharts({ node, rows, hours, smooth, live = false }: {
 
   return (
     <div ref={grid} className="grid grid-cols-1 gap-4 md:grid-cols-2">
-      <CpuPanel node={node} rows={chart} hours={hours} smooth={smooth} budget={budget} />
-      <MemoryPanel node={node} rows={chart} hours={hours} budget={budget} />
-      <DiskPanel node={node} rows={chart} hours={hours} budget={budget} />
-      <NetworkPanel node={node} rows={chart} hours={hours} budget={budget} />
-      {hasConns && <ConnectionsPanel node={node} rows={chart} hours={hours} budget={budget} />}
-      {hasProcs && <ProcessPanel node={node} rows={chart} hours={hours} budget={budget} />}
+      <CpuPanel node={node} rows={chart} hours={hours} smooth={smooth} budget={budget} ticks={ticks} />
+      <MemoryPanel node={node} rows={chart} hours={hours} budget={budget} ticks={ticks} />
+      <DiskPanel node={node} rows={chart} hours={hours} budget={budget} ticks={ticks} />
+      <NetworkPanel node={node} rows={chart} hours={hours} budget={budget} ticks={ticks} />
+      {hasConns && <ConnectionsPanel node={node} rows={chart} hours={hours} budget={budget} ticks={ticks} />}
+      {hasProcs && <ProcessPanel node={node} rows={chart} hours={hours} budget={budget} ticks={ticks} />}
     </div>
   )
 }

@@ -459,6 +459,43 @@ export function quarters(top: number): number[] {
   return [0, 0.25, 0.5, 0.75, 1].map((f) => top * f)
 }
 
+/** Integer multipliers for a count's step: a socket is not 7.5 of anything. */
+const COUNT_STEPS = [1, 2, 5, 10]
+
+/**
+ * A free-floating axis for a count -- processes, sockets -- which has no
+ * capacity to measure against and no zero worth drawing.
+ *
+ * Both ends are multiples of a round step around the data: a process count
+ * living between 240 and 270 is drawn on 240-270 with a gridline every 10,
+ * instead of pinned to the top of a 0-280 plot whose lower two thirds say
+ * nothing. The step is chosen first and the ends follow it, so every label
+ * printed is a multiple of the same step -- which is what recharts' own `auto`
+ * domain cannot promise: handed 240 to 270 it returns 231, 242, 253, 264, 275,
+ * exact and unreadable.
+ *
+ * A line that never moves gets a band around its own level, since a domain of
+ * one value draws it on the axis line.
+ */
+export function countAxis(low: number, high: number): { domain: [number, number]; ticks: number[] } {
+  if (!Number.isFinite(low) || !Number.isFinite(high)) return { domain: [0, 1], ticks: [0, 1] }
+  const flat = high <= low
+  const span = flat ? Math.max(1, Math.abs(high) / 10) : high - low
+  const from = flat ? (low + high) / 2 - span / 2 : low
+  const to = flat ? (low + high) / 2 + span / 2 : high
+  const target = span / 4
+  const scale = 10 ** Math.floor(Math.log10(target))
+  const step = Math.max(1, COUNT_STEPS.find((m) => m * scale >= target)! * scale)
+  // Never below zero: a count of sockets has no negative half, and an idle line
+  // drawn on the axis line is a line the reader cannot see.
+  const bottom = Math.max(0, Math.floor(from / step) * step)
+  const top = Math.ceil(to / step) * step
+  const ticks: number[] = []
+  // `+ step / 2` against float drift: 10 * 0.1 * 3 is not 3.
+  for (let v = bottom; v <= top + step / 2; v += step) ticks.push(Math.round(v * 1e6) / 1e6)
+  return { domain: [bottom, top], ticks }
+}
+
 /**
  * `rows` with an empty row in each gap over twice their usual spacing, where a
  * chart breaks its line rather than drawing a straight one across a stretch with
@@ -477,14 +514,21 @@ export function withGaps<T extends { ts: number }>(rows: T[]): (T | { ts: number
 }
 
 /**
- * The rungs of a logarithmic byte axis: 1, 10 and 100 of each binary unit, so
- * every gridline prints as a round label -- 100 B, 1 KB, 10 KB, 100 KB, 1 MB.
- * Adjacent rungs are 10 apart, or 10.24 across a unit, which draws as even.
+ * The rungs of a logarithmic byte axis: 1, 2 and 5 of each binary unit, so
+ * every gridline still prints as a round label -- 2 KB, 50 KB, 20 MB -- while
+ * the axis is able to stop one step above the line it draws.
+ *
+ * The tenths are the point. With only 1, 10 and 100 to a unit, a line peaking
+ * at 13 MB/s forces the top rung out to 100 MB/s -- a decade of empty plot over
+ * the line and a label that says nothing about it -- and a line bottoming out at
+ * 5 MB/s starts at 1 MB/s. With 1, 2 and 5 the same line is drawn 5 MB/s to
+ * 20 MB/s, which is the axis a reader expects from a chart.
  */
-const rung = (i: number) => 1024 ** Math.floor(i / 3) * 10 ** (i % 3)
+const RUNG_STEPS = [1, 2, 5, 10, 20, 50, 100, 200, 500]
+const rung = (i: number) => 1024 ** Math.floor(i / RUNG_STEPS.length) * RUNG_STEPS[i % RUNG_STEPS.length]!
 
-/** The rung of `RATE_FLOOR`. */
-const FLOOR = 3
+/** The rung of `RATE_FLOOR`: a whole unit's worth of rungs up is 1 KB/s. */
+const FLOOR = RUNG_STEPS.length
 
 /**
  * The lowest rate drawn, 1 KB/s, since a log axis has no zero. An agent's own
@@ -498,11 +542,15 @@ export const RATE_FLOOR = rung(FLOOR)
  * A logarithmic axis for transfer rates, from the rung at or below `low` to the
  * rung at or above `high`, and no lower than `RATE_FLOOR`.
  *
+ * `low` is the slowest rate actually drawn, not the floor: a link running in
+ * megabytes has no business printing 1 KB/s halfway down its axis, and on a
+ * phone that column is a fifth of the card. The floor is the floor -- rates
+ * under it are drawn along it -- not the bottom of every axis.
+ *
  * At most six labels, counted down from the top, which is the one that says how
- * far the axis reaches. Six label every rung from the floor to 100 MB/s, the
- * bursts of a gigabit port, so an idle line lies on a labelled gridline; on a
- * panel 120 px tall they sit 24 px apart. Wider spans take every other rung:
- * 1 KB/s to 1 GB/s is seven, and a label on each would sit 20 px from the next.
+ * far the axis reaches. Three rungs are a decade, so a span up to six decades
+ * gets every third or fourth rung and still reads as round numbers: 50 KB,
+ * 2 MB, 100 MB. Narrower spans take every other rung or every one.
  */
 export function rateAxis(low: number, high: number): { domain: [number, number]; ticks: number[] } {
   let bottom = FLOOR
