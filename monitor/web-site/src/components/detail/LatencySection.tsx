@@ -10,15 +10,107 @@ import { Skeleton } from "@/components/ui/skeleton"
 import type { Node } from "@/lib/api"
 import { AXIS, GRID, LINE, TOOLTIP, probeStyle, timeAxis } from "@/lib/chart"
 import { pingWindows } from "@/lib/format"
+import { fmtLoss } from "@/lib/ping"
 import { usePingHistory } from "@/lib/history"
 import { useInView } from "@/lib/useInView"
-import { buildLatencyRows, probeStats, type ProbeSeries } from "@/lib/pingDetail"
+import { buildLatencyRows, probeStats, type ProbeSeries, type ProbeStat } from "@/lib/pingDetail"
 import { cn } from "@/lib/utils"
 
+import { QualitySection } from "./QualitySection"
 import { RangeBar } from "./RangeBar"
 
 const ms = (value: number | null) => value === null ? "—" : `${Math.round(value)} ms`
-const lossText = (value: number) => value <= 0 ? "0%" : value < 1 ? "<1%" : `${Math.round(value)}%`
+
+/**
+ * A percentage with the card's own precision: one decimal below ten, the whole
+ * number above it, `<0.1` for the nearly-nothing case.
+ *
+ * The detail page rounded to whole per cents, which is fine for a loss row and
+ * useless for a retransmit rate: 4.7% and 5.2% are the same figure at that
+ * precision, and they are the difference between a line that loses a SYN now and
+ * then and one that is in trouble. The card has printed `fmtLoss` all along; two
+ * surfaces naming the same line's number differently was the bug.
+ */
+const pct = (value: number | null) => value === null ? "—" : `${fmtLoss(value)}%`
+
+/**
+ * One probe's card: the colour that keys it to the chart, then the three numbers
+ * a reader acts on, then the two that say how often the line went wrong.
+ *
+ * The split is the point. `平均 51 ms · 丢包 0% · 波动 1.42` was four figures and
+ * a verb in one grey run, and the figure a reader compares across probes was
+ * buried in the middle of it. Those two rows are also where `重传` first appears
+ * on the page -- a hub that does not produce it gets one row fewer here and no
+ * quality card at all, rather than a zero nobody can act on.
+ *
+ * Everything else -- the window's extremes, the spread, the sample counts --
+ * stays in the ⓘ: it is what a reader asks *after* the three numbers, and it is
+ * one press away.
+ */
+export function ProbeCard({ stat, color, on, onClick }: {
+  stat: ProbeStat
+  /** The probe's line colour on the chart above. */
+  color: string
+  on: boolean
+  onClick: () => void
+}) {
+  // Only where the hub produces it: `重传 —` would be a figure with its value
+  // missing, where the truth is that this hub has no such column.
+  const retxInfo = stat.retx === null ? [] : [`重传 ${pct(stat.retx)}`]
+  const spoken = [
+    `${stat.name}，${on ? "已显示" : "已隐藏"}；延迟 ${ms(stat.avg)}，P50 ${ms(stat.p50)}，P99 ${ms(stat.p99)}`,
+    ...retxInfo,
+    `丢包 ${pct(stat.loss)}，样本 ${stat.samples}`,
+  ].join("，")
+  const info = [
+    `最小 ${ms(stat.min)}`,
+    `最大 ${ms(stat.max)}`,
+    `平均 ${ms(stat.avg)}`,
+    `最新 ${ms(stat.latest)}`,
+    `P50 ${ms(stat.p50)}`,
+    `P99 ${ms(stat.p99)}`,
+    `波动率 ${stat.volatility === null ? "—" : stat.volatility.toFixed(2)}`,
+    `样本 ${stat.samples} · 有效 ${stat.valid}`,
+    ...retxInfo,
+    `丢包 ${pct(stat.loss)}`,
+  ].join("\n")
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      aria-label={spoken}
+      onClick={onClick}
+      className={cn(
+        "group flex min-w-48 flex-1 items-center gap-3 rounded-lg bg-card-2 p-3 text-left transition-opacity hover:bg-card",
+        !on && "opacity-30",
+      )}
+    >
+      <span className="h-8 w-1 shrink-0 rounded-full" style={{ backgroundColor: color }} aria-hidden />
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate text-sm font-semibold">{stat.name}</span>
+          <span className="ml-auto shrink-0 text-muted-foreground" role="img" title={info} aria-label={info}>
+            <Info size={14} aria-hidden />
+          </span>
+        </span>
+        <span className="mt-1 flex flex-wrap items-baseline gap-x-1.5 text-2xs text-muted-foreground">
+          <span>延迟 {ms(stat.avg)}</span>
+          <span>·</span>
+          <span>P50 {ms(stat.p50)} / P99 {ms(stat.p99)}</span>
+        </span>
+        <span className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 text-2xs text-muted-foreground">
+          {stat.retx !== null && (
+            <>
+              <span>重传 {pct(stat.retx)}</span>
+              <span>·</span>
+            </>
+          )}
+          <span>丢包 {pct(stat.loss)}</span>
+        </span>
+      </span>
+    </button>
+  )
+}
 
 /**
  * The latency half: one card per probe, the chart they share, and the two
@@ -104,51 +196,15 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
       {series.length > 0 && (
         <>
           <div className="flex flex-wrap gap-3">
-            {stats.map((stat, index) => {
-              const style = probeStyle(index)
-              const on = !visibleHidden.includes(stat.id)
-              const info = [
-                `最小 ${ms(stat.min)}`,
-                `最大 ${ms(stat.max)}`,
-                `平均 ${ms(stat.avg)}`,
-                `最新 ${ms(stat.latest)}`,
-                `P50 ${ms(stat.p50)}`,
-                `P99 ${ms(stat.p99)}`,
-                `波动率 ${stat.volatility === null ? "—" : stat.volatility.toFixed(2)}`,
-                `样本 ${stat.samples} · 有效 ${stat.valid}`,
-                `丢包 ${lossText(stat.loss)}`,
-              ].join("\n")
-              return (
-                <button
-                  key={stat.id}
-                  type="button"
-                  aria-pressed={on}
-                  aria-label={`${stat.name}，${on ? "已显示" : "已隐藏"}；平均延迟 ${ms(stat.avg)}，P50 ${ms(stat.p50)}，P99 ${ms(stat.p99)}，丢包 ${lossText(stat.loss)}，样本 ${stat.samples}`}
-                  onClick={() => toggle(stat.id)}
-                  className={cn(
-                    "group flex min-w-48 flex-1 items-center gap-3 rounded-lg bg-card-2 p-3 text-left transition-opacity hover:bg-card",
-                    !on && "opacity-30",
-                  )}
-                >
-                  <span className="h-8 w-1 shrink-0 rounded-full" style={{ backgroundColor: style.stroke }} aria-hidden />
-                  <span className="min-w-0 flex-1">
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <span className="truncate text-sm font-semibold">{stat.name}</span>
-                      <span className="ml-auto shrink-0 text-muted-foreground" role="img" title={info} aria-label={info}>
-                        <Info size={14} aria-hidden />
-                      </span>
-                    </span>
-                    <span className="mt-1 flex flex-wrap items-baseline gap-x-1.5 text-2xs text-muted-foreground">
-                      <span>平均 {ms(stat.avg)}</span>
-                      <span>·</span>
-                      <span>丢包 {lossText(stat.loss)}</span>
-                      <span>·</span>
-                      <span>波动 {stat.volatility === null ? "—" : stat.volatility.toFixed(2)}</span>
-                    </span>
-                  </span>
-                </button>
-              )
-            })}
+            {stats.map((stat, index) => (
+              <ProbeCard
+                key={stat.id}
+                stat={stat}
+                color={probeStyle(index).stroke}
+                on={!visibleHidden.includes(stat.id)}
+                onClick={() => toggle(stat.id)}
+              />
+            ))}
           </div>
 
           <Card className="min-w-0 gap-0 p-4">
@@ -218,6 +274,13 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
               )}
             </div>
           </Card>
+
+          {/* A hub from before the metric answers without a `retx` figure, and
+              the card is left off rather than drawn at zero: an empty strip of
+              quiet green would be a claim this hub cannot make. */}
+          {answer.retx !== undefined && (
+            <QualitySection series={series} hidden={visibleHidden} hours={hours} />
+          )}
         </>
       )}
     </section>

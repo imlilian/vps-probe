@@ -6,8 +6,8 @@
 import assert from "node:assert/strict"
 
 import {
-  BLOCK, buildSlots, cardProbes, fmtLoss, fmtMs, latencySignal, lossSignal, probeStats, qualitySignal, RECENT,
-  slotSignal, type PingData, type PingRow, type Slot,
+  BLOCK, buildSlots, cardProbes, fmtLoss, fmtMs, latencySignal, lossSignal, probeStats, qualityBlocks,
+  qualitySignal, RECENT, slotSignal, type PingData, type PingRow, type Slot,
 } from "./ping.ts"
 
 // Five minutes is what the card's figure is read from; the tests below name
@@ -253,4 +253,23 @@ console.log("figures keep the precision their column has room for")
   assert.equal(probeStats(data, { id: 1, name: "上海电信" }, 10_140, 20).retxKnown, false)
   assert.equal(cardProbes(withRetx, 9_000)[0]!.retxKnown, true)
   console.log("the window retransmit rate is the hub's, and one hub's absence is not another's zero")
+}
+
+// The detail page's quality card picks a block length the title can state, and
+// then draws however many of them the window holds. The count is a target; the
+// length is a promise, so the length wins when they disagree.
+{
+  assert.deepEqual(qualityBlocks(3_600), { count: 20, seconds: BLOCK, label: "3 分钟" })
+  assert.deepEqual(qualityBlocks(6 * 3_600), { count: 72, seconds: 300, label: "5 分钟" })
+  assert.deepEqual(qualityBlocks(12 * 3_600), { count: 72, seconds: 600, label: "10 分钟" })
+  assert.deepEqual(qualityBlocks(24 * 3_600), { count: 96, seconds: 900, label: "15 分钟" })
+  assert.deepEqual(qualityBlocks(168 * 3_600), { count: 84, seconds: 7_200, label: "2 小时" })
+  assert.deepEqual(qualityBlocks(720 * 3_600), { count: 90, seconds: 28_800, label: "8 小时" })
+  // Whatever the window, the blocks cover it exactly: the title's length times
+  // the block count is the window the chart above draws.
+  for (const hours of [1, 6, 12, 24, 168, 720]) {
+    const window = qualityBlocks(hours * 3_600)
+    assert.equal(window.count * window.seconds, hours * 3_600, `${hours}h`)
+  }
+  console.log("a quality strip's blocks are as long as its title says, and as many as the window holds")
 }

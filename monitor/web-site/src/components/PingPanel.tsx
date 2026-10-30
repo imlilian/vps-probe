@@ -1,11 +1,12 @@
 import { useEffect, useId, useRef, useState } from "react"
 
+import { SignalStrip, qualityFill } from "@/components/SignalStrip"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { Node } from "@/lib/api"
 import { clockFor } from "@/lib/format"
 import {
-  cardProbes, fmtLoss, fmtMs, HOURS, latencySignal, lossSignal, probeLatencySignal, qualitySignal, slotSignal,
-  useNodePing, type ProbeStats, type Quality, type Slot,
+  cardProbes, fmtLoss, fmtMs, HOURS, latencySignal, lossSignal, probeLatencySignal, slotSignal,
+  useNodePing, type ProbeStats, type Slot,
 } from "@/lib/ping"
 import { cn } from "@/lib/utils"
 
@@ -44,30 +45,6 @@ const INK = [
 ]
 
 /**
- * The quality strip's fills: what went wrong in a block, or nothing.
- *
- * Deliberately not the latency ramp. That one is a continuous scale where every
- * block is coloured and the colour says how far away the target was; this one
- * marks exceptions, because "clean" is the state almost every block is in and a
- * second full ladder beside the first would compete with it. A clean block is a
- * third of the way to the best green -- present, so the strip reads as twenty
- * blocks rather than as gaps, and quiet enough to be skipped by the eye.
- */
-const QUALITY_FILL: Record<Quality, string> = {
-  none: "bg-muted",
-  clean: "bg-signal-1/35",
-  retx: "bg-signal-4",
-  lost: "bg-signal-5",
-}
-
-function slotTitle(slot: Slot, clock: (ms: number) => string) {
-  if (!slot) return "无采样"
-  const at = clock(slot.ts * 1000)
-  if (slot.latency === null) return `${at} · 超时`
-  return `${at} · ${fmtMs(slot.latency)} ms · 丢包 ${fmtLoss(slot.loss)}% · 重传 ${fmtLoss(slot.retx)}%`
-}
-
-/**
  * Twenty blocks, one per three minutes of the last hour.
  *
  * Four pixels tall rather than six. At six the strip was a bar -- a second block
@@ -81,35 +58,20 @@ function slotTitle(slot: Slot, clock: (ms: number) => string) {
  * minutes of the hour. Narrower blocks are the trade; fewer of them would be a
  * different claim about the hour.
  */
-function Blocks({
-  slots, clock, fill, className,
-}: {
-  slots: Slot[]
-  clock: (ms: number) => string
-  fill: (slot: Slot) => string
-  className?: string
-}) {
-  return (
-    // The figures above carry the reading; the strip is the same data drawn, so
-    // a screen reader is spared twenty unlabelled boxes. The title on each block
-    // is still there for a pointer, which is the only way to ask a block what it
-    // was.
-    <div className={cn("grid grid-cols-20 gap-px", className)} aria-hidden>
-      {slots.map((slot, i) => (
-        <span key={i} title={slotTitle(slot, clock)} className={cn("h-1 rounded-xs", fill(slot))} />
-      ))}
-    </div>
-  )
-}
-
-/** The hour's latency, in the five-step ramp. */
 function Strip({ slots, clock, className }: { slots: Slot[]; clock: (ms: number) => string; className?: string }) {
-  return <Blocks slots={slots} clock={clock} fill={(slot) => FILL[slotSignal(slot)]} className={className} />
+  return (
+    <SignalStrip
+      slots={slots}
+      clock={clock}
+      fill={(slot) => FILL[slotSignal(slot)]}
+      className={cn("grid-cols-20", className)}
+    />
+  )
 }
 
 /** The same twenty blocks, judged for what went missing and whether it came back. */
 function QualityStrip({ slots, clock, className }: { slots: Slot[]; clock: (ms: number) => string; className?: string }) {
-  return <Blocks slots={slots} clock={clock} fill={(slot) => QUALITY_FILL[qualitySignal(slot)]} className={className} />
+  return <SignalStrip slots={slots} clock={clock} fill={qualityFill} className={cn("grid-cols-20", className)} />
 }
 
 /**

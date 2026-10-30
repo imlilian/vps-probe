@@ -689,6 +689,72 @@ try {
   console.log("a price keeps its mark as a unit beside the figure")
 
   console.log("the detail page composes header, figures, info, load and latency")
+
+  // The detail page's probe card and its quality card, rendered on their own: the
+  // section around them defers its request until it is scrolled into view, which
+  // a server render never is.
+  {
+    const { ProbeCard } = await server.ssrLoadModule("/src/components/detail/LatencySection.tsx")
+    const stat = {
+      id: 1, name: "上海电信", avg: 51.4, latest: 53, min: 40, max: 62, p50: 51, p99: 62,
+      volatility: 1.21, loss: 0, retx: 2.1, samples: 60, valid: 59,
+    }
+    // Server markup carries `<!-- -->` between adjacent text nodes; the figures
+    // are asserted on the text a reader would see.
+    const tidy = (html: string) => html.replace(/<!-- -->/g, "")
+    const card = tidy(renderToString(createElement(ProbeCard, { stat, color: "#22c55e", on: true, onClick() {} })))
+    // Two rows, three figures: the ones a reader acts on, then how often it went
+    // wrong. `波动` moved into the ⓘ with the rest of the statistics.
+    assert.ok(card.includes("延迟 51 ms"), "the card leads with the latency")
+    assert.ok(card.includes("P50 51 ms / P99 62 ms"), "and its two quantiles beside it")
+    assert.ok(card.includes("重传 2.1%") && card.includes("丢包 0%"), "then the two failure figures")
+    assert.ok(!card.includes("波动 1.21"), "the spread is in the tooltip, not the row")
+    assert.match(card, /aria-label="上海电信，已显示；延迟 51 ms，P50 51 ms，P99 62 ms，重传 2.1%，丢包 0%，样本 60"/)
+    // A hub without the figure: one row fewer, and no invented zero.
+    const old = tidy(renderToString(createElement(ProbeCard, {
+      stat: { ...stat, retx: null }, color: "#22c55e", on: false, onClick() {},
+    })))
+    assert.ok(!old.includes("重传"), "no retransmit row without the figure")
+    assert.ok(old.includes("丢包 0%") && old.includes("opacity-30"), "and a hidden probe is dimmed")
+
+    const { QualitySection } = await server.ssrLoadModule("/src/components/detail/QualitySection.tsx")
+    const newest = Math.ceil(Date.now() / 1000 / 60) * 60
+    const points = (task: number, retx?: number) =>
+      Array.from({ length: 60 }, (_, i) => ({
+        task_id: task,
+        ts: (newest - (59 - i) * 60) * 1000,
+        latency: i % 11 === 4 ? null : 40 + task,
+        ...(i % 7 === 3 && retx ? { retx: 100 } : {}),
+      }))
+    const quality = tidy(renderToString(createElement(QualitySection, {
+      series: [
+        { id: 1, name: "上海电信", points: points(1, 1), loss: 3.3, retx: 4.7 },
+        { id: 2, name: "上海联通", points: points(2), loss: 0, retx: 0 },
+      ],
+      hidden: [2],
+      hours: 1,
+    })))
+    assert.ok(quality.includes("线路质量"), "the quality card is titled")
+    // The block length is the window's, and the title says which.
+    assert.ok(quality.includes("首包重传与丢包 · 每块 3 分钟"), "the block length is stated")
+    assert.ok(quality.includes("丢包 3.3%") && quality.includes("重传 4.7%"), "each row carries both figures")
+    // One row per probe, at the window's block count: an hour is twenty blocks of
+    // three minutes, and the strip is a template rather than the card's twenty
+    // fixed columns.
+    assert.equal(quality.match(/repeat\(20, minmax\(0, 1fr\)\)/g)?.length, 2, "twenty blocks per probe")
+    assert.equal(quality.match(/h-1 rounded-xs/g)?.length, 40, "two strips of twenty")
+    // Amber where a handshake came back late, clean green where nothing did, and
+    // the four legend entries under the rows.
+    assert.ok(quality.includes("bg-signal-4"), "a retransmitted block is amber")
+    assert.ok(quality.includes("bg-signal-1/35"), "and a clean one is a quiet green")
+    for (const want of ["干净", "重传", "丢包", "无采样"]) {
+      assert.ok(quality.includes(want), `the legend names ${want}`)
+    }
+    // The explanation of the two metrics exists exactly once, in this card's ⓘ.
+    assert.match(quality, /aria-label="延迟是首包往返时间[^"]*3 秒内连不上/)
+    assert.ok(quality.includes("opacity-30"), "a hidden probe is dimmed, not dropped")
+    console.log("the detail page splits a probe into three figures, and draws quality as blocks")
+  }
 } finally {
   await server.close()
 }

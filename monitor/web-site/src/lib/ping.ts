@@ -126,6 +126,43 @@ export function buildSlots(rows: PingRow[], until: number, count = SLOTS, block 
   )
 }
 
+/**
+ * The block lengths a strip may claim in its title, in seconds. The card's three
+ * minutes is the finest; past an hour the steps get coarse so that a week still
+ * fits a row of blocks.
+ */
+const BLOCK_STEPS = [3, 5, 10, 15, 30, 60, 120, 180, 360, 480, 720, 1440].map((minutes) => minutes * 60)
+
+/** One window cut into blocks of a length the title can name. */
+export type QualityWindow = { count: number; seconds: number; label: string }
+
+const blockLabel = (seconds: number) => {
+  const minutes = seconds / 60
+  if (minutes < 60) return `${minutes} 分钟`
+  const hours = minutes / 60
+  return hours < 24 ? `${hours} 小时` : `${hours / 24} 天`
+}
+
+/**
+ * How the detail page's quality card cuts its window: about ninety blocks, then
+ * snapped to a length the title can state.
+ *
+ * The count is what the width can draw, the length is what the reader can check
+ * against the clock -- and when they disagree the length wins, because a title
+ * that says "每块 5 分钟" over blocks of four is worse than a strip of
+ * ninety-six. Half an hour is the widest window that still lands on the card's
+ * own resolution; past it the blocks get longer rather than more numerous.
+ */
+export function qualityBlocks(windowSeconds: number, most = 90): QualityWindow {
+  const count = Math.min(Math.max(Math.round(windowSeconds / 180), 24), most)
+  const target = windowSeconds / count
+  // A tie goes to the longer step: the count is a ceiling as much as a target,
+  // and a strip of 72 blocks reads better than the 120 the shorter step needs.
+  const seconds = BLOCK_STEPS.reduce((best, step) =>
+    Math.abs(step - target) <= Math.abs(best - target) ? step : best)
+  return { count: Math.max(1, Math.round(windowSeconds / seconds)), seconds, label: blockLabel(seconds) }
+}
+
 function median(values: number[]): number | null {
   if (!values.length) return null
   const sorted = [...values].sort((a, b) => a - b)
