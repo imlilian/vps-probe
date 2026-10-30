@@ -473,13 +473,22 @@ pub async fn metrics(
         // only one that can be accurate, since the denominators it divides by are
         // gone by the time the rows are built. Additive, so a reader unaware of it
         // continues to work.
-        let (ping, loss) = if want_ping { app.db.ping_records(id, span)? } else { (vec![], json!({})) };
+        let (ping, loss, retx) =
+            if want_ping { app.db.ping_records(id, span)? } else { (vec![], json!({}), json!({})) };
+        // `retx` is the retransmit rate, which the same pass produces and which
+        // no reader can recover from the rows: like `loss`, its denominators are
+        // gone once the buckets are built. The key is present even when every
+        // probe is at zero -- `{}` -- because that is a reading, where an old hub
+        // omitting it is not; the page degrades on its absence alone, so a hub
+        // that has the figure never hides the column.
+        //
         // `step` is the seconds each point spans, against which a row's `minutes`
         // is read; inferred from the stamps instead, it would be missing for a
         // window holding a single point. The last point is the bucket still in
         // progress and holds only the minutes elapsed.
         anyhow::Ok(json!({
-            "metrics": metrics, "ping": ping, "probes": probes, "loss": loss, "step": span.step,
+            "metrics": metrics, "ping": ping, "probes": probes, "loss": loss, "retx": retx,
+            "step": span.step,
         }))
     })
     .await;
@@ -2992,7 +3001,7 @@ mod tests {
         for i in 0..30 * 1440 {
             app.db.insert_metric(id, now - i * 60, &json!({"cpu": 1.0})).unwrap();
             for task in 1..=PROBES {
-                app.db.insert_pings(id, &[(task, now - i * 60, 42)]).unwrap();
+                app.db.insert_pings(id, &[(task, now - i * 60, 42, 0)]).unwrap();
             }
         }
         app.db.roll_up(now, 365).unwrap();
@@ -3006,7 +3015,7 @@ mod tests {
                 assert_eq!(span.step % 3_600, 0, "{hours}h: an hourly row straddles two points");
             }
             let metrics = app.db.metrics(id, span).unwrap();
-            let (ping, _) = app.db.ping_records(id, span).unwrap();
+            let (ping, _, _) = app.db.ping_records(id, span).unwrap();
             // Against the budget itself rather than whatever the step produced:
             // derived from the step, this would only demonstrate that division
             // works. One bucket of slack, as the window rarely divides evenly.
@@ -3053,6 +3062,58 @@ mod tests {
     /// What a thinned bucket may return. Keeping one row and discarding the rest
     /// would integrate the seven-day chart to twice the traffic the minutes hold,
     /// and draw a probe losing half its packets as an unbroken line.
+    /// The retransmit rate rides along in the same response as the loss, keyed
+    /// the same way. The map is present even when every probe is at zero -- an
+    /// empty object, not a missing key -- because a hub that has the figure must
+    /// be distinguishable from a hub that does not: the page draws a
+    /// retransmit column for the first and none for the second.
+    #[tokio::test]
+    async fn the_ping_series_reports_retransmits_beside_losses() {
+        let app = std::sync::Arc::new(app());
+        let id = node(&app, "quiet", true);
+        let probe = task(&app, vec![id]);
+        let now = Utc::now().timestamp();
+        // One bucket of a minute, holding a clean handshake and a retransmitted
+        // one: one sample apiece, so the figure is 50% rather than near it.
+        let bucket = now - 300;
+        let at = bucket - bucket % 60;
+        app.db.insert_pings(id, &[(probe, at + 1, 20, 0), (probe, at + 2, 180, 1)]).unwrap();
+        app.db.create_session(&sha256("live-token"), now + 3_600).unwrap();
+        // Signed in: `metrics` answers an unpublished node only to the panel.
+        let signed_in = || {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::COOKIE, format!("{}=live-token", crate::auth::COOKIE).parse().unwrap());
+            headers
+        };
+        let ask = |id: i64| {
+            metrics(
+                State(app.clone()),
+                signed_in(),
+                Path(id),
+                Query(Window { hours: 1, points: None, series: Some("ping".into()) }),
+            )
+        };
+
+        let answered = ask(id).await;
+        assert_eq!(answered.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(answered.into_body(), 64 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["retx"][probe.to_string()], 50.0, "{body}");
+        // Per bucket too, so a tooltip can read it off the row it belongs to.
+        assert_eq!(body["ping"][0]["latency"], 100, "the median: the retransmit's wait is deducted");
+        assert_eq!(body["ping"][0]["retx"], 50, "{:?}", body["ping"][0]);
+
+        // A node with nothing retransmitted keeps the map and drops the key.
+        let quiet = node(&app, "clean", true);
+        let its = task(&app, vec![quiet]);
+        app.db.insert_pings(quiet, &[(its, now - 60, 20, 0)]).unwrap();
+        let answered = ask(quiet).await;
+        let body = axum::body::to_bytes(answered.into_body(), 64 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["retx"], json!({}), "an empty map, not a missing key: {body}");
+        assert!(body["ping"][0].get("retx").is_none(), "{:?}", body["ping"][0]);
+    }
+
     #[test]
     fn a_thinned_bucket_answers_with_its_mean_and_says_what_it_lost() {
         let app = app();
@@ -3076,11 +3137,11 @@ mod tests {
             task(&app, vec![id]);
         }
         for (i, latency) in [30, -1, -1, -1].into_iter().enumerate() {
-            app.db.insert_pings(id, &[(1, base + 10 + i as i64 * 20, latency)]).unwrap();
+            app.db.insert_pings(id, &[(1, base + 10 + i as i64 * 20, latency, 0)]).unwrap();
         }
         // A second probe that never answered, and a third that answered cleanly.
-        app.db.insert_pings(id, &[(2, base + 10, -1)]).unwrap();
-        app.db.insert_pings(id, &[(3, base + 10, 12)]).unwrap();
+        app.db.insert_pings(id, &[(2, base + 10, -1, 0)]).unwrap();
+        app.db.insert_pings(id, &[(3, base + 10, 12, 0)]).unwrap();
 
         let m = &app.db.metrics(id, Span::minutes(base, 120)).unwrap()[0];
         assert_eq!(m["cpu"], 20.0, "the bucket is its mean, not one row of it");
@@ -3091,7 +3152,7 @@ mod tests {
 
         // Keyed by task rather than index: the order is the panel's, which
         // `a_probe_chart_follows_the_panel_order` covers.
-        let (rows, window_loss) = app.db.ping_records(id, Span::minutes(base, 120)).unwrap();
+        let (rows, window_loss, _) = app.db.ping_records(id, Span::minutes(base, 120)).unwrap();
         let probe = |task: i64| {
             rows.iter().find(|r| r["task_id"] == task).unwrap_or_else(|| panic!("no probe {task}"))
         };
@@ -3117,9 +3178,11 @@ mod tests {
         let wide_probe = task(&app, vec![wide]);
         let wide_base = base / 180 * 180;
         for i in 0..180 {
-            app.db.insert_pings(wide, &[(wide_probe, wide_base + i, if i == 0 { -1 } else { 20 })]).unwrap();
+            app.db
+                .insert_pings(wide, &[(wide_probe, wide_base + i, if i == 0 { -1 } else { 20 }, 0)])
+                .unwrap();
         }
-        let (rows, _) = app.db.ping_records(wide, Span::minutes(wide_base, 180)).unwrap();
+        let (rows, ..) = app.db.ping_records(wide, Span::minutes(wide_base, 180)).unwrap();
         assert_eq!(rows.len(), 1, "the fixture has to be one bucket for this to mean anything");
         let row = &rows[0];
         assert_eq!(row["loss"], 1, "a bucket that lost one of 180 has not lost none");
@@ -3130,7 +3193,7 @@ mod tests {
         let jitter = node(&app, "jitter", true);
         let jitter_probe = task(&app, vec![jitter]);
         for (i, latency) in [10, 20, 50, 20, 20].into_iter().enumerate() {
-            app.db.insert_pings(jitter, &[(jitter_probe, wide_base + i as i64, latency)]).unwrap();
+            app.db.insert_pings(jitter, &[(jitter_probe, wide_base + i as i64, latency, 0)]).unwrap();
         }
         let row = &app.db.ping_records(jitter, Span::minutes(wide_base, 180)).unwrap().0[0];
         assert_eq!(row["latency"], 20, "the middle answer, not the mean of 24");
@@ -3142,14 +3205,14 @@ mod tests {
         let even = node(&app, "even", true);
         let even_probe = task(&app, vec![even]);
         for (i, latency) in [40, 10, 30, 20].into_iter().enumerate() {
-            app.db.insert_pings(even, &[(even_probe, wide_base + i as i64, latency)]).unwrap();
+            app.db.insert_pings(even, &[(even_probe, wide_base + i as i64, latency, 0)]).unwrap();
         }
         assert_eq!(app.db.ping_records(even, Span::minutes(wide_base, 180)).unwrap().0[0]["latency"], 25);
         // An odd count is its middle reading, with the ranks around it far apart.
         let odd = node(&app, "odd", true);
         let odd_probe = task(&app, vec![odd]);
         for (i, latency) in [20, 900, 30].into_iter().enumerate() {
-            app.db.insert_pings(odd, &[(odd_probe, wide_base + i as i64, latency)]).unwrap();
+            app.db.insert_pings(odd, &[(odd_probe, wide_base + i as i64, latency, 0)]).unwrap();
         }
         assert_eq!(app.db.ping_records(odd, Span::minutes(wide_base, 180)).unwrap().0[0]["latency"], 30);
 
@@ -3159,7 +3222,7 @@ mod tests {
         // Three whole buckets in the past, whatever second the suite runs at.
         let since = wide_base - 3 * 180;
         for i in 0..3 {
-            app.db.insert_pings(grid, &[(grid_probe, since + i * 180 + 7, 20)]).unwrap();
+            app.db.insert_pings(grid, &[(grid_probe, since + i * 180 + 7, 20, 0)]).unwrap();
         }
         let rows = app.db.ping_records(grid, Span::minutes(since, 180)).unwrap().0;
         let stamps: Vec<_> = rows.iter().map(|r| r["ts"].clone()).collect();
@@ -3183,11 +3246,11 @@ mod tests {
         // A full minute at five seconds per round with no loss, then a minute
         // holding one sample, which was lost, before the probe stopped.
         for i in 0..12 {
-            app.db.insert_pings(id, &[(probe, base + i * 5, 20)]).unwrap();
+            app.db.insert_pings(id, &[(probe, base + i * 5, 20, 0)]).unwrap();
         }
-        app.db.insert_pings(id, &[(probe, base + 60, -1)]).unwrap();
+        app.db.insert_pings(id, &[(probe, base + 60, -1, 0)]).unwrap();
 
-        let (rows, loss) = app.db.ping_records(id, Span::minutes(base, 60)).unwrap();
+        let (rows, loss, _) = app.db.ping_records(id, Span::minutes(base, 60)).unwrap();
         let per_bucket: Vec<i64> = rows.iter().map(|r| r["loss"].as_i64().unwrap_or(0)).collect();
         assert_eq!(per_bucket, vec![0, 100], "the buckets are right about themselves");
 

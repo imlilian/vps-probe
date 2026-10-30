@@ -174,9 +174,16 @@ CREATE TABLE IF NOT EXISTS ping_node (
 -- Key order follows the only query there is: one node, one time window,
 -- every probe. With task_id ahead of ts SQLite can seek to the node and no
 -- further, then scans every record it ever kept -- see migrate_to_1.
+--
+-- `retx` marks a handshake the kernel had to retransmit, in which case
+-- `latency` already has the timer deducted. Rows written before the column
+-- existed hold 0, which is what they were: no retransmit was observed, because
+-- the deadline of the day cut the wait short. An agent that does not report the
+-- flag is read as 0 too -- no version test, no switch.
 CREATE TABLE IF NOT EXISTS ping_record (
   node_id INTEGER NOT NULL, task_id INTEGER NOT NULL,
   ts INTEGER NOT NULL, latency INTEGER NOT NULL,
+  retx INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (node_id, ts, task_id)
 ) WITHOUT ROWID;
 
@@ -202,6 +209,8 @@ CREATE TABLE IF NOT EXISTS metric_hour (
 
 -- `latency` is the median of the hour's answers and NULL when none arrived;
 -- `lo` and `hi` bound them. `answered` weights the median when buckets merge.
+-- `retx` counts the hour's retransmitted handshakes, so the hourly tier answers
+-- the retransmit rate as exactly as it answers the loss rate.
 --
 -- Foreign keys, unlike `ping_record`: an earlier build run against this file
 -- deletes nodes and probes knowing nothing of this table, and SQLite gives a
@@ -213,6 +222,7 @@ CREATE TABLE IF NOT EXISTS ping_hour (
   ts INTEGER NOT NULL,
   answered INTEGER NOT NULL, lost INTEGER NOT NULL,
   latency INTEGER, lo INTEGER, hi INTEGER,
+  retx INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (node_id, ts, task_id)
 ) WITHOUT ROWID;
 
@@ -236,7 +246,7 @@ CREATE TABLE IF NOT EXISTS session (
 /// cannot: `open` runs `SCHEMA` before migrating, and on an older file the
 /// column is not there yet. `an_upgraded_release_matches_a_fresh_database`
 /// holds every migration to these rules, starting from v1.0.0's schema.
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 
 /// Adds a column older databases lack. A duplicate column indicates the
 /// migration has already run; every other error must propagate.
@@ -413,6 +423,25 @@ fn migrate_to_13(conn: &Connection) -> Result<()> {
     add_column(conn, "node", "ip_other TEXT NOT NULL DEFAULT ''")
 }
 
+/// The retransmit flag, on both tiers: a stored result is one flag, an hourly
+/// row the number of flagged results in its hour.
+///
+/// Default 0 is the correct reading of every row already in the file, so
+/// nothing is recalculated and no table is rebuilt: the deadline of those days
+/// cut the wait short of the kernel's retransmit, so a retransmit had no way to
+/// be observed, and the loss those rows record is the figure this release
+/// splits in two. `add_column` swallows the duplicate column an earlier build's
+/// downgrade stamp produces, which is what makes the second run harmless.
+///
+/// The order among migrations is what keeps `migrate_to_1`'s rebuild of
+/// `ping_record` sound: it copies the table with `SELECT *` while it still has
+/// the four columns that statement was written for, and only then does this one
+/// add the fifth.
+fn migrate_to_14(conn: &Connection) -> Result<()> {
+    add_column(conn, "ping_record", "retx INTEGER NOT NULL DEFAULT 0")?;
+    add_column(conn, "ping_hour", "retx INTEGER NOT NULL DEFAULT 0")
+}
+
 /// Brings a database already in service up to `SCHEMA_VERSION` and stamps it.
 /// `from` is its current version, so a fresh file passes `SCHEMA_VERSION` and
 /// receives only the stamp.
@@ -464,6 +493,9 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
     }
     if from < 13 {
         migrate_to_13(&tx)?;
+    }
+    if from < 14 {
+        migrate_to_14(&tx)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -782,14 +814,14 @@ fn on_disk(file: &str) -> i64 {
 ///
 /// A constant because the query plan is asserted against it in
 /// `rekeying_ping_record_keeps_the_rows_and_lets_the_chart_query_seek`.
-const PING_ROWS: &str = "SELECT ts/?3, task_id, latency FROM ping_record
+const PING_ROWS: &str = "SELECT ts/?3, task_id, latency, retx FROM ping_record
      WHERE node_id=?1 AND ts>=?2
            AND task_id IN (SELECT task_id FROM ping_node WHERE node_id=?1)
      ORDER BY ts";
 
 /// [`PING_ROWS`] for the hourly tier: the folded hours before the watermark
 /// `?4`, in time order off the key.
-const PING_HOURS: &str = "SELECT ts/?3, task_id, answered, lost, latency, lo, hi FROM ping_hour
+const PING_HOURS: &str = "SELECT ts/?3, task_id, answered, lost, latency, lo, hi, retx FROM ping_hour
      WHERE node_id=?1 AND ts>=?2 AND ts<?4
            AND task_id IN (SELECT task_id FROM ping_node WHERE node_id=?1)
      ORDER BY ts";
@@ -892,9 +924,14 @@ fn oldest(conn: &Connection, tables: &[&str]) -> Result<Option<i64>> {
 /// Probe results as the latency fold receives them. A stored result is a
 /// single answer or a single loss; an hourly row is that hour's answers,
 /// represented by their median, and its losses.
+///
+/// `retx` counts handshakes the kernel had to retransmit, which is neither an
+/// answer nor a loss: those samples answered, and answered late enough to be
+/// told apart.
 struct Sample {
     answered: i64,
     lost: i64,
+    retx: i64,
     median: Option<i64>,
     lo: Option<i64>,
     hi: Option<i64>,
@@ -902,12 +939,13 @@ struct Sample {
 
 impl Sample {
     /// One stored result. A timeout is stored as -1: counted as lost, and kept
-    /// out of the median.
-    fn result(latency: i64) -> Self {
+    /// out of the median. `retx` is that row's flag, 0 or 1.
+    fn result(latency: i64, retx: i64) -> Self {
         let answer = (latency >= 0).then_some(latency);
         Sample {
             answered: i64::from(answer.is_some()),
             lost: i64::from(answer.is_none()),
+            retx,
             median: answer,
             lo: answer,
             hi: answer,
@@ -921,6 +959,7 @@ struct Tally {
     /// Each sample's median and the answers it stands for.
     medians: Vec<(i64, i64)>,
     lost: i64,
+    retx: i64,
     lo: Option<i64>,
     hi: Option<i64>,
 }
@@ -931,6 +970,7 @@ impl Tally {
             self.medians.push((median, s.answered));
         }
         self.lost += s.lost;
+        self.retx += s.retx;
         self.lo = self.lo.into_iter().chain(s.lo).min();
         self.hi = self.hi.into_iter().chain(s.hi).max();
     }
@@ -1956,20 +1996,21 @@ impl Db {
         for node in nodes {
             let mut probes: std::collections::BTreeMap<i64, Tally> = Default::default();
             let mut read = tx.prepare_cached(
-                "SELECT task_id, latency FROM ping_record
+                "SELECT task_id, latency, retx FROM ping_record
                  WHERE node_id=?1 AND ts>=?2 AND ts<?2+3600 AND task_id IN (SELECT id FROM ping_task)",
             )?;
             let mut rows = read.query(params![node, hour])?;
             while let Some(r) = rows.next()? {
-                probes.entry(r.get(0)?).or_default().add(Sample::result(r.get(1)?));
+                probes.entry(r.get(0)?).or_default().add(Sample::result(r.get(1)?, r.get(2)?));
             }
             let mut write = tx.prepare_cached(
-                "INSERT OR REPLACE INTO ping_hour (node_id, task_id, ts, answered, lost, latency, lo, hi)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT OR REPLACE INTO ping_hour
+                   (node_id, task_id, ts, answered, lost, latency, lo, hi, retx)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             for (task, mut t) in probes {
                 let median = t.median();
-                write.execute(params![node, task, hour, t.answered(), t.lost, median, t.lo, t.hi])?;
+                write.execute(params![node, task, hour, t.answered(), t.lost, median, t.lo, t.hi, t.retx])?;
             }
         }
         tx.execute(
@@ -2304,17 +2345,21 @@ impl Db {
     ///
     /// The chart's `task_id IN (assignments)` filter hides both afterwards, but
     /// does not prevent the write or its storage.
-    pub fn insert_pings(&self, node_id: i64, results: &[(i64, i64, i64)]) -> Result<()> {
+    ///
+    /// A result is `(task_id, ts, latency, retx)`: the last is 1 for a
+    /// handshake the kernel had to retransmit, which the row keeps apart from
+    /// the loss a timeout records.
+    pub fn insert_pings(&self, node_id: i64, results: &[(i64, i64, i64, i64)]) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         {
             let mut insert = tx.prepare_cached(
-                "INSERT OR REPLACE INTO ping_record (node_id, task_id, ts, latency)
-                 SELECT ?1, ?2, ?3, ?4
+                "INSERT OR REPLACE INTO ping_record (node_id, task_id, ts, latency, retx)
+                 SELECT ?1, ?2, ?3, ?4, ?5
                  WHERE EXISTS (SELECT 1 FROM ping_node WHERE task_id = ?2 AND node_id = ?1)",
             )?;
-            for (task_id, ts, latency) in results {
-                insert.execute(params![node_id, task_id, ts, latency])?;
+            for (task_id, ts, latency, retx) in results {
+                insert.execute(params![node_id, task_id, ts, latency, retx])?;
             }
         }
         tx.commit()?;
@@ -2334,14 +2379,21 @@ impl Db {
     /// assigned to the node times the results one bucket spans.
     ///
     /// Returns the buckets and, alongside them, the proportion of the whole
-    /// window each probe lost. The latter cannot be recovered from the former:
+    /// window each probe lost, and the proportion each had to retransmit. Those
+    /// two cannot be recovered from the former:
     /// [`close_bucket`] divides within each bucket and keeps only the quotient,
     /// so averaging those percentages would weight a bucket holding one sample
     /// equally with one holding twelve. The buckets are necessarily unequal --
     /// the window's first and last are partial by construction, and a probe that
     /// starts, stops, loses its node or skips a round produces more. The
     /// denominators are available only here, in the pass that already reads every
-    /// row. Probes that lost nothing are omitted, as `loss` is per bucket.
+    /// row. Probes that lost nothing are omitted, as `loss` is per bucket; the
+    /// retransmit rate follows the same rule.
+    ///
+    /// Both are sample-weighted (lost or retransmitted over every sample), not
+    /// an average of the per-bucket percentages: a retransmit is rare enough
+    /// that most buckets hold none, and averaging those in would divide by the
+    /// number of buckets instead of the number of samples.
     ///
     /// An hourly window reads [`PING_HOURS`] up to the watermark and
     /// [`PING_ROWS`] after it. Each hourly row enters the fold as its hour's
@@ -2352,7 +2404,7 @@ impl Db {
         &self,
         node_id: i64,
         span: Span,
-    ) -> Result<(Vec<serde_json::Value>, serde_json::Value)> {
+    ) -> Result<(Vec<serde_json::Value>, serde_json::Value, serde_json::Value)> {
         let mut reader = self.reader();
         // One snapshot for every statement below, as in `metrics`.
         let conn = reader.transaction()?;
@@ -2360,19 +2412,21 @@ impl Db {
         let mut out = Vec::new();
         // Per probe in the bucket being filled.
         let mut open: Vec<(i64, Tally)> = Vec::new();
-        // Per probe across the whole window: how many were lost, out of how many.
-        // Folded in the same pass rather than queried from SQLite a second time,
-        // for the same reason the bucket fold itself is in Rust.
-        let mut totals: HashMap<i64, (i64, i64)> = HashMap::new();
+        // Per probe across the whole window: how many were lost and how many
+        // retransmitted, out of how many. Folded in the same pass rather than
+        // queried from SQLite a second time, for the same reason the bucket fold
+        // itself is in Rust.
+        let mut totals: HashMap<i64, (i64, i64, i64)> = HashMap::new();
         let mut bucket = 0;
         let mut feed = |b: i64, task: i64, sample: Sample| {
             if b != bucket {
                 close_bucket(&mut out, &mut open, bucket * step);
                 bucket = b;
             }
-            let seen = totals.entry(task).or_insert((0, 0));
+            let seen = totals.entry(task).or_insert((0, 0, 0));
             seen.0 += sample.lost;
-            seen.1 += sample.answered + sample.lost;
+            seen.1 += sample.retx;
+            seen.2 += sample.answered + sample.lost;
             match open.iter_mut().find(|(id, _)| *id == task) {
                 Some((_, tally)) => tally.add(sample),
                 None => {
@@ -2398,6 +2452,7 @@ impl Db {
                 let sample = Sample {
                     answered: r.get(2)?,
                     lost: r.get(3)?,
+                    retx: r.get(7)?,
                     median: r.get(4)?,
                     lo: r.get(5)?,
                     hi: r.get(6)?,
@@ -2408,7 +2463,7 @@ impl Db {
         let mut stmt = conn.prepare_cached(PING_ROWS)?;
         let mut rows = stmt.query(params![node_id, minutes_from, step])?;
         while let Some(r) = rows.next()? {
-            feed(r.get(0)?, r.get(1)?, Sample::result(r.get(2)?));
+            feed(r.get(0)?, r.get(1)?, Sample::result(r.get(2)?, r.get(3)?));
         }
         close_bucket(&mut out, &mut open, bucket * step);
         // Probe by probe in the panel's order, each probe's rows still in time
@@ -2433,15 +2488,21 @@ impl Db {
             row["task_id"].as_i64().and_then(|id| rank.get(&id).copied()).unwrap_or(usize::MAX)
         });
         // Unrounded: the caller decides how to render it, and rounding here would
-        // turn 0.14% into the 0% that denotes no loss at all.
-        let loss: serde_json::Map<String, serde_json::Value> = totals
-            .into_iter()
-            .filter(|(_, (lost, _))| *lost > 0)
-            .map(|(task, (lost, samples))| {
-                (task.to_string(), serde_json::json!(100.0 * lost as f64 / samples as f64))
-            })
-            .collect();
-        Ok((out, serde_json::Value::Object(loss)))
+        // turn 0.14% into the 0% that denotes no loss at all. Probes with no
+        // event are omitted from either map, so a missing key is a zero -- the
+        // same convention the per-bucket figures follow.
+        let rate = |pick: fn(&(i64, i64, i64)) -> i64| -> serde_json::Map<String, serde_json::Value> {
+            totals
+                .iter()
+                .filter(|(_, seen)| pick(seen) > 0)
+                .map(|(task, seen)| {
+                    (task.to_string(), serde_json::json!(100.0 * pick(seen) as f64 / seen.2 as f64))
+                })
+                .collect()
+        };
+        let loss = rate(|seen| seen.0);
+        let retx = rate(|seen| seen.1);
+        Ok((out, serde_json::Value::Object(loss), serde_json::Value::Object(retx)))
     }
 
     // ---- the database file itself ----
@@ -2756,10 +2817,11 @@ impl Db {
 /// drag a mean, and it is the reading that is wrong rather than the link.
 ///
 /// `latency` is null when an entire bucket timed out. `loss` is the percentage
-/// that did, included only when non-zero -- a healthy day is 2,880 rows, and
-/// `"loss":0` on each would add 29 kB of nothing. Rounded up, so that the absence
-/// of a `loss` key means no timeouts occurred: truncating would report a bucket
-/// that lost 1 of 180 as clean.
+/// that did, and `retx` the percentage that answered only after the kernel
+/// retransmitted the SYN. Both are included only when non-zero -- a healthy day
+/// is 2,880 rows, and `"loss":0` on each would add 29 kB of nothing -- and
+/// rounded up, so that the absence of a key means none occurred: truncating
+/// would report a bucket whose 1 retransmit in 180 was clean.
 fn close_bucket(out: &mut Vec<serde_json::Value>, open: &mut Vec<(i64, Tally)>, ts: i64) {
     for (task, mut tally) in open.drain(..) {
         let answered = tally.answered();
@@ -2772,9 +2834,14 @@ fn close_bucket(out: &mut Vec<serde_json::Value>, open: &mut Vec<(i64, Tally)>, 
                 row["band"] = serde_json::json!([lo, hi]);
             }
         }
+        let total = answered + tally.lost;
         if tally.lost > 0 {
-            let total = answered + tally.lost;
             row["loss"] = ((100 * tally.lost + total - 1) / total).into();
+        }
+        // A retransmit is an answer, so its denominator is the same number of
+        // samples, and the rounded-up rule keeps "a key" meaning "it happened".
+        if tally.retx > 0 {
+            row["retx"] = ((100 * tally.retx + total - 1) / total).into();
         }
         out.push(row);
     }
@@ -3057,7 +3124,7 @@ mod tests {
             })
             .unwrap();
         db.insert_metric(id, 60, &serde_json::json!({"cpu": 1.0})).unwrap();
-        db.insert_pings(id, &[(task, 60, 42)]).unwrap();
+        db.insert_pings(id, &[(task, 60, 42, 0)]).unwrap();
 
         let writer = db.conn();
         let (send, receive) = std::sync::mpsc::channel();
@@ -3111,7 +3178,7 @@ mod tests {
         let wal = format!("{}-wal", scratch.0);
         let mut largest = 0;
         for ts in 0..20_000 {
-            db.insert_pings(id, &[(task, ts * 10, 40)]).unwrap();
+            db.insert_pings(id, &[(task, ts * 10, 40, 0)]).unwrap();
             largest = largest.max(bytes_of(&wal));
         }
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -3295,11 +3362,11 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        db.insert_pings(id, &[(task, now - 9 * 86_400, 12)]).unwrap();
+        db.insert_pings(id, &[(task, now - 9 * 86_400, 12, 0)]).unwrap();
         assert_eq!(db.stats().unwrap()["oldest"], now - 9 * 86_400);
 
         // And the hourly tier, which outlives both.
-        db.insert_pings(id, &[(task, now - 40 * 86_400, 12)]).unwrap();
+        db.insert_pings(id, &[(task, now - 40 * 86_400, 12, 0)]).unwrap();
         db.roll_up(now, 90).unwrap();
         db.prune(90).unwrap();
         assert_eq!(db.stats().unwrap()["oldest"], (now - 40 * 86_400).div_euclid(3_600) * 3_600);
@@ -3656,7 +3723,7 @@ mod tests {
         let task = db.save_ping_task(&probe(vec![id])).unwrap();
         db.accumulate(id, "b", (10, 10), Local::now(), None).unwrap();
         db.insert_metric(id, 1, &serde_json::json!({"cpu": 1.0})).unwrap();
-        db.insert_pings(id, &[(task, 1, 42)]).unwrap();
+        db.insert_pings(id, &[(task, 1, 42, 0)]).unwrap();
         db.delete_node(id).unwrap();
         assert!(db.node(id).unwrap().is_none());
         let pings = db
@@ -3692,7 +3759,7 @@ mod tests {
             ..Default::default()
         };
         let old = db.save_ping_task(&probe("tokyo")).unwrap();
-        db.insert_pings(id, &[(old, 1, 999)]).unwrap();
+        db.insert_pings(id, &[(old, 1, 999, 0)]).unwrap();
         db.delete_ping_task(old).unwrap();
         let pings = db
             .conn()
@@ -3755,8 +3822,12 @@ mod tests {
         let conn = db.conn();
         for n in [kept_node, gone_node] {
             for t in [kept_task, gone_task] {
-                conn.execute("INSERT INTO ping_hour VALUES (?1, ?2, 3600, 60, 0, 42, 40, 44)", params![n, t])
-                    .unwrap();
+                conn.execute(
+                    "INSERT INTO ping_hour (node_id, task_id, ts, answered, lost, latency, lo, hi)
+                     VALUES (?1, ?2, 3600, 60, 0, 42, 40, 44)",
+                    params![n, t],
+                )
+                .unwrap();
             }
         }
         conn.execute_batch(&format!(
@@ -3782,7 +3853,12 @@ mod tests {
         let id = node(&db, 1);
         let now = Utc::now().timestamp();
         let hour = (now - 3 * 3_600).div_euclid(3_600) * 3_600;
-        db.conn().execute("INSERT INTO ping_record VALUES (?1, 999, ?2, 42)", params![id, hour]).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO ping_record (node_id, task_id, ts, latency) VALUES (?1, 999, ?2, 42)",
+                params![id, hour],
+            )
+            .unwrap();
         db.insert_metric(id, hour, &serde_json::json!({"cpu": 1.0})).unwrap();
         assert!(db.roll_up(now, 1).unwrap() > 0);
         let span = Span { since: hour, step: 3_600, hourly: true };
@@ -3811,21 +3887,21 @@ mod tests {
             })
             .unwrap();
 
-        db.insert_pings(mine, &[(task, 1, 42)]).unwrap();
+        db.insert_pings(mine, &[(task, 1, 42, 0)]).unwrap();
         assert_eq!(rows().unwrap(), 1, "the node the probe is assigned to files its own result");
 
         // A probe that exists but belongs to another node, and ids naming no probe
         // at all: what a node token can place on the wire.
-        db.insert_pings(other, &[(task, 1, 42)]).unwrap();
+        db.insert_pings(other, &[(task, 1, 42, 0)]).unwrap();
         for invented in [7, 999_999, i64::from(i32::MAX) + 1] {
-            db.insert_pings(mine, &[(invented, 1, 42)]).unwrap();
+            db.insert_pings(mine, &[(invented, 1, 42, 0)]).unwrap();
         }
         assert_eq!(rows().unwrap(), 1, "nothing else reaches the table");
 
         // Deleting the probe also ends its node's results, so one already in flight
         // cannot land after the sweep and stay behind under an id no probe holds.
         db.delete_ping_task(task).unwrap();
-        db.insert_pings(mine, &[(task, 2, 42)]).unwrap();
+        db.insert_pings(mine, &[(task, 2, 42, 0)]).unwrap();
         assert_eq!(rows().unwrap(), 0, "a late result for a deleted probe is dropped");
     }
 
@@ -4000,7 +4076,7 @@ mod tests {
         let listed: Vec<_> = db.ping_tasks().unwrap().iter().map(|t| t.id).collect();
         assert_eq!(listed, vec![b, a, c], "a new probe starts at the end");
 
-        db.insert_pings(id, &[(a, 0, 10), (a, 60, 10), (b, 60, 20), (c, 60, 30)]).unwrap();
+        db.insert_pings(id, &[(a, 0, 10, 0), (a, 60, 10, 0), (b, 60, 20, 0), (c, 60, 30, 0)]).unwrap();
         let rows = db.ping_records(id, Span::minutes(0, 60)).unwrap().0;
         let drawn: Vec<_> =
             rows.iter().map(|r| (r["task_id"].as_i64().unwrap(), r["ts"].as_i64().unwrap())).collect();
@@ -4029,7 +4105,8 @@ mod tests {
         };
         let (a, b) = (probe("a"), probe("b"));
         // Six hours whose values vary within each hour, with minutes missing so
-        // the hours carry different weights, and a probe that loses rounds.
+        // the hours carry different weights, a probe that loses rounds and one
+        // that has to retransmit now and then.
         let start = 472_224 * 3_600;
         // Per hour, the columns the official themes do not draw, to check the
         // tier keeps them.
@@ -4046,7 +4123,10 @@ mod tests {
             db.insert_metric(id, ts, &sample).unwrap();
             db.insert_pings(
                 id,
-                &[(a, ts + 5, 20 + m % 11), (b, ts + 9, if m % 5 == 0 { -1 } else { 80 + m % 3 })],
+                &[
+                    (a, ts + 5, 20 + m % 11, i64::from(m % 7 == 0)),
+                    (b, ts + 9, if m % 5 == 0 { -1 } else { 80 + m % 3 }, 0),
+                ],
             )
             .unwrap();
         }
@@ -4069,15 +4149,19 @@ mod tests {
                     assert!(d.abs() <= slack, "{key} at {step}s: {g} {w}");
                 }
             }
-            let ((got, got_loss), (want, want_loss)) =
+            let ((got, got_loss, got_retx), (want, want_loss, want_retx)) =
                 (db.ping_records(id, hourly).unwrap(), db.ping_records(id, minutes).unwrap());
             assert_eq!(got_loss, want_loss, "the window's loss is exact");
+            assert_eq!(got_retx, want_retx, "the window's retransmit rate is exact");
             assert_eq!(got.len(), want.len());
             for (g, w) in got.iter().zip(&want) {
                 if step == 3_600 {
                     assert_eq!(g, w);
                 } else {
-                    assert_eq!((&g["ts"], &g["band"], &g["loss"]), (&w["ts"], &w["band"], &w["loss"]));
+                    assert_eq!(
+                        (&g["ts"], &g["band"], &g["loss"], &g["retx"]),
+                        (&w["ts"], &w["band"], &w["loss"], &w["retx"])
+                    );
                     let median = g["latency"].as_i64().unwrap();
                     let band = g["band"].as_array().map(|b| (b[0].as_i64().unwrap(), b[1].as_i64().unwrap()));
                     assert!(band.is_none_or(|(lo, hi)| (lo..=hi).contains(&median)), "{g}");
@@ -4088,8 +4172,8 @@ mod tests {
         // An hour's median stands for each of its answers: one hour of a single
         // 10 ms answer and one of three at 20 ms are four answers, median 20.
         let mut t = Tally::default();
-        t.add(Sample { answered: 1, lost: 0, median: Some(10), lo: Some(10), hi: Some(10) });
-        t.add(Sample { answered: 3, lost: 2, median: Some(20), lo: Some(15), hi: Some(40) });
+        t.add(Sample { answered: 1, lost: 0, retx: 0, median: Some(10), lo: Some(10), hi: Some(10) });
+        t.add(Sample { answered: 3, lost: 2, retx: 0, median: Some(20), lo: Some(15), hi: Some(40) });
         assert_eq!((t.median(), t.answered(), t.lo, t.hi), (Some(20), 4, Some(10), Some(40)));
 
         // The last hour waits out the lateness allowance and is read from its
@@ -4188,7 +4272,8 @@ mod tests {
                ts INTEGER NOT NULL, latency INTEGER NOT NULL,
                PRIMARY KEY (node_id, task_id, ts)
              ) WITHOUT ROWID;
-             INSERT INTO ping_record VALUES (1,7,100,12),(1,8,100,34),(1,7,200,56),(2,7,100,78);",
+             INSERT INTO ping_record (node_id, task_id, ts, latency) VALUES
+               (1,7,100,12),(1,8,100,34),(1,7,200,56),(2,7,100,78);",
         )
         .unwrap();
         drop(old);
@@ -4258,7 +4343,7 @@ mod tests {
              INSERT INTO metric VALUES (1, 60, 12.5, 100, 0, 0, 0, 0, 0, 0, 0);
              INSERT INTO ping_task (id, name, target) VALUES (1, 'cm', '1.1.1.1:443');
              INSERT INTO ping_node VALUES (1, 1);
-             INSERT INTO ping_record VALUES (1, 1, 60, 42);
+             INSERT INTO ping_record (node_id, task_id, ts, latency) VALUES (1, 1, 60, 42);
              INSERT INTO session VALUES ('h', 9999999999);
              PRAGMA user_version = 3;",
         )
@@ -4383,7 +4468,7 @@ mod tests {
             .unwrap()
         };
         let task = probe(vec![id], 0);
-        db.insert_pings(id, &[(task, 100, 42)]).unwrap();
+        db.insert_pings(id, &[(task, 100, 42, 0)]).unwrap();
         assert_eq!(db.ping_records(id, Span::minutes(0, 60)).unwrap().0.len(), 1, "an assigned probe draws");
 
         probe(vec![], task);
@@ -4410,6 +4495,117 @@ mod tests {
             db.ping_task_names(other).unwrap().as_object().is_some_and(|m| m.is_empty()),
             "a node the probe was never assigned to must not learn its name"
         );
+    }
+
+    /// A retransmitted handshake answered: it is a sample, and `latency` holds
+    /// the round trip with the kernel's timer already deducted. What marks it is
+    /// the flag, which is counted apart from the answers and the losses.
+    #[test]
+    fn a_retransmit_counts_as_an_answer_that_is_flagged() {
+        let db = db();
+        let id = node(&db, 1);
+        let task = db
+            .save_ping_task(&PingTask {
+                id: 0,
+                name: "p".into(),
+                target: "1.1.1.1:443".into(),
+                interval: 60,
+                nodes: vec![id],
+                ..Default::default()
+            })
+            .unwrap();
+        // One handshake on the first SYN, one that took the 1s retransmit (so
+        // the agent sent the 170ms it measured, not 1170ms), and one timeout.
+        db.insert_pings(id, &[(task, 0, 40, 0), (task, 1, 170, 1), (task, 2, -1, 0)]).unwrap();
+
+        let (rows, loss, retx) = db.ping_records(id, Span::minutes(0, 60)).unwrap();
+        assert_eq!(rows[0]["latency"], 105, "the median of the two answers");
+        assert_eq!(rows[0]["loss"], 34, "one of three did not answer, rounded up");
+        assert_eq!(rows[0]["retx"], 34, "and one of three needed the retransmit");
+
+        // Sample-weighted across the window, as `loss` is: a retransmit per
+        // sample, not per bucket.
+        let key = task.to_string();
+        assert_eq!(loss[&key], 100.0 / 3.0);
+        assert_eq!(retx[&key], 100.0 / 3.0);
+    }
+
+    /// Zero is the absence of the key, on both figures, so a clean window is
+    /// drawn from `{}` rather than from a row of zeroes.
+    #[test]
+    fn a_window_without_retransmits_carries_no_figure() {
+        let db = db();
+        let id = node(&db, 1);
+        let task = db
+            .save_ping_task(&PingTask {
+                id: 0,
+                name: "p".into(),
+                target: "1.1.1.1:443".into(),
+                interval: 60,
+                nodes: vec![id],
+                ..Default::default()
+            })
+            .unwrap();
+        db.insert_pings(id, &[(task, 0, 40, 0), (task, 1, 42, 0)]).unwrap();
+        let (rows, loss, retx) = db.ping_records(id, Span::minutes(0, 60)).unwrap();
+        assert!(rows[0].get("retx").is_none(), "{:?}", rows[0]);
+        assert!(loss.as_object().unwrap().is_empty());
+        assert!(retx.as_object().unwrap().is_empty(), "{retx}");
+    }
+
+    /// The hourly tier keeps the count: a bucket spanning several hours weights
+    /// the flagged samples by the same number of samples it weights `lost` by,
+    /// so the rate stays exact rather than becoming an average of averages.
+    #[test]
+    fn the_hourly_tier_keeps_the_retransmit_count() {
+        let db = db();
+        let id = node(&db, 1);
+        let task = db
+            .save_ping_task(&PingTask {
+                id: 0,
+                name: "p".into(),
+                target: "1.1.1.1:443".into(),
+                interval: 60,
+                nodes: vec![id],
+                ..Default::default()
+            })
+            .unwrap();
+        let now = Utc::now().timestamp();
+        let hour = (now - 3 * 3_600).div_euclid(3_600) * 3_600;
+        for minute in 0..4 {
+            db.insert_pings(id, &[(task, hour + minute * 60, 40, i64::from(minute < 3))]).unwrap();
+        }
+        assert!(db.roll_up(now, 1).unwrap() > 0);
+        let counted: i64 =
+            db.conn().query_row("SELECT retx FROM ping_hour WHERE node_id=?1", [id], |r| r.get(0)).unwrap();
+        assert_eq!(counted, 3, "the hour sums the flags, it does not store a percentage");
+
+        let hourly = Span { since: hour, step: 3_600, hourly: true };
+        let (rows, _, retx) = db.ping_records(id, hourly).unwrap();
+        assert_eq!(rows[0]["retx"], 75);
+        assert_eq!(retx[&task.to_string()], 75.0);
+    }
+
+    /// Every row already in a file reads as "no retransmit", which is what it
+    /// meant: the deadline of those days cut the wait short of the kernel's
+    /// timer. Nothing is recalculated, and the file is upgraded in place.
+    #[test]
+    fn rows_from_before_the_column_read_as_no_retransmit() {
+        let scratch = Scratch::new();
+        release_file(&scratch.0);
+        let db = Db::open(&scratch.0).unwrap();
+        let stored: i64 = db.conn().query_row("SELECT retx FROM ping_record", [], |r| r.get(0)).unwrap();
+        assert_eq!(stored, 0);
+        let version: i64 = db.conn().query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        // The read path agrees: the old row draws an answer, with no retransmit
+        // figure beside it.
+        let (rows, loss, retx) = db.ping_records(1, Span::minutes(0, 60)).unwrap();
+        assert_eq!(rows[0]["latency"], 42, "the row survives the upgrade");
+        assert!(rows[0].get("retx").is_none(), "{:?}", rows[0]);
+        assert!(loss.as_object().unwrap().is_empty());
+        assert!(retx.as_object().unwrap().is_empty());
     }
 
     #[test]

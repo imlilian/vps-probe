@@ -277,9 +277,9 @@ struct Session {
     window: Option<(Instant, u32)>,
     /// Whether a dropped or unusable frame has been logged; see [`Session::complain`].
     complained: bool,
-    /// Probe results as `(task_id, ts, latency)`, filed a minute at a time
-    /// because each commit writes at least one page.
-    results: Vec<(i64, i64, i64)>,
+    /// Probe results as `(task_id, ts, latency, retx)`, filed a minute at a
+    /// time because each commit writes at least one page.
+    results: Vec<(i64, i64, i64, i64)>,
 }
 
 impl Session {
@@ -333,7 +333,7 @@ impl Session {
         // Each therefore lands at least a second before the next result of the
         // same probe.
         let mut next = HashMap::new();
-        for (task, ts, _) in results.iter_mut().rev() {
+        for (task, ts, ..) in results.iter_mut().rev() {
             if let Some(&later) = next.get(task) {
                 *ts = (*ts).min(later - 1);
             }
@@ -563,7 +563,7 @@ fn dispatch(
     // kind: reports arrive every few seconds even where every probe runs once an
     // hour. A failure is logged rather than returned, which would discard the
     // frame that happened to trigger it.
-    if session.results.first().is_some_and(|&(_, ts, _)| ts.div_euclid(60) != arrival.minute()) {
+    if session.results.first().is_some_and(|&(_, ts, ..)| ts.div_euclid(60) != arrival.minute()) {
         if let Err(e) = session.file_results(app, node_id) {
             session.complain(node_id, format_args!("filing probe results failed: {e:#}"));
         }
@@ -596,8 +596,11 @@ fn dispatch(
             // render a malformed frame as an outage. A report follows the same
             // rule for a counter it cannot read.
             let latency = rpc.params.get("latency_ms").and_then(|v| v.as_i64());
+            // Absent is "no retransmit", which is what every agent that predates
+            // the flag meant and what a handshake on the first SYN reads as.
+            let retx = rpc.params.get("retx").and_then(|v| v.as_bool()).unwrap_or(false);
             if let (true, Some(latency)) = (task_id > 0, latency) {
-                session.results.push((task_id, arrival.at.timestamp(), latency));
+                session.results.push((task_id, arrival.at.timestamp(), latency, i64::from(retx)));
             }
         }
         other => debug!("node {node_id} sent unknown method {other}"),
@@ -1169,6 +1172,13 @@ mod tests {
     fn result_json(task: i64, latency: i64) -> String {
         json!({"jsonrpc": "2.0", "method": "ping.result", "params": {"task_id": task, "latency_ms": latency}})
             .to_string()
+    }
+
+    /// A result from an agent that reports the retransmit flag.
+    fn retx_json(task: i64, latency: i64, retx: serde_json::Value) -> String {
+        json!({"jsonrpc": "2.0", "method": "ping.result",
+               "params": {"task_id": task, "latency_ms": latency, "retx": retx}})
+        .to_string()
     }
 
     fn results(app: &App, id: i64) -> Vec<(i64, i64)> {
@@ -1880,6 +1890,26 @@ mod tests {
             vec![(one, 42), (two, 15)],
             "each real task keeps its own result, and only those"
         );
+    }
+
+    /// The flag travels on the result frame and is read as a boolean: absent is
+    /// "no retransmit", which is what every agent predating it means and what a
+    /// handshake completed on the first SYN sends. A malformed flag must not cost
+    /// the sample, which is still a reading of the link.
+    #[test]
+    fn a_result_keeps_the_retransmit_flag_the_agent_sent() {
+        let app = app();
+        let id = node(&app);
+        let mut session = Session::default();
+        let one = probe(&app, id, "one");
+        send(&app, id, &mut session, 0, &retx_json(one, 170, json!(true))).unwrap();
+        send(&app, id, &mut session, 0, &result_json(one, 40)).unwrap();
+        send(&app, id, &mut session, 0, &retx_json(one, 40, json!("yes"))).unwrap();
+        send(&app, id, &mut session, 60, r#"{"method":"whatever"}"#).unwrap();
+
+        // Three samples, one flagged.
+        let (_, _, retx) = app.db.ping_records(id, Span::minutes(0, 60)).unwrap();
+        assert_eq!(retx[one.to_string()], 100.0 / 3.0, "{retx}");
     }
 
     /// A panel edit reaches the agents it concerns, carrying their own list.
