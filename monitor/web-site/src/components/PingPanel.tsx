@@ -89,7 +89,7 @@ function spoken(probe: ProbeStats, quality: boolean) {
  *
  * A zero is a dash, and a dash in emerald is louder than the figure beside it
  * that actually happened -- `LOSS -` painted green pulled the eye away from the
- * `RTX 10%` that is the news, and a reader who only caught the word read it as
+ * `RETR 10%` that is the news, and a reader who only caught the word read it as
  * a loss. What happened is what is coloured; what did not recedes.
  */
 function qualityInk(pct: number | null, signal: number) {
@@ -101,7 +101,7 @@ function qualityInk(pct: number | null, signal: number) {
  * figure is printed at all.
  *
  * A retransmit is the recoverable half of the same event, so a number for it is
- * always worth its two centimetres: on a healthy fleet `RTX 4.7%` is the story.
+ * always worth its two centimetres: on a healthy fleet `RETR 4.7%` is the story.
  * A loss of zero is not: printing `LOSS -` on every row of every card gave the
  * page four columns of dashes that said nothing, and the reader still had the
  * strip to tell them so -- red means a handshake never came back, amber means it
@@ -405,7 +405,7 @@ function SoloRow({ probe, className }: { probe: ProbeStats; className?: string }
           it measured and found none -- and the loss appears only when it
           happened. */}
       <span>
-        RTX <span className={cn("font-medium", qualityInk(probe.retx, 4))}>{fmtPct(probe.retx)}</span>
+        RETR <span className={cn("font-medium", qualityInk(probe.retx, 4))}>{fmtPct(probe.retx)}</span>
       </span>
       {lost(probe) && (
         <span>
@@ -421,13 +421,13 @@ function SoloRow({ probe, className }: { probe: ProbeStats; className?: string }
  * under them, in one grid so each figure sits over the bar it describes.
  *
  * `grid-cols-2` for both rows: an even split, because the right column has to
- * hold `LOSS 99.9%` and `RTX 99.9%` side by side and three fifths was already
+ * hold `LOSS 99.9%` and `RETR 99.9%` side by side and three fifths was already
  * tight at `LOSS 33%` -- at a hundred per cent it would have run into the
  * latency column. Even blocks are 6px each at this width rather than 7.7 and
  * 4.8, which is no loss: the two strips are equally legible, and the count, not
  * the width, is what carries the three-minute resolution.
  *
- * The reading is at the right edge of the left column; in the right one RTX sits
+ * The reading is at the right edge of the left column; in the right one RETR sits
  * at the inner edge and LOSS at the outer -- mild before severe, as the legend
  * reads and as `首包丢失 = 重传 + 丢包` does, with the worse figure landing where
  * the eye stops. Two or three letters each, over the bar they colour. No column
@@ -458,7 +458,7 @@ function Probe({
         </span>
         {quality ? (
           <span className={cn("tnum flex items-baseline gap-1.5", lost(probe) ? "justify-between" : "justify-end")}>
-            <span className={cn("font-medium", qualityInk(probe.retx, 4))}>RTX {fmtPct(probe.retx)}</span>
+            <span className={cn("font-medium", qualityInk(probe.retx, 4))}>RETR {fmtPct(probe.retx)}</span>
             {lost(probe) && (
               <span className={cn("font-medium", qualityInk(probe.loss, lossSignal(probe.loss)))}>
                 LOSS {fmtPct(probe.loss)}
@@ -564,7 +564,7 @@ export function ProbeLines({ node, hours = HOURS }: { node: Node; hours?: number
             <span className="truncate text-muted-foreground">{probe.name}</span>
             <span className="tnum flex shrink-0 items-baseline justify-end gap-1.5">
               {probe.retxKnown && (
-                <span className={cn("font-medium", qualityInk(probe.retx, 4))}>RTX {fmtPct(probe.retx)}</span>
+                <span className={cn("font-medium", qualityInk(probe.retx, 4))}>RETR {fmtPct(probe.retx)}</span>
               )}
               {lost(probe) && (
                 <span className={cn("font-medium", qualityInk(probe.loss, lossSignal(probe.loss)))}>

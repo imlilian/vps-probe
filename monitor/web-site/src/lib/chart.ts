@@ -18,8 +18,13 @@ export const COLOR = {
 
 export const AXIS = { stroke: "currentColor", fontSize: 11, tickLine: false, axisLine: false } as const
 
-/** One width for the stacked panels' value axes; the widest label is `100 MB/s`. */
-export const VALUE_AXIS = { ...AXIS, width: 68, interval: 0 } as const
+/**
+ * The stacked panels' value axes. The width follows the labels rather than a
+ * constant: `auto` measures what the ticks actually say, and a constant wide
+ * enough for `100 MB/s` spent 68px of the plot on a phone, where the card is
+ * 300px wide -- a fifth of the drawing, empty.
+ */
+export const VALUE_AXIS = { ...AXIS, width: "auto", interval: 0 } as const
 
 /** The grid and crosshair the panels share; `2 4` at the hairline token. */
 export const GRID = { strokeDasharray: "2 4", className: "stroke-border-soft", vertical: false } as const

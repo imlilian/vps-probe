@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { Info } from "lucide-react"
+import { Info, Timer } from "lucide-react"
 import {
   Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts"
@@ -16,6 +16,7 @@ import { useInView } from "@/lib/useInView"
 import { buildLatencyRows, probeStats, type ProbeSeries, type ProbeStat } from "@/lib/pingDetail"
 import { cn } from "@/lib/utils"
 
+import { IconTile } from "./ChartCard"
 import { QualitySection } from "./QualitySection"
 import { RangeBar } from "./RangeBar"
 
@@ -46,7 +47,7 @@ const spokenPct = (value: number) => `${fmtLoss(value)}%`
  * read their own machine's card. The percentiles are still in the ⓘ, where they
  * are what answers "how bad is the bad part" for anyone who asks.
  *
- * The two failure figures are labelled in Latin -- LOSS and RTX -- because they
+ * The two failure figures are labelled in Latin -- LOSS and RETR -- because they
  * sit in a row of columns where a two-word Chinese label is both wider and, in
  * another language, unbounded. The words live in the tooltip and in the spoken
  * label, which is where they are read rather than measured.
@@ -76,7 +77,7 @@ export function ProbeCard({ stat, color, on, onClick }: {
     ...retxInfo,
     `丢包 ${spokenPct(stat.loss)}，样本 ${stat.samples}`,
   ].join("，")
-  // The printed row reads RTX before LOSS -- mild before severe, the order the
+  // The printed row reads RETR before LOSS -- mild before severe, the order the
   // legend and the card use -- so the sentence does too.
   const info = [
     `最小 ${ms(stat.min)}`,
@@ -119,7 +120,7 @@ export function ProbeCard({ stat, color, on, onClick }: {
             on a dash. A hub without the retransmit figure has only the loss to
             show, and shows nothing at all when it is zero. */}
         <span className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 text-2xs text-muted-foreground">
-          {stat.retx !== null && <span>RTX {fmtPct(stat.retx)}</span>}
+          {stat.retx !== null && <span>RETR {fmtPct(stat.retx)}</span>}
           {stat.retx !== null && stat.loss > 0 && <span>·</span>}
           {stat.loss > 0 && <span>LOSS {fmtPct(stat.loss)}</span>}
         </span>
@@ -225,14 +226,20 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
 
           <Card className="min-w-0 gap-0 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              {/* The bucket's own length, beside the title rather than under it:
-                  it comes from the answer rather than a constant, and the unit is
-                  on the axis below. A caption on its own line under a 14px
-                  heading is what read as a draft -- and on a phone that line wraps
-                  first and strands the title. */}
-              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-                <h3 className="text-sm font-semibold">延迟</h3>
-                <span className="text-2xs text-muted-foreground">每 {span(answer.step || 60)} 的中位数</span>
+              {/* The same icon tile the six charts above open with: a page where
+                  four charts are titled with a glyph and the two below them with
+                  bare text reads as two different pages.
+                  
+                  The bucket's own length rides beside the title rather than under
+                  it -- it comes from the answer rather than a constant, and the
+                  unit is on the axis below. A caption on its own line under a 14px
+                  heading is what read as a draft. */}
+              <div className="flex min-w-0 items-center gap-2.5">
+                <IconTile icon={Timer} tone="latency" />
+                <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                  <h3 className="text-sm font-semibold">延迟</h3>
+                  <span className="text-2xs text-muted-foreground">每 {span(answer.step || 60)} 的中位数</span>
+                </div>
               </div>
               <Chip
                 pressed={smooth}
@@ -252,7 +259,10 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
                     <XAxis {...timeAxis(rows, hours)} />
                     {/* Not anchored at zero: these lines live in a narrow band
                         far from it, and zero flattens every wobble. */}
-                    <YAxis unit="ms" width={52} domain={["auto", "auto"]} {...AXIS} />
+                    {/* `auto`: the axis is as wide as `180ms`, not as wide as a
+                        constant chosen for the widest window. On a phone the
+                        difference is a fifth of the drawing. */}
+                    <YAxis unit="ms" width="auto" domain={["auto", "auto"]} {...AXIS} />
                     <Tooltip
                       {...TOOLTIP}
                       formatter={(value, name, item) => {

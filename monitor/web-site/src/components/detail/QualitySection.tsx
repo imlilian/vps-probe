@@ -1,4 +1,4 @@
-import { Info } from "lucide-react"
+import { Gauge, Info } from "lucide-react"
 
 import { SignalStrip, QUALITY_FILL, QUALITY_LEGEND, qualityFill } from "@/components/SignalStrip"
 import { Card } from "@/components/ui/card"
@@ -6,6 +6,8 @@ import { clockFor } from "@/lib/format"
 import { buildSlots, fmtLoss, fmtPct, qualityBlocks } from "@/lib/ping"
 import type { ProbeSeries } from "@/lib/pingDetail"
 import { cn } from "@/lib/utils"
+
+import { IconTile } from "./ChartCard"
 
 /**
  * What the two figures mean, said once on the page and nowhere else.
@@ -70,9 +72,12 @@ export function QualitySection({ series, hidden, hours }: {
             own: a caption under a 14px heading reads as a draft, and on a phone
             the second line wraps first and leaves the heading alone. What the two
             figures mean is the ⓘ's job, in a sentence. */}
-        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-          <h3 className="text-sm font-semibold">线路质量</h3>
-          <span className="text-2xs text-muted-foreground">每块 {window.label}</span>
+        <div className="flex min-w-0 items-center gap-2.5">
+          <IconTile icon={Gauge} tone="quality" />
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+            <h3 className="text-sm font-semibold">线路质量</h3>
+            <span className="text-2xs text-muted-foreground">每块 {window.label}</span>
+          </div>
         </div>
         <span className="shrink-0 text-muted-foreground" role="img" title={EXPLAIN} aria-label={EXPLAIN}>
           <Info size={14} aria-hidden />
@@ -110,7 +115,7 @@ export function QualitySection({ series, hidden, hours }: {
                     spends no column on a dash. */}
                 <span className="tnum shrink-0">
                   <span className={cn("font-medium", probe.retx ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
-                    RTX {fmtPct(probe.retx ?? null)}
+                    RETR {fmtPct(probe.retx ?? null)}
                   </span>
                   {probe.loss > 0 && (
                     <>

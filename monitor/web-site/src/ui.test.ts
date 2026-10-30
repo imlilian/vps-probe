@@ -212,10 +212,10 @@ try {
     // labelled in two or three Latin letters so a translation cannot overflow it.
     assert.ok(!strip.includes(">延迟<"), "no header row")
     assert.ok(strip.includes("LOSS "), "the loss figure is labelled where there was one")
-    assert.ok(strip.includes("RTX "), "and the retransmit rate is always there")
+    assert.ok(strip.includes("RETR "), "and the retransmit rate is always there")
     // One order everywhere: the retransmit rate first, the loss at the outer
     // edge, as the legend escalates and as the sentence above reads.
-    assert.ok(words(strip).indexOf("RTX") < words(strip).indexOf("LOSS"), "mild before severe")
+    assert.ok(words(strip).indexOf("RETR") < words(strip).indexOf("LOSS"), "mild before severe")
     assert.ok(!strip.includes("丢包 · 重传"), "and the header's words are gone")
     // Each probe is one sentence to a screen reader, because the strips above are
     // aria-hidden and twenty unlabelled boxes say nothing. The sentence follows
@@ -250,11 +250,11 @@ try {
     // (the card already carries four resource cells and two rates), but the
     // retransmit rate as a figure where an amber dot used to stand.
     const compact = block.replace(/<!-- -->/g, "")
-    assert.match(compact, /RTX \d+(\.\d)?%/, "the retransmit rate is printed")
+    assert.match(compact, /RETR \d+(\.\d)?%/, "the retransmit rate is printed")
     // The reading is pinned last, so its column never moves between cards; the
     // figures that may be absent come before it.
     const seen = compact.replace(/<[^>]+>/g, " ")
-    assert.ok(seen.indexOf("RTX") < seen.indexOf(" ms"), "the latency sits to the right of the optional figures")
+    assert.ok(seen.indexOf("RETR") < seen.indexOf(" ms"), "the latency sits to the right of the optional figures")
     assert.ok(!compact.includes("grid-cols-20"), "and still no strip")
     assert.ok(!compact.includes("size-[3px]"), "the amber dot is gone: the number is shorter")
   }
@@ -316,7 +316,7 @@ try {
     // A hub that reports no retransmit rate gets no quality strip: the card is
     // exactly what it was before this release.
     assert.ok(!solo.includes("bg-signal-1/35"), "no quality strip without the figure")
-    assert.ok(!solo.includes("RTX"), "and no retransmit figure either")
+    assert.ok(!solo.includes("RETR"), "and no retransmit figure either")
     // One height for all three probe counts: three rows of 24 and the 8px
     // between them is 88px, two rows carrying MIN/MAX come to the same, and the
     // 16px of padding makes 104.
@@ -358,13 +358,13 @@ try {
     assert.equal(solo.match(/grid-cols-20/g)?.length, 1, "one strip, at the card's full width")
     assert.ok(solo.includes("bg-signal-1/35"), "and it is the quality strip")
     assert.ok(solo.match(/bg-signal-4/g), "with an amber block where a handshake came back late")
-    for (const want of ["MIN", "MAX", "RTX", "LOSS"]) {
+    for (const want of ["MIN", "MAX", "RETR", "LOSS"]) {
       assert.ok(solo.includes(want), `a solo link's bottom row says ${want}`)
     }
     assert.ok(!solo.includes(">延迟<"), "no column header on a one-probe card")
     // The two figures are in the bottom row here, and a figure that measured
     // nothing prints a dash rather than a zero.
-    assert.match(words(solo), /RTX [\d.]+%/, "the bottom row carries the retransmit rate")
+    assert.match(words(solo), /RETR [\d.]+%/, "the bottom row carries the retransmit rate")
     assert.match(words(solo), /LOSS [\d.]+%/, "beside the loss")
     // The colour of the strip's blocks and the figure above are the same reading.
     assert.match(solo, /aria-label="上海电信，延迟 [^"]*，重传 [^"]*，丢包 [^"]*"/)
@@ -379,16 +379,16 @@ try {
     const pair = card(1)
     assert.equal(pair.match(/grid-cols-20/g)?.length, 4, "two probes, two strips each")
     // Both rows use one grid, so each figure sits over the bar it colours: the
-    // reading at the right of the latency column, LOSS and RTX at the two ends of
+    // reading at the right of the latency column, LOSS and RETR at the two ends of
     // the quality one.
     // An even split, both rows: the quality column has to hold `LOSS 99.9%` and
-    // `RTX 99.9%` side by side, and three fifths left it tight at a third of that.
+    // `RETR 99.9%` side by side, and three fifths left it tight at a third of that.
     assert.equal(pair.match(/grid-cols-2 items-baseline/g)?.length, 2, "each reading row splits evenly")
     assert.equal(
       pair.match(/mt-1 grid gap-2 grid-cols-2"><div class="grid gap-px/g)?.length, 2,
       "and each strip row with it",
     )
-    assert.ok(pair.includes("LOSS ") && pair.includes("RTX "), "the two labels sit over their strip")
+    assert.ok(pair.includes("LOSS ") && pair.includes("RETR "), "the two labels sit over their strip")
     assert.ok(pair.includes("h-31"), "and the well is the one fixed height")
     // MIN and MAX stay in the latency column: they are the ends of that strip, and
     // a MAX at the card's right edge read as the quality strip's own range.
@@ -740,7 +740,7 @@ try {
     // The percentiles survive in the tooltip and the spoken label, which are
     // attributes; the row a visitor reads carries none.
     assert.ok(!card.replace(/<[^>]+>/g, "").includes("P50"), "no percentile on the row itself")
-    assert.ok(card.includes("RTX 2.1%"), "then the retransmit rate")
+    assert.ok(card.includes("RETR 2.1%"), "then the retransmit rate")
     // A loss of zero is not printed at all: the retransmit rate always is, and
     // the strip beside the figures is what says whether anything went missing.
     assert.ok(!card.includes("LOSS"), "a clean window spends no column on a dash")
@@ -749,15 +749,15 @@ try {
     const lossy = tidy(renderToString(createElement(ProbeCard, {
       stat: { ...stat, loss: 33 }, color: "#22c55e", on: true, onClick() {},
     })))
-    assert.ok(lossy.includes("RTX 2.1%") && lossy.includes("LOSS 33%"), "both figures when both happened")
-    assert.ok(lossy.indexOf("RTX") < lossy.indexOf("LOSS"), "retransmit first")
+    assert.ok(lossy.includes("RETR 2.1%") && lossy.includes("LOSS 33%"), "both figures when both happened")
+    assert.ok(lossy.indexOf("RETR") < lossy.indexOf("LOSS"), "retransmit first")
     assert.ok(!card.includes("波动 1.21"), "the spread is in the tooltip, not the row")
     assert.match(card, /aria-label="上海电信，已显示；延迟 51 ms，P50 51 ms，P99 62 ms，重传 2.1%，丢包 0%，样本 60"/)
     // A hub without the figure: one row fewer, and no invented zero.
     const old = tidy(renderToString(createElement(ProbeCard, {
       stat: { ...stat, retx: null }, color: "#22c55e", on: false, onClick() {},
     })))
-    assert.ok(!old.includes("RTX"), "no retransmit figure without it")
+    assert.ok(!old.includes("RETR"), "no retransmit figure without it")
     assert.ok(!old.includes("LOSS"), "and no loss figure on a clean window either")
     assert.ok(old.includes("opacity-30"), "a hidden probe is dimmed")
 
@@ -785,8 +785,8 @@ try {
     // phone.
     assert.ok(quality.includes("每块 3 分钟"), "the block length is stated")
     assert.ok(quality.includes("items-baseline gap-x-2"), "and it sits beside the title")
-    assert.ok(quality.includes("LOSS 3.3%") && quality.includes("RTX 4.7%"), "each row carries both figures")
-    assert.ok(quality.indexOf("RTX 4.7%") < quality.indexOf("LOSS 3.3%"), "retransmit before loss")
+    assert.ok(quality.includes("LOSS 3.3%") && quality.includes("RETR 4.7%"), "each row carries both figures")
+    assert.ok(quality.indexOf("RETR 4.7%") < quality.indexOf("LOSS 3.3%"), "retransmit before loss")
     // The second probe lost nothing, so its row names no loss at all.
     assert.equal(quality.match(/LOSS /g)?.length, 1, "a clean line prints no loss figure")
     // One row per probe, at the window's block count: an hour is twenty blocks of

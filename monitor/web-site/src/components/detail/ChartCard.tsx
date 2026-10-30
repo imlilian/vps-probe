@@ -12,9 +12,28 @@ const TONES = {
   net: "bg-sky-500/10 text-sky-600 ring-sky-500/20 dark:text-sky-400",
   conns: "bg-amber-500/10 text-amber-600 ring-amber-500/20 dark:text-amber-400",
   proc: "bg-slate-500/10 text-slate-600 ring-slate-500/20 dark:text-slate-300",
+  latency: "bg-sky-500/10 text-sky-600 ring-sky-500/20 dark:text-sky-400",
+  quality: "bg-teal-500/10 text-teal-600 ring-teal-500/20 dark:text-teal-400",
 } as const
 
 export type ChartTone = keyof typeof TONES
+
+/**
+ * The icon tile a card's heading opens with: one glyph, one tint, the same box on
+ * every card of the page.
+ *
+ * Exported because the latency and quality cards are not `ChartCard`s -- one
+ * carries a chip where the other has a note, and both have controls a fixed
+ * layout cannot place -- but a page where four charts open with an icon tile and
+ * the two below them open with bare text reads as two different pages.
+ */
+export function IconTile({ icon: Icon, tone }: { icon: LucideIcon; tone: ChartTone }) {
+  return (
+    <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg ring-1 ring-inset", TONES[tone])}>
+      <Glyph icon={Icon} box="md" />
+    </span>
+  )
+}
 
 /**
  * A load chart in its card. The icon tile is the one per-chart colour cue other
@@ -41,9 +60,7 @@ export function ChartCard({ icon: Icon, tone, title, subtitle, note, legend, emp
     <Card className={cn("@container min-w-0 gap-0 p-4", className)}>
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg ring-1 ring-inset", TONES[tone])}>
-            <Glyph icon={Icon} box="md" />
-          </span>
+          <IconTile icon={Icon} tone={tone} />
           <div className="min-w-0">
             <h3 className="truncate text-sm font-semibold sm:text-base" title={title}>{title}</h3>
             {subtitle != null && (
