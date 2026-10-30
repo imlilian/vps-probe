@@ -6,23 +6,27 @@
 import assert from "node:assert/strict"
 
 import {
-  BLOCK, buildSlots, cardProbes, fmtLoss, fmtMs, latencySignal, lossSignal, probeStats, RECENT, slotSignal,
-  type PingData, type PingRow,
+  BLOCK, buildSlots, cardProbes, fmtLoss, fmtMs, latencySignal, lossSignal, probeStats, qualitySignal, RECENT,
+  slotSignal, type PingData, type PingRow, type Slot,
 } from "./ping.ts"
 
 // Five minutes is what the card's figure is read from; the tests below name
 // buckets relative to that so the number is not a magic constant here.
 assert.equal(RECENT, 300, "the reading is taken from the last five minutes")
 
-const row = (task_id: number, ts: number, latency: number | null, loss?: number): PingRow =>
-  loss === undefined ? { task_id, ts, latency } : { task_id, ts, latency, loss }
+const row = (task_id: number, ts: number, latency: number | null, loss?: number, retx?: number): PingRow => {
+  const out: PingRow = { task_id, ts, latency }
+  if (loss !== undefined) out.loss = loss
+  if (retx !== undefined) out.retx = retx
+  return out
+}
 
 // Three buckets of one block fold into one: the mean of the two that answered,
 // and a third of the block's loss for the one that timed out.
 {
   const slots = buildSlots([row(1, 9100, 10), row(1, 9180, 20, 33), row(1, 9260, null)], 10_000, 5, BLOCK)
   assert.equal(slots.length, 5)
-  assert.deepEqual(slots[0], { ts: 9100, latency: 15, loss: 133 / 3 })
+  assert.deepEqual(slots[0], { ts: 9100, latency: 15, loss: 133 / 3, retx: 0 })
   // A block with no rows is not a block with a zero in it.
   assert.deepEqual(slots.slice(1), [null, null, null, null])
   console.log("buckets fold into blocks, and an empty block stays empty")
@@ -47,6 +51,8 @@ const row = (task_id: number, ts: number, latency: number | null, loss?: number)
   console.log("twenty blocks cover the hour, half-open at the end")
 }
 
+// A hub from before the retransmit figure: it has no `retx` map at all, which is
+// the case the card has to keep drawing exactly as it does today.
 const data: PingData = {
   ping: [
     row(1, 9100, 30, 0), row(1, 9180, 40, 0), row(1, 9260, 50, 0),
@@ -174,16 +180,16 @@ console.log("latency reads five bands at 80, 150, 250 and 400 ms")
 
 // A block is coloured by its latency, and by its loss only once the loss is a
 // run of missing packets: 2% of an hour is not a fault and must not paint one.
-assert.equal(slotSignal({ ts: 0, latency: 40, loss: 0 }), 1)
-assert.equal(slotSignal({ ts: 0, latency: 40, loss: 2 }), 1)
-assert.equal(slotSignal({ ts: 0, latency: 40, loss: 9 }), 1)
-assert.equal(slotSignal({ ts: 0, latency: 40, loss: 12 }), 2)
-assert.equal(slotSignal({ ts: 0, latency: 40, loss: 31 }), 3)
-assert.equal(slotSignal({ ts: 0, latency: 40, loss: 60 }), 5)
+assert.equal(slotSignal({ ts: 0, latency: 40, loss: 0, retx: 0 }), 1)
+assert.equal(slotSignal({ ts: 0, latency: 40, loss: 2, retx: 0 }), 1)
+assert.equal(slotSignal({ ts: 0, latency: 40, loss: 9, retx: 0 }), 1)
+assert.equal(slotSignal({ ts: 0, latency: 40, loss: 12, retx: 0 }), 2)
+assert.equal(slotSignal({ ts: 0, latency: 40, loss: 31, retx: 0 }), 3)
+assert.equal(slotSignal({ ts: 0, latency: 40, loss: 60, retx: 0 }), 5)
 // A slow block climbs with it, and the scale stops at five.
-assert.equal(slotSignal({ ts: 0, latency: 300, loss: 0 }), 4)
-assert.equal(slotSignal({ ts: 0, latency: 300, loss: 12 }), 5)
-assert.equal(slotSignal({ ts: 0, latency: null, loss: 100 }), 5)
+assert.equal(slotSignal({ ts: 0, latency: 300, loss: 0, retx: 0 }), 4)
+assert.equal(slotSignal({ ts: 0, latency: 300, loss: 12, retx: 0 }), 5)
+assert.equal(slotSignal({ ts: 0, latency: null, loss: 100, retx: 0 }), 5)
 assert.equal(slotSignal(null), 0)
 console.log("a block is coloured by its latency, escalated only by real loss")
 
@@ -194,3 +200,57 @@ assert.equal(fmtLoss(0.05), "<0.1")
 assert.equal(fmtLoss(3.25), "3.3")
 assert.equal(fmtLoss(42.1), "42")
 console.log("figures keep the precision their column has room for")
+
+// The quality strip reads the retransmit rate the same way it reads loss: the
+// mean of the buckets' percentages in each block, and no figure at all when the
+// hub never sent one.
+{
+  const slots = buildSlots(
+    [row(1, 9100, 10, 0, 100), row(1, 9180, 20, 0, 50), row(1, 9260, 20)],
+    9280, 1, BLOCK,
+  )
+  assert.equal(slots[0]!.retx, 50, "one bucket at 100 and one at 50 is a third of the block retransmitted")
+  const quiet = buildSlots([row(1, 9100, 10), row(1, 9180, 20)], 9280, 1, BLOCK)
+  assert.equal(quiet[0]!.retx, 0, "a hub without the figure reads as nothing retransmitted")
+  console.log("blocks fold the retransmit rate beside the loss")
+}
+
+// Four states, and the edges between them. Ten per cent is where a block earns a
+// colour, the same edge loss already had; a loss outranks a retransmit; and a
+// block that answered nothing is a loss whatever the percentages say.
+{
+  const slot = (latency: number | null, loss: number, retx: number): Slot => ({ ts: 0, latency, loss, retx })
+  assert.equal(qualitySignal(null), "none", "no bucket at all is no sample, not a clean block")
+  assert.equal(qualitySignal(slot(40, 0, 0)), "clean")
+  assert.equal(qualitySignal(slot(40, 9, 9)), "clean", "under ten per cent is not worth a colour")
+  assert.equal(qualitySignal(slot(40, 0, 10)), "retx")
+  assert.equal(qualitySignal(slot(40, 0, 100)), "retx", "one retransmit in a one-sample block is one amber dot")
+  assert.equal(qualitySignal(slot(40, 10, 0)), "lost")
+  assert.equal(qualitySignal(slot(40, 10, 10)), "lost", "a loss outranks a retransmit")
+  assert.equal(qualitySignal(slot(null, 0, 0)), "lost", "a block that answered nothing is a loss")
+  assert.equal(qualitySignal(slot(300, 0, 0)), "clean", "a slow block is the latency strip's business")
+  console.log("the quality strip has four states and loss outranks a retransmit")
+}
+
+// The number beside the strip is the hub's window figure, on the same terms as
+// loss -- and a hub that does not produce it says so, rather than reading zero.
+{
+  const withRetx: PingData = {
+    ping: [row(1, 9100, 30, 0, 100), row(2, 9100, 40)],
+    probes: { "1": "上海电信", "2": "上海联通" },
+    retx: { "1": 4.7 },
+  }
+  const one = probeStats(withRetx, { id: 1, name: "上海电信" }, 9_140, 20)
+  assert.equal(one.retx, 4.7)
+  assert.equal(one.retxKnown, true)
+  // Missing from the map means zero, which is a reading.
+  assert.equal(probeStats(withRetx, { id: 2, name: "上海联通" }, 9_140, 20).retx, 0)
+  // No rows is not zero, even where the map exists.
+  assert.equal(probeStats(withRetx, { id: 9, name: "无" }, 9_140, 20).retx, null)
+  // And a hub without the figure at all is not zero either: the card draws no
+  // quality strip rather than a green one.
+  assert.equal(probeStats(data, { id: 1, name: "上海电信" }, 10_140, 20).retx, null)
+  assert.equal(probeStats(data, { id: 1, name: "上海电信" }, 10_140, 20).retxKnown, false)
+  assert.equal(cardProbes(withRetx, 9_000)[0]!.retxKnown, true)
+  console.log("the window retransmit rate is the hub's, and one hub's absence is not another's zero")
+}

@@ -69,7 +69,10 @@ type Spec = {
    * shows.
    */
   historyGap?: [number, number]
-  /** A hub before 1.4.1: history omits swap, sockets, processes and peaks. */
+  /**
+   * A hub before 1.4.1: history omits swap, sockets, processes and peaks, and --
+   * predating the retransmit metric -- the ping answer carries no `retx` key.
+   */
   legacy?: boolean
   online: boolean
 }
@@ -136,7 +139,11 @@ const SPECS: Spec[] = [
     monthUsed: 0.12, rxBase: 1.1 * MiB, txBase: 1.8 * MiB,
     cpuBase: 9, cpuAmp: 5, memPct: 0.33, diskPct: 0.19,
     tcp: 41, udp: 6, procs: 88, uptime: 168 * 86400,
-    // Two probes: the panel must fill the row rather than leave a hole.
+    // Two probes: the panel must fill the row rather than leave a hole. And this
+    // is the fleet's old hub -- no swap/socket/process history, no peaks, and no
+    // retransmit metric at all, so its card is where the quality strip has to be
+    // absent rather than green.
+    legacy: true,
     probes: [1, 2], online: true,
   },
   {
@@ -159,8 +166,6 @@ const SPECS: Spec[] = [
     price: 0, cycle: "once", expiresIn: null, trafficLimit: 100 * GiB, trafficMode: "up",
     monthUsed: 0.97, rxBase: 0.4 * MiB, txBase: 3.2 * MiB,
     cpuBase: 13, cpuAmp: 6, memPct: 0.38, diskPct: 0.58,
-    // A hub from before 1.4.1: no swap/socket/process history and no peaks.
-    legacy: true,
     tcp: 57, udp: 9, procs: 121, uptime: 19 * 86400,
     // One probe, and a line that moves: this is the card the curve is drawn for,
     // so it carries the profile a curve has something to say about -- an evening
@@ -370,12 +375,13 @@ function spanOf(hours: number, points: number, nowMs: number) {
 /** The round-trip a healthy line to `country` takes from Shanghai, in ms. */
 const ROUTE_MS: Record<string, number> = { HK: 34, JP: 79, SG: 66, US: 172, DE: 214, CN: 11 }
 
-type Sample = { latency: number | null; lost: boolean }
+type Sample = { latency: number | null; lost: boolean; retx: boolean }
 
 /**
- * One probe's minute: either an answer or a lost packet, never both. Losses are
- * whole samples rather than a fraction of one, because that is what a probe can
- * observe -- `ping_records` divides a bucket's lost count by the samples taken.
+ * One probe's minute: an answer or a lost packet, never both, and an answer is
+ * flagged when it only came back after the kernel retransmitted the SYN. Both
+ * are whole samples rather than fractions, because that is what a probe can
+ * observe -- `ping_records` divides a bucket's counts by the samples taken.
  */
 function pingSample(spec: Spec, task: number, minute: number): Sample {
   const base = ROUTE_MS[spec.country] * (task === 3 ? 1.32 : task === 4 ? 1.12 : task === 5 ? 1.08 : 1)
@@ -387,6 +393,12 @@ function pingSample(spec: Spec, task: number, minute: number): Sample {
   const offset = Math.round(noise(spec.id, task) * 40)
   let scale = 1
   let lossRate = 0.0015
+  // A dropped SYN that the kernel's one-second retransmit rescued: the handshake
+  // answered, late. Roughly ten times the timeout rate, as measured on a real
+  // congested line -- 4.7% retransmitted against 0.33% never answered -- so a
+  // strip shows a few amber dots an hour and one red block only where a line is
+  // genuinely dropping pairs of packets.
+  let retxRate = 0.045
   switch (profile) {
     case "congested": {
       const phase = (minute + offset) % 44
@@ -395,12 +407,15 @@ function pingSample(spec: Spec, task: number, minute: number): Sample {
         // ones that answer are several times slower.
         scale = 3.4
         lossRate = 0.42
+        retxRate = 0.3
       } else if (phase < 16) {
         scale = 1.9
         lossRate = 0.09
+        retxRate = 0.2
       } else {
         scale = 1.08
         lossRate = 0.004
+        retxRate = 0.06
       }
       break
     }
@@ -409,19 +424,23 @@ function pingSample(spec: Spec, task: number, minute: number): Sample {
       if (phase < 6) {
         scale = 1.25
         lossRate = 0.32
+        retxRate = 0.34
       } else if (phase < 9) {
         lossRate = 0.12
+        retxRate = 0.22
       } else {
         scale = 1.05
         lossRate = 0.005
+        retxRate = 0.05
       }
       break
     }
     case "flaky": {
       const phase = (minute + offset) % 55
-      if (phase < 14) return { latency: null, lost: true }
+      if (phase < 14) return { latency: null, lost: true, retx: false }
       scale = 1.05
       lossRate = 0.01
+      retxRate = 0.02
       break
     }
     case "wobbly": {
@@ -434,14 +453,23 @@ function pingSample(spec: Spec, task: number, minute: number): Sample {
       // own numbers, so a real wobble fills the box without a fake mountain.
       scale = 1 + 0.85 * Math.max(0, Math.sin((phase / 53) * 2 * Math.PI)) ** 1.6
       // Nothing lost at all: this card exists to show the curve, and a hole in it
-      // would be read as the curve's own failure.
+      // would be read as the curve's own failure. No retransmits either: a queue
+      // makes the round trip longer without dropping the packet that made it.
       lossRate = 0
+      retxRate = 0
       break
     }
   }
-  if (noise(spec.id, task, minute, 9) < lossRate) return { latency: null, lost: true }
+  // A hub that cannot report the flag: its agents never send one, so no sample
+  // is ever marked. The window map is absent rather than zero, which is what the
+  // page reads as "no quality strip at all".
+  if (spec.legacy) retxRate = 0
+  if (noise(spec.id, task, minute, 9) < lossRate) return { latency: null, lost: true, retx: false }
   const jitter = 1 + 0.09 * (noise(spec.id, task, minute, 4) - 0.5) + 0.06 * Math.sin(minute / 17 + spec.id)
-  return { latency: Math.max(1, Math.round(base * scale * jitter)), lost: false }
+  // A retransmitted handshake is reported at the round trip it measured, with
+  // the kernel's one second already deducted -- which is the whole point of the
+  // metric, so the mock must not inflate the latency here.
+  return { latency: Math.max(1, Math.round(base * scale * jitter)), lost: false, retx: noise(spec.id, task, minute, 11) < retxRate }
 }
 
 function quantile(sorted: number[]): number | null {
@@ -460,6 +488,8 @@ export type Window = {
   ping: Record<string, number | number[] | null>[]
   probes: Record<string, string>
   loss: Record<string, number>
+  /** Absent for a hub without the metric (`legacy`), never an empty stand-in. */
+  retx?: Record<string, number>
   step: number
 }
 
@@ -467,7 +497,7 @@ export type Window = {
 export function history(id: number, series: "metrics" | "ping", hours: number, points: number, nowMs = Date.now()): Window {
   const spec = SPECS.find((s) => s.id === id)
   const { step, newest, since } = spanOf(hours, points, nowMs)
-  const empty: Window = { metrics: [], ping: [], probes: {}, loss: {}, step }
+  const empty: Window = { metrics: [], ping: [], probes: {}, loss: {}, retx: {}, step }
   if (!spec || !spec.online) return empty
 
   const buckets = Math.max(1, Math.floor((newest - since) / step) + 1)
@@ -546,6 +576,7 @@ export function history(id: number, series: "metrics" | "ping", hours: number, p
   const probes = probeNames(spec)
   const ping: Window["ping"] = []
   const lost = new Map<string, number>()
+  const retransmitted = new Map<string, number>()
   const taken = new Map<string, number>()
 
   for (const task of spec.probes) {
@@ -555,6 +586,7 @@ export function history(id: number, series: "metrics" | "ping", hours: number, p
       if (inGap(ts)) continue
       const answers: number[] = []
       let loss = 0
+      let retx = 0
       let total = 0
       for (let minute = 0; minute < step / 60; minute++) {
         const at = Math.floor((ts + minute * 60) / 60)
@@ -563,7 +595,10 @@ export function history(id: number, series: "metrics" | "ping", hours: number, p
         const sample = pingSample(spec, task, at)
         total++
         if (sample.lost) loss++
-        else if (sample.latency !== null) answers.push(sample.latency)
+        else {
+          if (sample.retx) retx++
+          if (sample.latency !== null) answers.push(sample.latency)
+        }
       }
       if (total === 0) continue
       answers.sort((a, b) => a - b)
@@ -572,8 +607,10 @@ export function history(id: number, series: "metrics" | "ping", hours: number, p
         row.band = [answers[0], answers[answers.length - 1]]
       }
       if (loss > 0) row.loss = Math.ceil((100 * loss) / total)
+      if (retx > 0) row.retx = Math.ceil((100 * retx) / total)
       ping.push(row)
       lost.set(key, (lost.get(key) ?? 0) + loss)
+      retransmitted.set(key, (retransmitted.get(key) ?? 0) + retx)
       taken.set(key, (taken.get(key) ?? 0) + total)
     }
   }
@@ -585,5 +622,14 @@ export function history(id: number, series: "metrics" | "ping", hours: number, p
     if (count === 0) continue
     loss[key] = Math.round((10_000 * count) / (taken.get(key) ?? 1)) / 100
   }
-  return { ...empty, ping, probes, loss }
+  const retx: Record<string, number> = {}
+  for (const [key, count] of retransmitted) {
+    if (count === 0) continue
+    retx[key] = Math.round((10_000 * count) / (taken.get(key) ?? 1)) / 100
+  }
+  const answer: Window = { ...empty, ping, probes, loss, retx }
+  // A hub without the figure omits the key rather than sending an empty one,
+  // which is what makes the page leave the quality strip off entirely.
+  if (spec.legacy) delete answer.retx
+  return answer
 }

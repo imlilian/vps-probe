@@ -8,22 +8,32 @@ import { api, ApiError } from "./api.ts"
 /**
  * Latency probes, as the hub answers `/api/nodes/{id}/metrics?series=ping`:
  * one row per probe per bucket, `latency` the bucket's median (null when every
- * sample in it timed out), `loss` the share of that bucket that did, absent when
- * none did. `loss` on the response is the whole window's figure per probe, and
- * it is the only one that may be printed: averaging the per-bucket percentages
- * divides by the wrong count, since the buckets do not hold the same number of
- * samples -- the last one holds only the minutes that have elapsed.
+ * sample in it timed out), `loss` the share of that bucket that did, and `retx`
+ * the share that only answered after the kernel retransmitted the SYN. Both are
+ * absent when they are zero. `loss` on the response is the whole window's figure
+ * per probe, and it is the only one that may be printed: averaging the
+ * per-bucket percentages divides by the wrong count, since the buckets do not
+ * hold the same number of samples -- the last one holds only the minutes that
+ * have elapsed. The window's `retx` follows the same rule.
  */
-export type PingRow = { task_id: number; ts: number; latency: number | null; loss?: number }
+export type PingRow = { task_id: number; ts: number; latency: number | null; loss?: number; retx?: number }
 
 export type PingData = {
   ping: PingRow[]
   probes: Record<string, string>
   loss?: Record<string, number>
+  /**
+   * The window's retransmit rate per probe, absent for a probe that never
+   * needed the kernel's retransmit -- and absent *altogether* when this hub
+   * does not produce the figure at all, which is how a hub from before the
+   * metric reads. The difference matters: an empty map is a reading of zero,
+   * a missing one is no reading, and the card draws no quality strip for it.
+   */
+  retx?: Record<string, number>
 }
 
 /** One block of a strip: the buckets that fell in it, or null for none at all. */
-export type Slot = { ts: number; latency: number | null; loss: number } | null
+export type Slot = { ts: number; latency: number | null; loss: number; retx: number } | null
 
 export type ProbeStats = {
   id: number
@@ -40,6 +50,20 @@ export type ProbeStats = {
   typical: number | null
   /** Window loss in percent, null without samples. */
   loss: number | null
+  /**
+   * Window retransmit rate in percent, null when there is nothing to show:
+   * either this probe has no samples, or this hub predates the figure --
+   * `retxKnown` tells those two apart. An *agent* that does not report the flag
+   * is a zero, not an unknown: the hub still answers, it simply has no
+   * retransmit to report, and that is the whole of the compatibility rule.
+   */
+  retx: number | null
+  /**
+   * Whether this hub reports retransmits at all. An old hub omits the figure
+   * entirely, and the card then draws no quality strip -- where every-zero is
+   * the current hub answering, and is drawn green.
+   */
+  retxKnown: boolean
   slots: Slot[]
   /** The window the strip and the curve draw, as whole seconds. */
   since: number
@@ -69,7 +93,7 @@ export const MAX_PROBES = 3
 /**
  * Folds a probe's buckets into `count` blocks ending at `until`. A block's
  * latency is the mean of the buckets in it that answered, null when none did;
- * its loss the mean of their percentages.
+ * its loss and its retransmit rate the means of their percentages.
  *
  * That mean is exact here, unlike the window figure: every bucket in a block
  * holds the same number of samples, except the last one, which is still filling.
@@ -79,7 +103,9 @@ export function buildSlots(rows: PingRow[], until: number, count = SLOTS, block 
   const since = until - count * block
   // `ts` is the block's opening minute rather than the last bucket in it, so a
   // tooltip names the interval the reader is pointing at.
-  const sums = Array.from({ length: count }, (_, i) => ({ ts: since + i * block, n: 0, answered: 0, latency: 0, loss: 0 }))
+  const sums = Array.from({ length: count }, (_, i) => ({
+    ts: since + i * block, n: 0, answered: 0, latency: 0, loss: 0, retx: 0,
+  }))
   for (const row of rows) {
     if (row.ts < since || row.ts >= until) continue
     const s = sums[Math.min(count - 1, Math.floor((row.ts - since) / block))]
@@ -87,13 +113,16 @@ export function buildSlots(rows: PingRow[], until: number, count = SLOTS, block 
     // A bucket with no latency is one where every sample timed out, which is a
     // hundred percent lost and not a missing figure.
     s.loss += row.latency === null ? 100 : (row.loss ?? 0)
+    s.retx += row.retx ?? 0
     if (row.latency !== null) {
       s.answered++
       s.latency += row.latency
     }
   }
   return sums.map((s) =>
-    s.n ? { ts: s.ts, latency: s.answered ? s.latency / s.answered : null, loss: s.loss / s.n } : null,
+    s.n
+      ? { ts: s.ts, latency: s.answered ? s.latency / s.answered : null, loss: s.loss / s.n, retx: s.retx / s.n }
+      : null,
   )
 }
 
@@ -143,6 +172,10 @@ export function probeStats(
     typical: median(answered),
     // Zero loss is left out of `loss` by the hub, so an absent key means none.
     loss: rows.length ? (data.loss?.[probe.id] ?? 0) : null,
+    // Same convention, and the same reason a hub-level absence is kept apart
+    // from a zero: only one of the two means "nothing to report here".
+    retx: rows.length > 0 && data.retx !== undefined ? (data.retx[probe.id] ?? 0) : null,
+    retxKnown: data.retx !== undefined,
     slots: buildSlots(rows, until, count),
     since,
     until,
@@ -222,6 +255,47 @@ export function slotSignal(slot: Slot): number {
   if (slot.latency === null) return 5
   const bump = slot.loss >= 50 ? 5 : slot.loss >= 30 ? 2 : slot.loss >= 10 ? 1 : 0
   return Math.min(5, latencySignal(slot.latency) + bump)
+}
+
+/**
+ * The four states of a block on the quality strip.
+ *
+ * The latency strip is a continuous ladder -- every block is coloured, and the
+ * colour says how far away the target was. This one is the opposite: it marks
+ * only what went wrong, because "clean" is the state nearly every block is in
+ * and it must not compete with the strip above it. A retransmit and a loss are
+ * the same fault in two degrees, so they share a strip rather than getting one
+ * each: at a card's width, three strips of twenty blocks are unreadable, and
+ * what a reader wants to know is "did anything go missing, and did it come
+ * back".
+ */
+export type Quality = "none" | "clean" | "retx" | "lost"
+
+/**
+ * How far a block has to go before it is worth a colour. Ten per cent is the
+ * same edge `slotSignal` puts on loss, and it is the smallest figure that is
+ * honest at this resolution: a block holds three buckets, so ten per cent is
+ * one bucket of three, or one sample out of ten at a one-minute interval. One
+ * retransmitted handshake in a one-sample block is a hundred per cent, which is
+ * exactly the single amber dot this strip exists to draw.
+ */
+const QUALITY_EDGE = 10
+
+/**
+ * A block's state, on the same two figures the tooltip prints. A loss outranks
+ * a retransmit -- a handshake that never completed is the worse news, and it is
+ * what the red in the legend means -- and a block where nothing answered at all
+ * is a loss by definition rather than a gap in the data.
+ *
+ * A retransmit stays amber at any rate: the yellow is "these came back", not a
+ * severity ladder, and the strip has no red step that would not read as a loss
+ * in the legend.
+ */
+export function qualitySignal(slot: Slot): Quality {
+  if (!slot) return "none"
+  if (slot.latency === null || slot.loss >= QUALITY_EDGE) return "lost"
+  if (slot.retx >= QUALITY_EDGE) return "retx"
+  return "clean"
 }
 
 /** A figure's step: a timeout is the worst latency there is. */

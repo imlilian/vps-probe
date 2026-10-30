@@ -32,6 +32,8 @@ type PingAnswerBody = {
   ping?: PingPoint[]
   probes?: Record<string, string>
   loss?: Record<string, number>
+  /** Absent from a hub that predates the metric, present-but-empty when nothing was retransmitted. */
+  retx?: Record<string, number>
   step?: number
 }
 type PeakAnswer = { metrics?: PeakRow[] }
@@ -42,6 +44,7 @@ type PingState = {
   rows: PingPoint[]
   probes: Record<string, string>
   loss: Record<string, number>
+  retx: Record<string, number> | undefined
   step: number
   error: string
 }
@@ -112,6 +115,10 @@ function toPing(answer: PingAnswerBody) {
     rows: (answer.ping ?? []).map((row) => ({ ...row, ts: row.ts * 1000 })),
     probes: answer.probes ?? {},
     loss: answer.loss ?? {},
+    // Not defaulted to `{}`: an empty map is the hub reporting zero
+    // retransmits, where a missing one is a hub that cannot report them, and
+    // the quality card is drawn for the first and omitted for the second.
+    retx: answer.retx,
     step: answer.step ?? 0,
   }
 }
@@ -160,6 +167,8 @@ export type PingAnswer = {
   rows: PingPoint[]
   probes: Record<string, string>
   loss: Record<string, number>
+  /** The window's retransmit rate per probe, undefined when the hub has none. */
+  retx: Record<string, number> | undefined
   step: number
   error: string
   loading: boolean
@@ -178,7 +187,7 @@ export function usePingHistory(nodeId: number, hours: number, enabled = true): P
     const held = url ? historyPeek<PingAnswerBody>(url) : undefined
     return held
       ? { url, ...toPing(held), error: "" }
-      : { url: "", rows: [], probes: {}, loss: {}, step: 0, error: "" }
+      : { url: "", rows: [], probes: {}, loss: {}, retx: undefined, step: 0, error: "" }
   })
   const [attempt, setAttempt] = useState(0)
 
@@ -190,7 +199,9 @@ export function usePingHistory(nodeId: number, hours: number, enabled = true): P
         if (active) setState({ url, ...toPing(answer), error: "" })
       })
       .catch((error: Error) => {
-        if (active) setState({ url, rows: [], probes: {}, loss: {}, step: 0, error: error.message })
+        if (active) {
+          setState({ url, rows: [], probes: {}, loss: {}, retx: undefined, step: 0, error: error.message })
+        }
       })
     return () => {
       active = false
@@ -202,6 +213,7 @@ export function usePingHistory(nodeId: number, hours: number, enabled = true): P
     rows: data?.rows ?? [],
     probes: data?.probes ?? {},
     loss: data?.loss ?? {},
+    retx: data?.retx,
     step: data?.step ?? 0,
     error: data?.error ?? "",
     loading: Boolean(url) && !data,

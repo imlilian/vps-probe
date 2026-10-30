@@ -147,6 +147,9 @@ export function demoHub(): Plugin {
             ping: ping?.ping ?? [],
             probes: ping?.probes ?? {},
             loss: ping?.loss ?? {},
+            // Not defaulted: an absent key is a hub without the metric, and the
+            // page reads it as "no quality strip" rather than as zero.
+            retx: ping?.retx,
             step: ping?.step ?? metrics?.step ?? 60,
           })
         }

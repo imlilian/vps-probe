@@ -7,6 +7,8 @@ export type PingPoint = {
   latency: number | null
   band?: [number, number]
   loss?: number
+  /** Share of the bucket that only answered after a retransmitted SYN; absent at zero. */
+  retx?: number
 }
 
 export type ProbeSeries = {
@@ -15,6 +17,13 @@ export type ProbeSeries = {
   points: PingPoint[]
   /** The hub's sample-weighted window loss, not an average of bucket percentages. */
   loss: number
+  /**
+   * The hub's sample-weighted window retransmit rate, on the same terms. Absent
+   * when the hub does not produce the figure at all: an old hub has no
+   * retransmit column, and the quality card is left off rather than drawn at
+   * zero.
+   */
+  retx?: number
 }
 
 export type ProbeStat = {
@@ -28,6 +37,11 @@ export type ProbeStat = {
   p99: number | null
   volatility: number | null
   loss: number
+  /**
+   * Window retransmit rate in percent, null when this hub has no such figure.
+   * Zero is a reading: the current hub reporting that nothing was retransmitted.
+   */
+  retx: number | null
   samples: number
   valid: number
 }
@@ -67,6 +81,7 @@ export function probeStats(series: ProbeSeries): ProbeStat {
     p99,
     volatility: p50 !== null && p50 > 0 && p99 !== null ? p99 / p50 : null,
     loss: series.loss,
+    retx: series.retx ?? null,
     samples: series.points.length,
     valid: values.length,
   }

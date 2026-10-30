@@ -20,6 +20,11 @@ assert.ok(stat.volatility !== null && stat.volatility > 1.5 && stat.volatility <
 assert.equal(stat.loss, 2.5, "窗口丢包来自 hub")
 assert.equal(stat.samples, 4, "样本数")
 
+assert.equal(stat.retx, null, "旧 hub 没有窗口重传率")
+const retxed = probeStats({ ...series([10, 20], 0), retx: 4.7 })
+assert.equal(retxed.retx, 4.7, "窗口重传率来自 hub，与丢包同源")
+assert.equal(probeStats({ ...series([10]), retx: 0 }).retx, 0, "零是读数：这一窗没有重传")
+
 const empty = probeStats(series([null, null]))
 assert.equal(empty.avg, null, "全超时为 null")
 assert.equal(empty.volatility, null, "没有 P50 就没有波动率")
