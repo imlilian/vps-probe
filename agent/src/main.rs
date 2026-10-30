@@ -603,26 +603,32 @@ fn respawn_ping_tasks(
             // back: the default burst behaviour would turn one stalled
             // resolution into a rapid series of connects.
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            // Logged once per probe per session: a resolver that overruns does
-            // so every round, and the resulting gap would otherwise be
-            // unexplained.
-            let mut said = false;
+            // Logged once per probe per session and per reason: a target that
+            // refuses every round does so every round, and the resulting gap
+            // would otherwise be unexplained.
+            let mut said = std::collections::HashSet::new();
             loop {
                 ticker.tick().await;
-                let Some(latency) = tcp_ping(&spawned.target).await else {
-                    if !std::mem::replace(&mut said, true) {
-                        eprintln!(
-                            "{}: name resolution runs past {}ms, so these rounds report no sample \
-                             rather than a loss",
-                            spawned.target,
-                            HANDSHAKE_DEADLINE.as_millis()
-                        );
+                let (latency, retx) = match tcp_ping(&spawned.target).await {
+                    Sample::Answered { rtt, retx } => (rtt, retx),
+                    Sample::Unanswered => (-1, false),
+                    Sample::Skipped(reason) => {
+                        if said.insert(reason) {
+                            eprintln!(
+                                "{}: {reason}, so these rounds send no sample rather than a loss",
+                                spawned.target
+                            );
+                        }
+                        continue;
                     }
-                    continue;
                 };
-                let msg =
-                    notify("ping.result", serde_json::json!({"task_id": spawned.id, "latency_ms": latency}));
-                if tx.send(msg).await.is_err() {
+                let mut result = serde_json::json!({"task_id": spawned.id, "latency_ms": latency});
+                // Only a retransmitted handshake carries the flag; a missing
+                // key is the hub's "no retransmit".
+                if retx {
+                    result["retx"] = true.into();
+                }
+                if tx.send(notify("ping.result", result)).await.is_err() {
                     return;
                 }
             }
@@ -631,76 +637,156 @@ fn respawn_ping_tasks(
     }
 }
 
-/// Deadline for one handshake, deliberately under the kernel's first SYN
-/// retransmit.
+/// One probe round's total budget, shared by every address it tries.
 ///
-/// Linux arms its initial SYN timer at one second. A longer wait turns a
-/// dropped SYN into a late success, reporting the retransmit timer plus the
-/// round trip as latency.
+/// Linux retransmits an unanswered SYN after one second, so a budget under
+/// [`SYN_RTO`] never sees a handshake the retransmit completed, and files it
+/// as a loss. Three seconds is that retransmit plus room for the round trip,
+/// and stops at the second one -- which is what makes the outcome three-state
+/// (first SYN, retransmitted, unanswered) rather than a ladder.
 ///
-/// Cutting it short guarantees that every reading belongs to a handshake
-/// completed on the first SYN, and that a dropped one becomes -1. The cost is
-/// that a link whose genuine round trip exceeds this reads as unreachable.
-const HANDSHAKE_DEADLINE: Duration = Duration::from_millis(900);
+/// The budget covers the whole round rather than each address: a three-address
+/// target at three seconds apiece would spend nine, past the five-second floor
+/// on the probe's own interval. This matches Go's `DialTimeout`, where one
+/// deadline governs an entire dial.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_millis(3000);
+
+/// The kernel's initial SYN retransmit timer.
+///
+/// An elapsed at or past it means the handshake needed that retransmit, so the
+/// wait is the timer's, not the link's. Reading it this way needs no
+/// `TCP_INFO` and no privilege.
+const SYN_RTO: Duration = Duration::from_millis(1000);
 
 /// How many of a name's addresses one probe attempts.
 ///
-/// Each dead address costs a [`HANDSHAKE_DEADLINE`], and a probe must not
-/// outlast the five-second floor on its own interval.
+/// The round's budget usually ends the walk first; this caps a long list of
+/// instantly-failing addresses above all.
 const MAX_PING_ADDRS: usize = 3;
 
-/// Round-trip time of a TCP handshake in milliseconds; -1 when no address
-/// answered within [`HANDSHAKE_DEADLINE`], `None` when the name could not be
-/// resolved in that time.
+/// What one probe round found, which the hub records as three separate things.
+enum Sample {
+    /// A handshake completed: round trip in milliseconds, and whether it
+    /// needed the kernel's retransmit (in which case `rtt` already has the
+    /// timer deducted).
+    Answered { rtt: i32, retx: bool },
+    /// Attempts were made and nothing answered within the budget: -1 on the
+    /// wire, which the hub counts as a loss.
+    Unanswered,
+    /// No SYN went out at all -- refused, no route, no file descriptor, no
+    /// resolution. Not a reading of the path, so no sample is sent; the reason
+    /// is logged once per probe per session.
+    Skipped(&'static str),
+}
+
+/// Maps a completed handshake's elapsed time to `(rtt, retx)`.
 ///
-/// The two failure modes must stay distinct. -1 is the protocol's word for a
-/// target that did not answer, and the hub folds every negative reading into a
-/// bucket's packet loss, so returning it for a slow resolver would draw loss on
-/// a link that dropped nothing. An overrun resolution is a sample not taken,
-/// which is not a reading of zero.
+/// A retransmitted SYN answers roughly a second late, so everything past
+/// [`SYN_RTO`] carries the timer rather than the path: subtracting it leaves
+/// the round trip. Under it, the handshake finished on the first SYN and the
+/// elapsed time is the round trip.
+fn classify(elapsed: Duration) -> (i32, bool) {
+    let millis = |d: Duration| d.as_millis().min(i32::MAX as u128) as i32;
+    match elapsed.checked_sub(SYN_RTO) {
+        Some(rtt) => (millis(rtt), true),
+        None => (millis(elapsed), false),
+    }
+}
+
+/// One round of TCP probing: the round trip and whether a retransmit was
+/// needed, -1 as the round trip of a target that did not answer, or the reason
+/// no sample was taken.
 ///
-/// The name is resolved before the clock starts: `TcpStream::connect` on a
-/// hostname resolves first and connects second, which would fold resolver
-/// latency into every sample. musl, which the release binaries link, keeps no
-/// cache, so this happens each round.
+/// -1 and no sample must stay distinct. -1 is the protocol's word for a target
+/// that did not answer, and the hub folds every negative reading into a
+/// bucket's packet loss, so reporting it for a refusal or a slow resolver
+/// would draw loss on a link that dropped nothing.
 ///
-/// ponytail: the `None` arm has no runtime reproduction; forcing it would
-/// require either a genuinely overrunning resolver or a test-only deadline
-/// parameter. The assertions below spell `Some(-1)`, so collapsing the two
-/// answers back into one `i32` fails to compile.
-async fn tcp_ping(target: &str) -> Option<i32> {
-    // Bounded by the handshake deadline: a resolution slower than a connect is
-    // useless as a latency sample, and `lookup_host` has no deadline of its own
-    // -- musl waits five seconds on a black-holed nameserver.
+/// The name is resolved before the clock for the handshake starts, but inside
+/// the round's budget: `TcpStream::connect` on a hostname resolves first and
+/// connects second, which would fold resolver latency into every sample. musl,
+/// which the release binaries link, keeps no cache, so this happens each
+/// round.
+///
+/// ponytail: the no-sample arms have no runtime reproduction; forcing one
+/// would need a genuinely overrunning resolver or a test-only deadline
+/// parameter. The tests cover the refusal and the unresolvable name, which are
+/// the reachable cases.
+async fn tcp_ping(target: &str) -> Sample {
+    let deadline = Instant::now() + HANDSHAKE_DEADLINE;
+    // Bounded by the round's budget: a resolution slower than a connect is
+    // useless as a latency sample, and `lookup_host` has no deadline of its
+    // own -- musl waits five seconds on a black-holed nameserver.
     //
     // This does not cancel the underlying `getaddrinfo`, which runs to
     // completion on a blocking thread; it only keeps this probe on cadence.
-    let Ok(resolved) = tokio::time::timeout(HANDSHAKE_DEADLINE, tokio::net::lookup_host(target)).await else {
-        return None;
+    let Ok(resolved) = tokio::time::timeout_at(deadline, tokio::net::lookup_host(target)).await else {
+        return Sample::Skipped("name resolution runs past the round's budget");
     };
-    // A resolution error is an unreachable target, which is what -1 reports.
-    // Only the deadline above is ambiguous.
-    let Ok(addresses) = resolved else { return Some(-1) };
-    Some(handshake(addresses).await)
+    // A resolution error is a local verdict about the name, not a reading of
+    // the path.
+    let Ok(addresses) = resolved else { return Sample::Skipped("the name does not resolve") };
+    handshake(addresses, deadline).await
 }
 
-/// Round-trip time of the first address that completes a handshake.
+/// The first address to complete a handshake wins; every failure advances to
+/// the next while the round's budget lasts, up to [`MAX_PING_ADDRS`].
 ///
 /// The clock restarts on each address, so a dead one contributes nothing;
 /// summing them would report the accumulated wait as latency.
 ///
-/// Every failure advances to the next address, refusals included. The
-/// resolver lists v6 first wherever the host has a v6 route, so stopping at
-/// the first failure would report a target reachable over v4 as down for as
-/// long as that route leads nowhere.
-async fn handshake(addresses: impl Iterator<Item = std::net::SocketAddr>) -> i32 {
+/// Refusals advance too. The resolver lists v6 first wherever the host has a
+/// v6 route, so stopping at the first failure would report a target reachable
+/// over v4 as down for as long as that route leads nowhere.
+///
+/// Addresses are dropped once less than [`SYN_RTO`] of the budget remains: no
+/// retransmit fits in what is left, so the attempt could only manufacture a
+/// loss.
+async fn handshake(addresses: impl Iterator<Item = std::net::SocketAddr>, deadline: Instant) -> Sample {
+    let mut answerless = false;
+    let mut skipped = None;
     for address in addresses.take(MAX_PING_ADDRS) {
-        let started = std::time::Instant::now();
-        if let Ok(Ok(_)) = tokio::time::timeout(HANDSHAKE_DEADLINE, TcpStream::connect(address)).await {
-            return started.elapsed().as_millis().min(i32::MAX as u128) as i32;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining < SYN_RTO {
+            break;
+        }
+        let started = Instant::now();
+        match tokio::time::timeout(remaining, TcpStream::connect(address)).await {
+            Ok(Ok(_)) => {
+                let (rtt, retx) = classify(started.elapsed());
+                return Sample::Answered { rtt, retx };
+            }
+            // A named local failure is no sample; anything else (the kernel's
+            // own SYN timeout, an unclassified error) stays a loss, as before.
+            Ok(Err(error)) => match local_failure(&error) {
+                Some(reason) => skipped = Some(reason),
+                None => answerless = true,
+            },
+            Err(_) => answerless = true,
         }
     }
-    -1
+    if answerless {
+        return Sample::Unanswered;
+    }
+    Sample::Skipped(skipped.unwrap_or("no address left to try"))
+}
+
+/// Names a connect error that means the SYN never reached the wire.
+///
+/// A refused port answers with a reset: the path is up and nothing is
+/// listening there, which is a misconfiguration rather than a dropped packet.
+/// No route, a full socket table and a dead name are the same kind of local
+/// verdict. None of them says anything about loss, so none may be recorded as
+/// a reading.
+fn local_failure(error: &std::io::Error) -> Option<&'static str> {
+    use rustix::io::Errno;
+    let errno = Errno::from_raw_os_error(error.raw_os_error()?);
+    match errno {
+        Errno::CONNREFUSED => Some("the port refuses connections"),
+        Errno::NETUNREACH | Errno::HOSTUNREACH => Some("no route to the target"),
+        Errno::MFILE | Errno::NFILE => Some("out of file descriptors"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -796,32 +882,117 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tcp_ping_measures_success_and_reports_failure() {
+    async fn tcp_ping_measures_a_handshake_and_sends_no_sample_for_a_refusal() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { while listener.accept().await.is_ok() {} });
         // A loopback handshake completes within a millisecond, so this reads 0
-        // either way; what it pins is the contract that reachable is
-        // non-negative and unreachable is -1.
-        assert!(tcp_ping(&addr.to_string()).await.unwrap() >= 0);
-        assert_eq!(tcp_ping("127.0.0.1:1").await, Some(-1), "nothing is listening there");
-        // A failed resolution is an unreachable target, not a missing sample.
+        // either way; what it pins is that a completed handshake is a sample
+        // and that no retransmit can have happened under the 1s timer.
+        let Sample::Answered { rtt, retx } = tcp_ping(&addr.to_string()).await else {
+            panic!("a reachable target is a sample");
+        };
+        assert!(rtt >= 0);
+        assert!(!retx, "a loopback handshake finishes on the first SYN");
+
+        // Nothing is listening there, so the kernel answers with a reset. The
+        // path dropped nothing: this is a configuration mistake, and sending
+        // -1 would draw it on the panel as packet loss.
+        assert!(matches!(tcp_ping("127.0.0.1:1").await, Sample::Skipped(_)), "a refusal is not a loss");
         // std rejects this port before the resolver is reached, so the
         // assertion needs no network.
-        assert_eq!(tcp_ping("127.0.0.1:99999").await, Some(-1), "an unresolvable target is unreachable");
+        assert!(
+            matches!(tcp_ping("127.0.0.1:99999").await, Sample::Skipped(_)),
+            "an unresolvable name is not a loss"
+        );
 
         // First address dead: a dual-stack target on a host whose v6 goes
         // nowhere. The probe advances rather than reporting it unreachable.
         let dead: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
-        assert!(handshake([dead, addr].into_iter()).await >= 0, "a dead address must not end the probe");
-        assert_eq!(handshake([dead, dead].into_iter()).await, -1, "every address failed");
-        // Past the ceiling the remainder are skipped; a long address list
-        // would otherwise hold a probe past its own interval.
-        assert_eq!(
-            handshake([dead, dead, dead, addr].into_iter()).await,
-            -1,
+        let budget = || Instant::now() + HANDSHAKE_DEADLINE;
+        assert!(
+            matches!(handshake([dead, addr].into_iter(), budget()).await, Sample::Answered { rtt, .. } if rtt >= 0),
+            "a dead address must not end the probe"
+        );
+        assert!(
+            matches!(handshake([dead, dead].into_iter(), budget()).await, Sample::Skipped(_)),
+            "only refusals: nothing to report"
+        );
+        assert!(
+            matches!(handshake([dead, dead, dead, addr].into_iter(), budget()).await, Sample::Skipped(_)),
             "a fourth address is not tried"
         );
+    }
+
+    /// The classification contract in one place: a retransmitted handshake has
+    /// the kernel's timer deducted, an ordinary one is reported as it stands.
+    #[test]
+    fn a_retransmitted_handshake_has_the_kernels_timer_deducted() {
+        // The observed signature: 1168..1194ms on a link whose round trip is
+        // 168..194ms.
+        assert_eq!(classify(Duration::from_millis(1170)), (170, true));
+        assert_eq!(classify(Duration::from_millis(1194)), (194, true));
+        // The boundary itself is the timer: nothing was waited for.
+        assert_eq!(classify(SYN_RTO), (0, true));
+        // One millisecond earlier, the handshake beat the timer.
+        assert_eq!(classify(Duration::from_millis(999)), (999, false));
+        assert_eq!(classify(Duration::from_millis(51)), (51, false));
+    }
+
+    /// The budget must cover one kernel retransmit: a dropped SYN is answered
+    /// roughly a second later, so a deadline below that would file a
+    /// recoverable event as a loss -- the reading this release exists to
+    /// correct. It must also stop short of the second retransmit (1s + 2s),
+    /// which is what keeps the outcome three-state.
+    #[test]
+    fn the_handshake_deadline_spans_the_first_syn_retransmit_and_not_the_second() {
+        assert!(
+            HANDSHAKE_DEADLINE > SYN_RTO,
+            "a deadline at or under the 1s initial RTO files every retransmit as a loss"
+        );
+        assert!(
+            HANDSHAKE_DEADLINE <= SYN_RTO + Duration::from_secs(2),
+            "past the second retransmit one check reads as a longer wait it cannot classify"
+        );
+    }
+
+    /// One budget governs the round, not each address: three addresses at
+    /// three seconds apiece would outlast the probe's own interval. The clock
+    /// is paused, so the budget elapses as soon as nothing else can progress.
+    #[tokio::test(start_paused = true)]
+    async fn a_round_spends_one_budget_across_its_addresses() {
+        // A listener whose accept queue is full drops further SYNs rather than
+        // refusing them: a black hole on loopback.
+        let hole = tokio::net::TcpSocket::new_v4().unwrap();
+        hole.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let hole = hole.listen(0).unwrap();
+        let dead = hole.local_addr().unwrap();
+        let _queued = std::net::TcpStream::connect(dead).unwrap();
+        let live = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live = live.local_addr().unwrap();
+
+        let started = Instant::now();
+        assert!(
+            matches!(
+                handshake([dead, dead, dead].into_iter(), started + HANDSHAKE_DEADLINE).await,
+                Sample::Unanswered
+            ),
+            "three addresses that never answer are one loss"
+        );
+        assert_eq!(
+            started.elapsed(),
+            HANDSHAKE_DEADLINE,
+            "the round spends the shared budget once, not once per address"
+        );
+
+        // The first address eats the budget, so the live one behind it is
+        // never tried; that is the trade the shared budget makes.
+        let started = Instant::now();
+        assert!(matches!(
+            handshake([dead, live].into_iter(), started + HANDSHAKE_DEADLINE).await,
+            Sample::Unanswered
+        ));
+        assert_eq!(started.elapsed(), HANDSHAKE_DEADLINE);
     }
 
     /// A listener whose accept queue is full drops further SYNs rather than
@@ -864,18 +1035,6 @@ mod tests {
         assert!(
             dial("::1", port, true).await.unwrap().peer_addr().unwrap().is_ipv6(),
             "a literal is dialed as given"
-        );
-    }
-
-    /// The deadline must stay under the kernel's first SYN retransmit, or a
-    /// dropped SYN returns as roughly 1200ms of apparent latency -- the 1s timer
-    /// plus the round trip. Such readings cluster at 1200ms and 3200ms, the
-    /// signature of a retransmit rather than a slow link.
-    #[test]
-    fn the_handshake_deadline_stays_under_the_kernels_syn_timer() {
-        assert!(
-            HANDSHAKE_DEADLINE < Duration::from_secs(1),
-            "a deadline at or past the 1s initial RTO lets retransmits be reported as latency"
         );
     }
 
