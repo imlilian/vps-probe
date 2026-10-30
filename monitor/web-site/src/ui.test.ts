@@ -211,8 +211,8 @@ try {
     // units already say what they are. Each figure sits over the bar it colours,
     // labelled in two or three Latin letters so a translation cannot overflow it.
     assert.ok(!strip.includes(">延迟<"), "no header row")
-    assert.ok(strip.includes("LOSS "), "the loss figure is labelled")
-    assert.ok(strip.includes("RTX "), "and so is the retransmit rate")
+    assert.ok(strip.includes("LOSS "), "the loss figure is labelled where there was one")
+    assert.ok(strip.includes("RTX "), "and the retransmit rate is always there")
     // One order everywhere: the retransmit rate first, the loss at the outer
     // edge, as the legend escalates and as the sentence above reads.
     assert.ok(words(strip).indexOf("RTX") < words(strip).indexOf("LOSS"), "mild before severe")
@@ -728,11 +728,17 @@ try {
     // wrong. `波动` moved into the ⓘ with the rest of the statistics.
     assert.ok(card.includes("延迟 51 ms"), "the card leads with the latency")
     assert.ok(card.includes("P50 51 ms / P99 62 ms"), "and its two quantiles beside it")
-    assert.ok(card.includes("RTX 2.1%") && card.includes("LOSS -"), "then the two failure figures")
-    assert.ok(card.indexOf("RTX") < card.indexOf("LOSS"), "in the same order the card uses")
-    // A zero is a dash: the hub leaves it out of the answer, and the panel prints
-    // the same absence.
-    assert.ok(!card.includes("LOSS 0%"), "a clean window prints a dash, not a zero")
+    assert.ok(card.includes("RTX 2.1%"), "then the retransmit rate")
+    // A loss of zero is not printed at all: the retransmit rate always is, and
+    // the strip beside the figures is what says whether anything went missing.
+    assert.ok(!card.includes("LOSS"), "a clean window spends no column on a dash")
+    assert.ok(!card.includes("LOSS 0%"), "and certainly not on a zero")
+    // A line that did lose handshakes prints both, in the card's order.
+    const lossy = tidy(renderToString(createElement(ProbeCard, {
+      stat: { ...stat, loss: 33 }, color: "#22c55e", on: true, onClick() {},
+    })))
+    assert.ok(lossy.includes("RTX 2.1%") && lossy.includes("LOSS 33%"), "both figures when both happened")
+    assert.ok(lossy.indexOf("RTX") < lossy.indexOf("LOSS"), "retransmit first")
     assert.ok(!card.includes("波动 1.21"), "the spread is in the tooltip, not the row")
     assert.match(card, /aria-label="上海电信，已显示；延迟 51 ms，P50 51 ms，P99 62 ms，重传 2.1%，丢包 0%，样本 60"/)
     // A hub without the figure: one row fewer, and no invented zero.
@@ -740,7 +746,8 @@ try {
       stat: { ...stat, retx: null }, color: "#22c55e", on: false, onClick() {},
     })))
     assert.ok(!old.includes("RTX"), "no retransmit figure without it")
-    assert.ok(old.includes("LOSS -") && old.includes("opacity-30"), "and a hidden probe is dimmed")
+    assert.ok(!old.includes("LOSS"), "and no loss figure on a clean window either")
+    assert.ok(old.includes("opacity-30"), "a hidden probe is dimmed")
 
     const { QualitySection } = await server.ssrLoadModule("/src/components/detail/QualitySection.tsx")
     const newest = Math.ceil(Date.now() / 1000 / 60) * 60
@@ -764,7 +771,8 @@ try {
     assert.ok(quality.includes("首包重传与丢包 · 每块 3 分钟"), "the block length is stated")
     assert.ok(quality.includes("LOSS 3.3%") && quality.includes("RTX 4.7%"), "each row carries both figures")
     assert.ok(quality.indexOf("RTX 4.7%") < quality.indexOf("LOSS 3.3%"), "retransmit before loss")
-    assert.ok(quality.includes("LOSS -"), "and a quiet line shows a dash")
+    // The second probe lost nothing, so its row names no loss at all.
+    assert.equal(quality.match(/LOSS /g)?.length, 1, "a clean line prints no loss figure")
     // One row per probe, at the window's block count: an hour is twenty blocks of
     // three minutes, and the strip is a template rather than the card's twenty
     // fixed columns.

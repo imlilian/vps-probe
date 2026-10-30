@@ -81,14 +81,19 @@ export function QualitySection({ series, hidden, hours }: {
               aria-label={`${probe.name}，重传 ${pct(probe.retx ?? null)}，丢包 ${pct(probe.loss)}`}
             >
               <span className="truncate text-2xs text-muted-foreground">{probe.name}</span>
+              {/* Retransmit always, loss only when there was one: a clean line
+                  spends no column on a dash, and the strip beside it is green
+                  end to end. */}
               <span className="tnum shrink-0 text-right text-2xs">
                 <span className={cn("font-medium", probe.retx ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
                   RTX {fmtPct(probe.retx ?? null)}
                 </span>
-                <span aria-hidden className="text-border"> · </span>
-                <span className={cn("font-medium", probe.loss > 0 ? "text-red-700 dark:text-red-400" : "text-muted-foreground")}>
-                  LOSS {fmtPct(probe.loss)}
-                </span>
+                {probe.loss > 0 && (
+                  <>
+                    <span aria-hidden className="text-border"> · </span>
+                    <span className="font-medium text-red-700 dark:text-red-400">LOSS {fmtPct(probe.loss)}</span>
+                  </>
+                )}
               </span>
               <SignalStrip
                 slots={slots}

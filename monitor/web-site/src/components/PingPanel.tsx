@@ -97,6 +97,25 @@ function qualityInk(pct: number | null, signal: number) {
 }
 
 /**
+ * Whether a probe lost anything in the window, which decides whether the loss
+ * figure is printed at all.
+ *
+ * A retransmit is the recoverable half of the same event, so a number for it is
+ * always worth its two centimetres: on a healthy fleet `RTX 4.7%` is the story.
+ * A loss of zero is not: printing `LOSS -` on every row of every card gave the
+ * page four columns of dashes that said nothing, and the reader still had the
+ * strip to tell them so -- red means a handshake never came back, amber means it
+ * came back late, green means neither happened. So the figure appears when it
+ * has something to say, and the row simply ends at the retransmit rate when it
+ * does not.
+ *
+ * The one case that keeps both is a window that lost handshakes without the
+ * kernel's retransmit rescuing any of them -- possible, since the retransmit that
+ * runs out of budget is not one that came back.
+ */
+const lost = (probe: ProbeStats) => (probe.loss ?? 0) > 0
+
+/**
  * One probe: the name, the reading of the last few minutes, the hour's loss, and
  * the hour drawn under them.
  *
@@ -381,12 +400,18 @@ function SoloRow({ probe, className }: { probe: ProbeStats; className?: string }
           {label} <span className={cn("font-medium", INK[latencySignal(ms)])}>{fmtLatency(ms)}</span>
         </span>
       ))}
+      {/* The same rule as the card's rows, so one sentence covers every surface:
+          the retransmit rate is always printed -- a dash is the hub telling you
+          it measured and found none -- and the loss appears only when it
+          happened. */}
       <span>
-        RTX <span className={cn("font-medium", INK[probe.retx ? 4 : 0])}>{fmtPct(probe.retx)}</span>
+        RTX <span className={cn("font-medium", qualityInk(probe.retx, 4))}>{fmtPct(probe.retx)}</span>
       </span>
-      <span>
-        LOSS <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>{fmtPct(probe.loss)}</span>
-      </span>
+      {lost(probe) && (
+        <span>
+          LOSS <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>{fmtPct(probe.loss)}</span>
+        </span>
+      )}
     </div>
   )
 }
@@ -432,16 +457,23 @@ function Probe({
           </span>
         </span>
         {quality ? (
-          <span className="tnum flex items-baseline justify-between gap-1.5">
+          <span className={cn("tnum flex items-baseline gap-1.5", lost(probe) ? "justify-between" : "justify-end")}>
             <span className={cn("font-medium", qualityInk(probe.retx, 4))}>RTX {fmtPct(probe.retx)}</span>
-            <span className={cn("font-medium", qualityInk(probe.loss, lossSignal(probe.loss)))}>
-              LOSS {fmtPct(probe.loss)}
-            </span>
+            {lost(probe) && (
+              <span className={cn("font-medium", qualityInk(probe.loss, lossSignal(probe.loss)))}>
+                LOSS {fmtPct(probe.loss)}
+              </span>
+            )}
           </span>
         ) : (
-          <span className={cn("tnum text-right font-medium", qualityInk(probe.loss, lossSignal(probe.loss)))}>
-            LOSS {fmtPct(probe.loss)}
-          </span>
+          // An old hub has no retransmit figure, so the loss is the only number
+          // this column can carry -- and it is left out when it is zero, for the
+          // same reason.
+          lost(probe) && (
+            <span className={cn("tnum text-right font-medium", qualityInk(probe.loss, lossSignal(probe.loss)))}>
+              LOSS {fmtPct(probe.loss)}
+            </span>
+          )
         )}
       </div>
       <div className={cn("mt-1 grid gap-2", quality ? "grid-cols-2" : "grid-cols-1")}>

@@ -104,14 +104,14 @@ export function ProbeCard({ stat, color, on, onClick }: {
           <span>·</span>
           <span>P50 {ms(stat.p50)} / P99 {ms(stat.p99)}</span>
         </span>
+        {/* The retransmit rate always, the loss only when there was one -- the
+            same rule as the card's rows, so a clean line never spends a column
+            on a dash. A hub without the retransmit figure has only the loss to
+            show, and shows nothing at all when it is zero. */}
         <span className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 text-2xs text-muted-foreground">
-          {stat.retx !== null && (
-            <>
-              <span>RTX {fmtPct(stat.retx)}</span>
-              <span>·</span>
-            </>
-          )}
-          <span>LOSS {fmtPct(stat.loss)}</span>
+          {stat.retx !== null && <span>RTX {fmtPct(stat.retx)}</span>}
+          {stat.retx !== null && stat.loss > 0 && <span>·</span>}
+          {stat.loss > 0 && <span>LOSS {fmtPct(stat.loss)}</span>}
         </span>
       </span>
     </button>
