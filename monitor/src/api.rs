@@ -1066,6 +1066,70 @@ fn pins(node: &mut NodePatch) -> Option<&'static str> {
     None
 }
 
+/// `GET /api/health`: whether this hub is up, for a checker that lives outside
+/// it.
+///
+/// The hub watches every node and cannot watch itself -- an agent on the hub's
+/// own host would report through the process it is meant to report on -- so this
+/// is the one reading that has to come from elsewhere: Uptime Kuma, a blackbox
+/// exporter, any monitor that can hold a URL and expect a 2xx.
+///
+/// Anonymous, and that is the whole point: an uptime checker holds no session
+/// and cannot be given one. What it may say is therefore kept to what a stranger
+/// learning it costs nothing: whether the hub answers, and for how long it has
+/// been the same process. Not the version -- which release's bugs this hub
+/// carries is not a stranger's business, and the panel names it to whoever signs
+/// in -- and not a node count, which is the size of someone's fleet.
+///
+/// `db` is the one thing worth checking past "a task ran": a hub whose file has
+/// stopped being readable still answers HTTP while reporting and storing
+/// nothing, and nothing inside it would notice, since the panel is where that
+/// would be seen. `busy` -- a scan, a copy or a vacuum holding the connection --
+/// is not failure, so it stays a 200; only a read that failed is a 503, which is
+/// what a checker alerts on.
+///
+/// Never cached, and never transformed by whatever sits in front: a green 200
+/// held by Cloudflare for the outage it was supposed to catch is worse than no
+/// check at all.
+pub async fn health(State(app): State<Shared>) -> Response {
+    let db = match app.db.probe() {
+        Some(Ok(())) => "ok",
+        Some(Err(e)) => {
+            // The chain stays here: a path or a SQL error is for the log, while
+            // the reply says only that the read failed.
+            warn!("health: the database does not answer: {e:#}");
+            "error"
+        }
+        None => "busy",
+    };
+    let (status, body) = health_reply(db, app.started.elapsed().as_secs());
+    let mut answered = (status, Json(body)).into_response();
+    // Written for the reader, though a machine reads it: `plain_errors` would
+    // otherwise replace the 503 body with its own wording, and the JSON is what
+    // an operator curling this during an outage reads to see which half failed.
+    answered.extensions_mut().insert(Written);
+    answered
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store, no-transform"));
+    answered
+}
+
+/// What `/api/health` answers, given what the probe found. Split out so the one
+/// decision here -- that a failed read is the only failure worth a 503 -- is
+/// testable without a corrupt database to hand.
+fn health_reply(db: &'static str, uptime_seconds: u64) -> (StatusCode, Value) {
+    let down = db == "error";
+    let status = if down { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK };
+    (
+        status,
+        json!({
+            "status": if down { "degraded" } else { "ok" },
+            "db": db,
+            "uptime_seconds": uptime_seconds,
+        }),
+    )
+}
+
 pub async fn me(
     State(app): State<Shared>,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
@@ -2411,6 +2475,44 @@ mod tests {
         let mut state = app();
         state.site = site.into();
         state
+    }
+
+    /// The one check the hub cannot make about itself: answered to anyone, since
+    /// a monitor holds no session, never cached, since a green 200 held in front
+    /// of the hub would hide the outage it is there to catch, and carrying
+    /// nothing about this hub beyond that it is alive.
+    #[tokio::test]
+    async fn health_answers_anyone_and_refuses_to_be_cached() {
+        let answered = health(State(std::sync::Arc::new(app()))).await;
+        assert_eq!(answered.status(), StatusCode::OK);
+        assert_eq!(
+            answered.headers()[header::CACHE_CONTROL],
+            "no-store, no-transform",
+            "a cached success outlives the hub it describes"
+        );
+        let body = axum::body::to_bytes(answered.into_body(), 64 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["db"], "ok");
+        assert!(body["uptime_seconds"].as_u64().unwrap() < 60, "just started: {body}");
+        // Exactly the three fields above and no others: no version for a stranger
+        // to match against a release's changelog, no node count, no address.
+        assert_eq!(body.as_object().unwrap().len(), 3, "{body}");
+    }
+
+    /// A read that failed is the only failure a monitor should be paged for; a
+    /// held connection is a vacuum or a backup taking the disk, which is
+    /// busyness -- paging an operator for their own backup is how a check stops
+    /// being read.
+    #[test]
+    fn only_a_failed_read_is_a_failure() {
+        assert_eq!(health_reply("ok", 9).0, StatusCode::OK);
+        assert_eq!(health_reply("busy", 9).0, StatusCode::OK);
+        let (status, body) = health_reply("error", 9);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["status"], "degraded");
+        assert_eq!(body["db"], "error");
+        assert_eq!(body["uptime_seconds"], 9, "the answer still says which process this is");
     }
 
     /// The footer says who is reading. That address is the caller's own, and the

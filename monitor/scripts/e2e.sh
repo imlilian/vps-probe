@@ -56,6 +56,16 @@ reported() {
 "$HUB" --listen "${URL#http://}" --db "$DIR/hub.db" >"$DIR/hub.log" 2>&1 &
 HUB_PID=$!
 wait_for "the hub to listen" curl -fs "$URL/api/me"
+
+# The one reading that comes from outside the fleet: no session, and nothing in
+# front of the hub may hold a green answer across the outage it is there to
+# catch. `-f` makes a 503 fail here, which is the contract a checker relies on.
+curl -fsS -D "$DIR/health.headers" -o "$DIR/health.json" "$URL/api/health" \
+	|| fail "the health route does not answer 2xx"
+jq -e '.status == "ok" and .db == "ok"' "$DIR/health.json" >/dev/null \
+	|| fail "the health route does not say ok: $(cat "$DIR/health.json")"
+grep -qi '^cache-control: no-store' "$DIR/health.headers" || fail "the health answer may be cached"
+
 PASSWORD=$(sed -n 's/.*Emergency password: //p' "$DIR/hub.log")
 [ -n "$PASSWORD" ] || fail "the hub printed no password"
 

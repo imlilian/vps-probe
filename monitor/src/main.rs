@@ -89,6 +89,11 @@ pub struct App {
     /// asks rather than on a timer, so a hub nobody opens makes no outbound
     /// request; see `api::versions`.
     pub releases: Mutex<Releases>,
+    /// When this process started. Read by `/api/health` and by nothing else: a
+    /// checker outside the hub learns there what the hub cannot see about
+    /// itself -- that it is the same process as the last check rather than one
+    /// that came back between two of them. See `api::health`.
+    pub started: std::time::Instant,
 }
 
 #[derive(Default, Clone)]
@@ -117,6 +122,7 @@ impl App {
             notes,
             oidc: Mutex::default(),
             releases: Mutex::default(),
+            started: std::time::Instant::now(),
         }
     }
 
@@ -676,6 +682,11 @@ async fn main() -> Result<()> {
         .route("/api/nodes", get(api::nodes))
         .route("/api/nodes/{id}/metrics", get(api::metrics))
         .route("/api/ws", get(api::live_ws))
+        // The hub's own liveness, for a checker outside it: the one thing a hub
+        // that watches every node cannot watch is itself. Anonymous by design --
+        // an uptime monitor holds no session -- and named under `/api/` so the
+        // panel's namespace stays the only one a proxy has to pass through.
+        .route("/api/health", get(api::health))
         // Sign-in.
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/logout", post(auth::logout))

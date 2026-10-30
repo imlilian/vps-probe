@@ -1052,6 +1052,37 @@ impl Db {
 
     // ---- settings ----
 
+    /// Whether the file still answers a read, for `/api/health`.
+    ///
+    /// `None` when the question cannot be asked at all: a chart scan, a copy or
+    /// a vacuum holds the connection for as long as the disk takes, which is
+    /// busyness rather than failure, and a hub that called it failure would page
+    /// an operator for its own backup. Nothing waits here -- see `lock` for what
+    /// waiting costs -- because a health check that queues behind a scan answers
+    /// slower than the checker's timeout and reads exactly like a dead hub.
+    ///
+    /// Read through the reader, which is idle except during those scans, and
+    /// never with the writer held while taking it.
+    ///
+    /// A count over a real table rather than `SELECT 1`, which SQLite answers
+    /// without touching a page: what this is for is the file that has stopped
+    /// being readable -- a failing disk, a hand-restored copy, a permission
+    /// changed under the service -- and only a statement that reads pages sees
+    /// it. One page, indexed, so a hub with a hundred thousand probes logged
+    /// still answers it in microseconds.
+    pub fn probe(&self) -> Option<Result<()>> {
+        let held = match &self.reader {
+            Some(reader) => reader.try_lock(),
+            None => self.conn.try_lock(),
+        };
+        let conn = match held {
+            Ok(conn) => conn,
+            Err(TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        Some(conn.query_row("SELECT COUNT(*) FROM setting", [], |_| Ok(())).map_err(Into::into))
+    }
+
     pub fn get(&self, key: &str) -> Option<String> {
         self.lookup(key).ok().flatten()
     }
@@ -2960,6 +2991,27 @@ mod tests {
             outcome
         });
         assert_eq!(outcome, Ok(true), "stats must not wait for the reader");
+    }
+
+    /// What `/api/health` asks: the file answers, read through the charts'
+    /// reader, and a held connection is answered as busy rather than waited for.
+    /// A probe that queued behind a scan would take longer than a checker's
+    /// timeout and read exactly like a dead hub; `:memory:` has no reader, so
+    /// there the writer is asked instead.
+    #[test]
+    fn a_probe_reads_the_file_and_gives_up_on_a_held_connection() {
+        let scratch = Scratch::new();
+        let db = Db::open(&scratch.0).unwrap();
+        assert!(matches!(db.probe(), Some(Ok(()))), "a healthy file answers");
+
+        let chart = db.reader.as_ref().unwrap().lock().unwrap();
+        assert!(db.probe().is_none(), "a chart scan is busyness, not failure");
+        drop(chart);
+        assert!(matches!(db.probe(), Some(Ok(()))), "and idle again after it");
+
+        let memory = Db::open(":memory:").unwrap();
+        assert!(memory.reader.is_none(), "the in-memory database has only the writer");
+        assert!(matches!(memory.probe(), Some(Ok(()))));
     }
 
     /// PRAGMA settings are per connection, so a value read through any other

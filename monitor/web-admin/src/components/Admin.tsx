@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { flushSync } from "react-dom"
-import { ArrowUpCircle, Bell, CalendarClock, Check, ChevronDown, ChevronRight, CircleQuestionMark, Copy, Database, Download, GripVertical, Layers, Lock, Pencil, Plus, Radio, Search, Send, Server, Settings, Shield, Trash2, Upload } from "lucide-react"
+import { ArrowUpCircle, Bell, CalendarClock, Check, ChevronDown, ChevronRight, CircleQuestionMark, Copy, Database, Download, GripVertical, HeartPulse, Layers, Lock, Pencil, Plus, Radio, Search, Send, Server, Settings, Shield, Trash2, Upload } from "lucide-react"
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { addressFromOrigin, api, badIfaceName, behind, changes, currentIface, GIB, groupsOf, ifaceChoice, ifaceSpec, inGroup, outdatedAgents, provisioningSite, shortAddress, trafficCorrection, upload, type IfaceChoice, type Node, type PingTask, type Source } from "@/lib/api"
+import { addressFromOrigin, api, badIfaceName, behind, changes, currentIface, GIB, groupsOf, healthProbe, ifaceChoice, ifaceSpec, inGroup, outdatedAgents, provisioningSite, shortAddress, trafficCorrection, upload, type IfaceChoice, type Node, type PingTask, type Source } from "@/lib/api"
 import { currencyHint, currencyList, searchCurrencies } from "@/lib/currency"
 import { bytes, cycleMonths, FOREVER, moneyMark, moneyParts, uptime } from "@/lib/format"
 
@@ -3813,12 +3813,212 @@ function Update({ versions, reload, nodes, site, refusal }: {
   )
 }
 
+// What `/api/health` answers, as the page explains it. Written down here rather
+// than fetched: this is the contract whoever configures the monitor reads, and
+// it has to be readable on a hub too broken to answer it.
+const HEALTH_ANSWERS: [string, string][] = [
+  ['200  {"status":"ok","db":"ok"}', "正常：在服务，数据库可读"],
+  ['200  {"status":"ok","db":"busy"}', "正常：备份、回收或图表扫描正占着数据库连接，忙不是故障"],
+  ['503  {"status":"degraded","db":"error"}', "数据库读不出来：磁盘、文件或权限出了问题"],
+  ["连不上或超时", "进程、端口、反向代理或隧道挂了——这个接口存在的理由"],
+]
+
+/** What this browser got back from `/api/health`, or why it got nothing. */
+type Live = { status: number; db: string; uptime: number } | { failed: string }
+
+/**
+ * The hub's own liveness, for a checker that lives outside it.
+ *
+ * Every other page here reads the fleet out of the database; this one describes
+ * the address a machine elsewhere asks, because the one thing a hub that watches
+ * every node cannot watch is itself. An agent on the hub's own host reports
+ * through the process it is meant to report on, and a dead hub cannot announce
+ * that it died -- only something outside can.
+ *
+ * Read-only by design. The hub needs to be told nothing for this to work, and a
+ * form would suggest it has to be: what is left is the address, what it answers,
+ * and the three ways the setup goes wrong. The detail this page may grow later
+ * -- a token, a per-request answer -- belongs here rather than in a page of its
+ * own.
+ */
+function Heartbeat({ site, hubSite, siteFixed }: { site: string; hubSite: string; siteFixed: boolean }) {
+  const probe = healthProbe(site)
+  const [live, setLive] = useState<Live | null>(null)
+  const [checking, setChecking] = useState(false)
+  // The panel's own origin, not `probe.url`: this is a demonstration of the
+  // answer, and behind a tunnel both are the same machine anyway. What it cannot
+  // show is the checker's vantage, which is why the page says where to run it.
+  //
+  // Resolves instead of setting state, so that the arrival below is one state
+  // update from a promise rather than a render started from inside an effect.
+  const read = useCallback(async (): Promise<Live> => {
+    try {
+      const res = await fetch("/api/health", { cache: "no-store", credentials: "omit" })
+      const answer = (await res.json().catch(() => ({}))) as { db?: string; uptime_seconds?: number }
+      return { status: res.status, db: String(answer.db ?? ""), uptime: Number(answer.uptime_seconds) || 0 }
+    } catch (e) {
+      return { failed: (e as Error).message }
+    }
+  }, [])
+  // Once, on arrival: the page is worth more showing the answer than describing
+  // it. Nothing re-runs it -- the button below is the only other reader -- and a
+  // reply that arrives after the page is gone is dropped.
+  useEffect(() => {
+    let gone = false
+    read().then((next) => {
+      if (!gone) setLive(next)
+    })
+    return () => {
+      gone = true
+    }
+  }, [read])
+  async function check() {
+    setChecking(true)
+    setLive(await read())
+    setChecking(false)
+  }
+
+  // The one thing an operator can act on, phrased by whichever way the hub's
+  // address was given: the flag is fixed in the unit file, the setting is in the
+  // panel.
+  const fix = siteFixed
+    ? "站点 URL 由 --site 固定，要改成 https 域名得编辑 systemd 的 ExecStart 再重启。"
+    : "到「设置」里把站点 URL 填成你的 https 域名，或直接用域名打开面板。"
+  const curl = `curl -fsS -o /dev/null -w '%{http_code}\\n' ${probe.url}`
+
+  return (
+    <div className="space-y-4">
+      <Card className="gap-4 p-5">
+        <div>
+          <h3 className="text-sm font-medium">探测地址</h3>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            给 hub 之外的机器定时来问的地址。不需要登录，也没有要先打开的开关：谁问都答。
+          </p>
+        </div>
+        <Command>{probe.url || "—"}</Command>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" disabled={!probe.url} onClick={() => copy(probe.url, "已复制探测地址")}>
+            <Copy className="size-4" /> 复制地址
+          </Button>
+          <Button size="sm" variant="secondary" disabled={checking} onClick={check}>
+            {checking ? "查询中…" : "在这台浏览器上查一次"}
+          </Button>
+          {live &&
+            ("failed" in live ? (
+              <span className="text-xs text-destructive">没连上：{live.failed}</span>
+            ) : (
+              <span className="tnum text-xs text-muted-foreground">
+                <span className={live.status === 200 ? "text-ok" : "text-destructive"}>{live.status}</span>
+                {" · "}
+                {live.db ? `db ${live.db}` : "无内容"}
+                {/* 同一个数一直涨，说明还是那个进程；突然变小，说明它重启过——
+                    刚打开面板就撞见它，多半是刚升级或刚重启过。 */}
+                {live.uptime > 0 && ` · ${live.uptime < 60 ? "刚启动" : `已运行 ${uptime(live.uptime)}`}`}
+              </span>
+            ))}
+        </div>
+        {!probe.external && (
+          <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {probe.url
+              ? "这是个回环地址，只有 hub 这台机器上的检查器用得上——外面的检查器连不到它。"
+              : "读不出可用地址：这个面板不是从 hub 的地址上打开的。"}
+            {fix}
+          </p>
+        )}
+        {probe.external && !hubSite && (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            这个地址是从你的浏览器地址栏推出来的，hub 自己并不知道（「设置」里的站点 URL 为空）。
+            它通常就是对外的那个；如果面板是从隧道或回环端口进来的，这里也就不是外面能用的地址。
+          </p>
+        )}
+      </Card>
+
+      <Card className="gap-4 p-5">
+        <div>
+          <h3 className="text-sm font-medium">它会答什么</h3>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            正常时是 <code>200</code>，其余每一种都对应一件具体的事。答复里还有 <code>uptime_seconds</code>：
+            hub 自己跑了多少秒——一直是涨的，说明两次检查之间它没换过进程。
+          </p>
+        </div>
+        <div className="divide-y rounded-lg border bg-muted/30 text-sm">
+          {HEALTH_ANSWERS.map(([answer, meaning]) => (
+            <div key={answer} className="flex flex-col gap-0.5 px-3 py-2.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+              <code className="tnum text-xs wrap-anywhere">{answer}</code>
+              <span className="text-xs text-muted-foreground sm:text-right">{meaning}</span>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          响应带 <code>Cache-Control: no-store</code>：CDN 和反向代理不会把一次 200 存成永久绿，那正是要抓的故障。
+          反过来说它只答「活着没有」——没有版本号，没有节点数，也没有地址，谁不花代价都能查它。
+        </p>
+      </Card>
+
+      <Card className="gap-4 p-5">
+        <div>
+          <h3 className="text-sm font-medium">怎么接</h3>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            任何能发 HTTP 请求的监视器都行：Uptime Kuma、UptimeRobot、Better Stack、Grafana 的合成监控、
+            Zabbix、healthchecks 之类，同一件事各叫各的名字（期望状态码 / Expected status / HTTP 200）。
+          </p>
+        </div>
+        <div className="space-y-2">
+          {/* The command under the sentence that says what it proves: a monitor
+              that cannot reach this URL has nothing to tell you. */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-muted-foreground">先在 hub 之外的一台机器上确认这条命令打出 200：</p>
+            <Button size="sm" variant="ghost" disabled={!probe.url} onClick={() => copy(curl, "已复制命令")}>
+              <Copy className="size-4" /> 复制命令
+            </Button>
+          </div>
+          <Command>{curl}</Command>
+        </div>
+        <ol className="list-decimal space-y-2 pl-5 text-xs leading-relaxed text-muted-foreground">
+          <li>地址填上面那个 URL，期望状态码 <code>200</code>，间隔 60 秒。</li>
+          <li>判定用「连续 2–3 次失败才告警」：一次网络抖动不该叫醒你。</li>
+          <li>
+            想更严就把答复里的 <code>"db":"ok"</code> 也断言上（关键词 / JSON path），这样「hub 活着但数据库
+            读不出来」同样会报警。
+          </li>
+          <li>
+            关掉「跟随重定向」，或确认这条路径不会被登录挡在前面：面板前若套了 Cloudflare Access、
+            Authelia、oauth2-proxy 之类，<code>/api/health</code> 会被 302 到登录页，监视器跟过去拿到 200
+            就是假绿——要么把这个路径排除，要么用上面那条断言兜住。
+          </li>
+        </ol>
+      </Card>
+
+      <Card className="gap-4 p-5">
+        <div>
+          <h3 className="text-sm font-medium">检查器要放在别处</h3>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            同一个 VPS 上跑检查器，机器或网络一死，两边一起沉默，这就回到了原点：hub 之所以需要外部的
+            uptime，正是因为死掉的那一方发不出消息。检查器要放在「hub 死了它还在」的地方。
+          </p>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            一个检查点也不够：它自己的机器或网络挂了，你收到的不是「hub 掉线」，而是什么都没有。两个不同
+            网络的检查点配两条不同的告警通道就够——一个说掉线先去看，两个都说掉线才是真的。
+          </p>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            反过来说，hub 已经在盯的事外面不必再盯一遍：节点掉线、流量和到期由 hub 自己推通知，「全部节点
+            一起掉线」这种故障它自己知道。外面需要看的只有一种：hub 连通知都发不出去了。
+          </p>
+        </div>
+      </Card>
+    </div>
+  )
+}
+
 // Each area is its own route rather than a tab, so a page can be linked to and a
 // reload returns to the same section.
 const ADMIN_SECTIONS = [
   { path: "/admin/nodes", label: "节点", icon: Server },
   { path: "/admin/ping", label: "延迟", icon: Radio },
   { path: "/admin/notify", label: "通知", icon: Bell },
+  // Beside 通知: that page is the hub speaking outwards about the fleet, this one
+  // is the outside asking about the hub -- the two ends of the same alarm.
+  { path: "/admin/heartbeat", label: "心跳", icon: HeartPulse },
   { path: "/admin/data", label: "数据", icon: Database },
   { path: "/admin/security", label: "安全", icon: Shield },
   { path: "/admin/settings", label: "设置", icon: Settings },
@@ -3886,6 +4086,8 @@ export function Admin({
           <Ping nodes={nodes} />
         ) : path === "/admin/notify" ? (
           <Notify nodes={nodes} refresh={refresh} />
+        ) : path === "/admin/heartbeat" ? (
+          <Heartbeat site={site} hubSite={hubSite} siteFixed={siteFixed} />
         ) : path === "/admin/data" ? (
           <Data />
         ) : path === "/admin/security" ? (

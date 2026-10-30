@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import assert from "node:assert/strict"
-import { addressFromOrigin, badIfaceName, behind, changes, currentIface, GIB, groupsOf, ifaceChoice, ifaceSpec, inGroup, loopbackOrigin, outdatedAgents, provisioningSite, provisionRefusal, shortAddress, trafficCorrection } from "./api.ts"
+import { addressFromOrigin, badIfaceName, behind, changes, currentIface, GIB, groupsOf, healthProbe, ifaceChoice, ifaceSpec, inGroup, loopbackOrigin, outdatedAgents, provisioningSite, provisionRefusal, shortAddress, trafficCorrection } from "./api.ts"
 
 assert.deepEqual(changes({ public: true, price: 5 }, { price: 20 }), { price: 20 })
 assert.deepEqual(changes({ total_rx: "100", month_tx: "2" }, { total_rx: "100", month_tx: "3" }), { month_tx: "3" })
@@ -23,6 +23,18 @@ assert.equal(addressFromOrigin("https://monitor.example.com"), "monitor.example.
 assert.equal(addressFromOrigin("https://monitor.example.com:8443"), "monitor.example.com:8443")
 for (const origin of ["http://monitor.example.com", "http://127.0.0.1:28080", "nonsense", ""]) {
   assert.equal(addressFromOrigin(origin), "", origin)
+}
+
+// The address an outside monitor is given, and whether it can leave this host:
+// a tunnel's loopback port is an address only the hub's own machine could ask.
+// Plain http is not refused here, unlike an install command -- a checker beside
+// the hub is a legitimate one.
+assert.deepEqual(healthProbe("https://hub.example.com"), { url: "https://hub.example.com/api/health", external: true })
+assert.deepEqual(healthProbe("https://hub.example.com:8443/"), { url: "https://hub.example.com:8443/api/health", external: true })
+assert.deepEqual(healthProbe("http://127.0.0.1:28080"), { url: "http://127.0.0.1:28080/api/health", external: false })
+assert.deepEqual(healthProbe("https://hub.example.com/nested"), { url: "https://hub.example.com/api/health", external: true })
+for (const nothing of ["", "nonsense"]) {
+  assert.deepEqual(healthProbe(nothing), { url: "", external: false }, nothing)
 }
 
 // The refusal names the cause the operator can act on, as the hub decides it.

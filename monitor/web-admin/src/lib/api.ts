@@ -198,6 +198,28 @@ export function addressFromOrigin(origin: string): string {
 }
 
 /**
+ * The address another machine asks whether this hub is alive, and whether that
+ * address leaves this host at all.
+ *
+ * `site` is the hub's own address when it knows one and this browser's
+ * otherwise (see `App`), so the answer is exactly as external as that address
+ * is: a panel reached over a tunnel shows a loopback port no other machine can
+ * reach, and the page says so instead of leaving a monitor to discover it.
+ *
+ * Unlike an install command, a probe needs no https: a checker on the hub's own
+ * machine may use the plain-http loopback listener, and it is a legitimate one
+ * -- what it cannot do is survive the machine. The scheme is kept as given.
+ */
+export function healthProbe(site: string): { url: string; external: boolean } {
+  try {
+    const { origin } = new URL(site)
+    return { url: `${origin}/api/health`, external: !loopbackOrigin(origin) }
+  } catch {
+    return { url: "", external: false }
+  }
+}
+
+/**
  * Why nodes cannot be added or installed from this page, or "" when they can.
  * `origin` is the page's own, which reaches the hub as `Origin`; `site` is the
  * hub's own address -- `--site` or the panel's 站点 URL setting -- empty when it

@@ -56,6 +56,38 @@ curl -fsSL https://your-hub/install.sh | sh -s -- --upgrade
 curl -fsSL https://your-hub/install.sh | sh -s -- --uninstall
 ```
 
+## 健康检查（接外部 uptime）
+
+hub 监测所有节点，唯独监测不到自己：在 hub 那台机器上装 agent，它的上报也要经过 hub 本身。
+所以留了一个朝外看的接口，给它之外的 uptime 服务定时查询：
+
+```sh
+curl -s https://your-hub/api/health
+# {"db":"ok","status":"ok","uptime_seconds":3600}
+```
+
+| 情况 | 答复 |
+|---|---|
+| 正常 | `200`，`"status":"ok"` |
+| 数据库读不出来 | `503`，`"status":"degraded"`、`"db":"error"` |
+| 备份 / vacuum / 图表扫描正占着连接 | `200`，`"db":"busy"`——忙不是故障 |
+| hub 进程没了、端口不通、代理挂了 | 连不上或超时，由 uptime 判掉线 |
+
+- **不需要登录**：uptime 服务不持有会话，也不会被给一个。
+- **不会被缓存**：响应带 `Cache-Control: no-store`，Cloudflare 和反向代理不会把一次 200
+  缓存成永久绿——那正是这个接口要抓的故障。
+- **只说活着**：不带版本号（哪个 release 的漏洞不该让随便谁查到），不带节点数（那是一门
+  炮的规模），面板里登录后都能看到。
+
+面板左侧的**「心跳」**页把这条地址、响应约定和接法都列了出来，带复制按钮，不必翻文档。
+
+在 Uptime Kuma 里加一个 **HTTP(s)** 监视器：URL 填 `https://your-hub/api/health`，
+期望状态码 `200`，其余默认。Kuma 与 hub 同机时直接查 `http://127.0.0.1:28080/api/health`，
+不必绕 TLS 代理。想把「数据库还能读」一起盯上，就用 **HTTP(s) - Keyword** 类型，关键词填
+`"db":"ok"`（或 **JSON Query** 查 `$.status` 等于 `ok`）：503 时关键词不出现，监视器照样红。
+UptimeRobot、Better Stack、Grafana 合成监控这些换汤不换药：别只把检查器放在 hub 同一台机器上，
+机器死了两边一起沉默，也就没了引入外部 uptime 的意义。
+
 ## 构建
 
 需要 Rust stable 与 node。
@@ -111,6 +143,8 @@ make release HUB=0.2.2 AGENT=0.3.0      # 各 bump 各的号
   投毒面。公开页固定使用本仓库内嵌的那一份。
 - 公开页默认关闭：新装的 hub 不对外发布节点位置、流量与延迟，需要在面板里显式打开。关闭时
   访问者看到的是「状态页已关闭」，而不是空白或报错。
+- `/api/health` 匿名开放，但只答「活着没有」与「这个进程跑了多久」：版本号、节点数、地址都不
+  在里面。它要答的东西必须比它泄露的东西更值钱，否则就是一个免费的信息源。
 - 面板与公开页都带 CSP、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`：脚本只允许
   同源加载，页面不能被 iframe 嵌入。
 - 两个二进制都签名，hub 只在验签通过后转发 agent；hub 安装器同样验签后才落盘，不再依赖与二进制
