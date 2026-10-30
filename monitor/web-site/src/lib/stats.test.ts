@@ -62,16 +62,28 @@ const plans = [
   node({ price: 60, billing_cycle: "monthly", expires_in: 30 }),
   node({ price: 40, billing_cycle: "monthly", expires_in: -5 }),
 ]
-// 80 yuan of prepaid time, drawn as dollars at the rate the page carries.
-assert.deepEqual(residual(plans), { usd: 12, counted: 3, left: 0 })
+// 78.90 yuan of prepaid time, drawn as dollars at the rate the page carries.
+assert.deepEqual(residual(plans), { usd: 11.84, counted: 3, left: 0 })
 assert.deepEqual(residual([node({ price: 100, billing_cycle: "once", expires_in: 300 })]), null)
 assert.deepEqual(residual([node({ price: 0, expires_in: 300 })]), null)
-// An annual plan prorates over its own 360 days, not over a month.
-assert.equal(residual([node({ price: 360, billing_cycle: "yearly", expires_in: 90 })])?.usd, 13.5)
-console.log("remaining value prorates the time that is left")
+// An annual plan prorates over its own 365 days: not over a month, and not over
+// the 360 that twelve thirty-day months would give. A plan renewed this morning
+// is worth exactly what was paid for it.
+assert.equal(residual([node({ price: 360, billing_cycle: "yearly", expires_in: 90 })])?.usd, 13.32)
+assert.equal(residual([node({ price: 365, currency: "USD", billing_cycle: "yearly", expires_in: 365 })])?.usd, 365)
+console.log("remaining value prorates the time that is left over a calendar year")
 
-// Three currencies, one figure: 60 yuan, 20 euro and 30 dollars are 9.00, 22.42
-// and 30 -- the card answers "what is left", which a per-currency listing does
+// Money paid further out than one cycle is worth further out: three years bought
+// up front on an annual plan leaves more than a year's price, and the card says
+// so instead of capping at what one cycle cost.
+assert.equal(residual([node({ price: 365, currency: "USD", billing_cycle: "yearly", expires_in: 900 })])?.usd, 900)
+// A date past the century mark is not a period anyone bought: it counts as the
+// price paid, not as three hundred years of a yearly plan.
+assert.equal(residual([node({ price: 365, currency: "USD", billing_cycle: "yearly", expires_in: 100_000 })])?.usd, 365)
+console.log("a plan dated further out than one cycle is worth more than one cycle")
+
+// Three currencies, one figure: 60 yuan, 20 euro and 30 dollars are 8.88, 22.11
+// and 29.59 -- the card answers "what is left", which a per-currency listing does
 // not.
 assert.deepEqual(
   residual([
@@ -80,7 +92,7 @@ assert.deepEqual(
     node({ price: 20, currency: "EUR", expires_in: 30 }),
     node({ price: 30, currency: "USD", expires_in: 30 }),
   ]),
-  { usd: 61.42, counted: 4, left: 0 },
+  { usd: 60.58, counted: 4, left: 0 },
 )
 console.log("every currency is converted before it is added")
 
@@ -89,7 +101,7 @@ console.log("every currency is converted before it is added")
 assert.deepEqual(residual([node({ price: 30, currency: "XYZ", expires_in: 30 })]), null)
 assert.deepEqual(
   residual([node({ price: 30, expires_in: 30 }), node({ price: 30, currency: "XYZ", expires_in: 30 })]),
-  { usd: 4.5, counted: 1, left: 1 },
+  { usd: 4.44, counted: 1, left: 1 },
 )
 console.log("an unpriced currency is counted, not guessed")
 

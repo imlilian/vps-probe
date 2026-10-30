@@ -245,6 +245,21 @@ export function cycleMonths(billing: string): number | null {
   return (NAMED_CYCLES[billing] ?? Number(/^(\d+)m$/.exec(billing)?.[1])) || null
 }
 
+/**
+ * Days a billing cycle covers: `months x 365 / 12`, so a year is 365 days.
+ *
+ * Calendar days rather than thirty-day months, because the hub advances an
+ * expiry date by whole calendar months (`renewed` in the hub), and a plan
+ * renewed this morning has 365 days left, not 360. On the month base a fresh
+ * annual plan read as 101% of what was paid for it, and every annual and
+ * triennial plan came out about 1.4% rich. A monthly plan gets the average
+ * month, 30.4 days, since the real one is 28 to 31.
+ */
+export function cycleDays(billing: string): number | null {
+  const months = cycleMonths(billing)
+  return months === null ? null : (months * 365) / 12
+}
+
 /** How a billing cycle reads: 月付, 5 年付, 18 个月付, 一次性. */
 export function cycle(billing: string): string {
   if (billing === "once") return "一次性"

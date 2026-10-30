@@ -1,6 +1,6 @@
 import type { Node } from "./api.ts"
 import { bytes, cycleMonths, daysUntil } from "./format.ts"
-import { monthUsage } from "./stats.ts"
+import { monthUsage, planLeft } from "./stats.ts"
 
 /** How a remaining-time figure is coloured; the component owns the classes. */
 export type Tone = "ok" | "warn" | "danger" | "muted"
@@ -48,19 +48,24 @@ export function monthlyCost(node: Node): number | null {
 }
 
 /**
- * The unused part of the current period, prorated over the days it covers.
- * Kept in the node's own currency: the page has no live exchange rate, and a
- * static one would make the figure look more precise than it is.
+ * The unused part of the current period, prorated over the days it covers, in
+ * the node's own currency.
+ *
+ * The arithmetic is [planLeft], the same one the overview card sums: one
+ * function rather than two, because a formula repeated on two surfaces is a
+ * formula that ends up saying two things about one machine -- this page used to
+ * cap at one cycle's price while the card did not, so a plan bought three years
+ * up front was worth ¥234 here and ¥408 there. Kept in the node's own currency:
+ * the card's dollars are the overview's business, not this page's.
+ *
+ * One case is the card's alone. A one-off purchase has no period to prorate, so
+ * the total leaves it out -- counting it in full would add a figure that never
+ * falls. On the machine's own page the same purchase is still worth what was
+ * paid for it, which is the only true thing to say about it.
  */
 export function remainingValue(node: Node): number | null {
-  if (!(node.price > 0)) return null
-  const days = expiryDays(node)
-  if (days === null) return null
-  if (days <= 0) return 0
-  const months = cycleMonths(node.billing_cycle)
-  if (months === null) return node.price
-  if (days > 36_500) return node.price
-  return (node.price * Math.min(days, months * 30)) / (months * 30)
+  if (node.billing_cycle === "once") return node.price > 0 ? node.price : null
+  return planLeft(node)
 }
 
 /** This period's usage as the plan meters it; the hub's own figure where present. */

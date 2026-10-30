@@ -9,7 +9,7 @@
  * value, which no hub field carries.
  */
 import type { Node } from "./api.ts"
-import { cycleMonths, daysUntil } from "./format.ts"
+import { cycleDays, daysUntil } from "./format.ts"
 import { toUSD } from "./rates.ts"
 
 /**
@@ -130,36 +130,61 @@ export type Residual = {
   left: number
 }
 
+/** The longest expiry an estimate believes: a century. */
+const LONG_DAYS = 36_500
+
 /**
- * What is left of the prepaid time, at `price x days left / days paid for`. No
- * hub field carries this, so it is an estimate and the card says nothing more
- * precise than a figure. A month is 30 days, which is the resolution of a plan
- * priced per month; a node already past its date is worth nothing rather than a
- * negative amount. One-off purchases have no period to prorate, so they are left
- * out along with anything unpriced.
+ * What is left of the prepaid time, at `price x days left / days paid for`, in
+ * the node's own currency: one daily rate per plan, times the days it still
+ * covers. There is no monthly figure in the middle and no need for one -- the
+ * rate comes out the same whether the cycle is billed by the month or by the
+ * year, since a month of the denominator is 365/12 days either way (see
+ * [cycleDays]). No hub field carries this, so it is an estimate and the card
+ * says nothing more precise than a figure.
  *
- * Every currency is converted to dollars before it is added: the alternative --
- * summing by currency and showing the largest group -- answered "what is left in
- * the currency most of my machines happen to be billed in", which is not the
- * question the card asks. A currency the rate table does not know is left out
- * and counted rather than converted at a guess.
+ * A plan dated further out than one cycle was paid for further out -- years
+ * bought up front -- so it is worth more than one cycle's price, and there is no
+ * cap: capping there reported what the plan was bought for rather than what is
+ * left of it, and made this figure disagree with the same machine's card. A node
+ * already past its date is worth nothing rather than a negative amount. An
+ * expiry past the century mark is a date nobody meant as a period, so it counts
+ * as never ending instead of multiplying a plan into a figure out of the air.
+ *
+ * Null where there is nothing to prorate: no price, no expiry, or a one-off
+ * purchase, which has no period. This is the arithmetic behind both the card on
+ * the node page and the total on the overview, kept in one place so the two can
+ * never answer differently about the same machine.
+ */
+export function planLeft(node: Node): number | null {
+  if (!(node.price > 0)) return null
+  const days = daysLeft(node)
+  const paid = cycleDays(node.billing_cycle)
+  if (days === null || paid === null) return null
+  if (days > LONG_DAYS) return node.price
+  return (node.price * Math.max(0, days)) / paid
+}
+
+/**
+ * Every plan's [planLeft], converted to dollars and added up.
+ *
+ * Converted rather than summed by currency and shown as the largest group: that
+ * answered "what is left in the currency most of my machines happen to be billed
+ * in", which is not the question the card asks. A currency the rate table does
+ * not know is left out and counted rather than converted at a guess, and so is a
+ * one-off purchase.
  */
 export function residual(nodes: Node[]): Residual | null {
   let usd = 0
   let counted = 0
   let left = 0
   for (const node of nodes) {
-    const days = daysLeft(node)
-    const months = cycleMonths(node.billing_cycle)
-    const worth =
-      days === null || months === null || !(node.price > 0)
-        ? null
-        : toUSD((node.price * Math.max(0, days)) / (months * 30), node.currency)
-    if (worth === null) {
+    const worth = planLeft(node)
+    const converted = worth === null ? null : toUSD(worth, node.currency)
+    if (converted === null) {
       left++
       continue
     }
-    usd += worth
+    usd += converted
     counted++
   }
   if (!counted) return null

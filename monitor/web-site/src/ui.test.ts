@@ -511,7 +511,7 @@ try {
   // scale, and the period the price buys trailing behind it.
   assert.match(page, /text-\[0\.7em\][^"]*">¥<\/span><span>59\.90<\/span>/, "the mark is a unit beside the price")
   assert.match(page, /[^"]*text-2xs[^"]*">\/ 月<\/span>/, "the period follows the price")
-  assert.ok(page.includes("<span>13.98</span>"), "remaining value is prorated in the node's currency")
+  assert.ok(page.includes("<span>13.79</span>"), "remaining value is prorated in the node's currency")
   assert.match(page, />7<\/span><span class="[^"]*text-2xs[^"]*">天<\/span>/, "seven days left")
   assert.ok(page.includes("CPU Mark"), "the CPU's public benchmark is one link away")
   assert.ok(page.includes("高端服务器级"), "EPYC 7B13 is an A/consumer-context server tier")

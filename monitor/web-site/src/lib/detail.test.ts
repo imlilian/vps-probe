@@ -27,11 +27,15 @@ assert.equal(remainingTime(node({ expires_in: null, expires_at: null })).value, 
 assert.equal(remainingTime(node({ expires_in: 0 })).value, "今天", "今天到期是词")
 
 const planned = (over: Partial<Node>) => node({ price: 99, billing_cycle: "triennial", expires_in: 1000, ...over })
-assert.equal(remainingValue(planned({})), (99 * 1000) / 1080, "剩余价值按天数摊")
+assert.equal(remainingValue(planned({})), (99 * 1000) / 1095, "剩余价值按天数摊，三年是 1095 天")
 assert.equal(remainingValue(planned({ expires_in: 0 })), 0, "到期后没有剩余价值")
 assert.equal(remainingValue(planned({ expires_in: null, expires_at: null })), null, "无到期日不算")
 assert.equal(remainingValue(planned({ price: 0 })), null, "免费没有剩余价值")
 assert.equal(remainingValue(planned({ billing_cycle: "once" })), 99, "一次性按全额")
+// The same arithmetic as the overview card: a plan dated past one cycle was paid
+// for past one cycle, so it is not capped at the price of one.
+assert.equal(remainingValue(planned({ billing_cycle: "yearly", expires_in: 636 })), (99 * 636) / 365, "预付款超过一个周期不封顶")
+assert.equal(remainingValue(planned({ billing_cycle: "yearly", expires_in: 100_000 })), 99, "百年以上的到期日按全额")
 
 assert.equal(trafficUsed(node({ month_used: 500, month_rx: 1, month_tx: 1 })), 500, "hub 的 month_used 优先")
 assert.equal(trafficUsed(node({ month_used: undefined, month_rx: 3, month_tx: 5, traffic_mode: "up" })), 5, "老 hub 按 UP 计")
