@@ -55,13 +55,20 @@ export function QualitySection({ series, hidden, hours }: {
   const blockMs = window.seconds * 1000
   const until = Math.ceil(newest / blockMs) * blockMs
   const clock = clockFor(hours)
+  // `buildSlots` folds by whatever unit it is handed, and every other caller
+  // hands it seconds -- the card's rows come off the hub in seconds, these come
+  // from `toPing`, which made them milliseconds for the chart above. Passing the
+  // window's seconds beside millisecond stamps put every bucket outside the fold
+  // and drew an hour of nothing: a strip of grey blocks that looked like no data
+  // rather than like a bug.
+  const at = (ts: number) => Math.round(ts / 1000)
 
   return (
     <Card className="min-w-0 gap-0 p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold">线路质量</h3>
-          <p className="text-3xs text-muted-foreground">首包重传与丢包 · 每块 {window.label}</p>
+          <p className="mt-1 text-2xs text-muted-foreground">每块 {window.label} · 首包重传与丢包</p>
         </div>
         <span className="shrink-0 text-muted-foreground" role="img" title={EXPLAIN} aria-label={EXPLAIN}>
           <Info size={14} aria-hidden />
@@ -72,7 +79,12 @@ export function QualitySection({ series, hidden, hours }: {
         {series.map((probe) => {
           // Blocks of seconds, from the buckets the chart above is drawn from:
           // one fold for the card and the detail page alike.
-          const slots = buildSlots(probe.points, until, window.count, window.seconds)
+          const slots = buildSlots(
+            probe.points.map((point) => ({ ...point, ts: at(point.ts) })),
+            at(until),
+            window.count,
+            window.seconds,
+          )
           const on = !hidden.includes(probe.id)
           return (
             <div

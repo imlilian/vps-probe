@@ -246,11 +246,13 @@ try {
     const { ProbeLines } = await server.ssrLoadModule("/src/components/PingPanel.tsx")
     const block = renderToString(createElement(ProbeLines, { node: fleet[1] }))
     assert.ok(block.includes("min-h-[3.25rem]"), "three lines reserved, whatever the probe count")
-    // A retransmit on the compact card is one amber dot and a title, not a second
-    // strip: the card already carries four resource cells and two rates.
-    assert.ok(block.includes("bg-signal-4"), "a line that retransmits is marked")
-    assert.match(block, /title="重传 \d+(\.\d)?%"/, "with the figure in its own title")
-    assert.ok(!block.includes("grid-cols-20"), "and no strip, as before")
+    // The compact card now speaks the same vocabulary as the big one: no strip
+    // (the card already carries four resource cells and two rates), but the
+    // retransmit rate as a figure where an amber dot used to stand.
+    const compact = block.replace(/<!-- -->/g, "")
+    assert.match(compact, /RTX \d+(\.\d)?%/, "the retransmit rate is printed")
+    assert.ok(!compact.includes("grid-cols-20"), "and still no strip")
+    assert.ok(!compact.includes("size-[3px]"), "the amber dot is gone: the number is shorter")
   }
   console.log("a card with a history draws three strips of twenty blocks")
 
@@ -726,8 +728,14 @@ try {
     const card = tidy(renderToString(createElement(ProbeCard, { stat, color: "#22c55e", on: true, onClick() {} })))
     // Two rows, three figures: the ones a reader acts on, then how often it went
     // wrong. `波动` moved into the ⓘ with the rest of the statistics.
-    assert.ok(card.includes("延迟 51 ms"), "the card leads with the latency")
-    assert.ok(card.includes("P50 51 ms / P99 62 ms"), "and its two quantiles beside it")
+    assert.ok(card.includes("AVG 51 ms"), "the card leads with the average")
+    // MIN and MAX, not P50/P99: the chart below is titled 延迟 already, and a
+    // public page should not ask a visitor to know what a percentile is. The
+    // percentiles stay in the ⓘ.
+    assert.ok(card.includes("MIN 40 ms / MAX 62 ms"), "and the window's two ends beside it")
+    // The percentiles survive in the tooltip and the spoken label, which are
+    // attributes; the row a visitor reads carries none.
+    assert.ok(!card.replace(/<[^>]+>/g, "").includes("P50"), "no percentile on the row itself")
     assert.ok(card.includes("RTX 2.1%"), "then the retransmit rate")
     // A loss of zero is not printed at all: the retransmit rate always is, and
     // the strip beside the figures is what says whether anything went missing.
@@ -768,7 +776,7 @@ try {
     })))
     assert.ok(quality.includes("线路质量"), "the quality card is titled")
     // The block length is the window's, and the title says which.
-    assert.ok(quality.includes("首包重传与丢包 · 每块 3 分钟"), "the block length is stated")
+    assert.ok(quality.includes("每块 3 分钟 · 首包重传与丢包"), "the block length is stated")
     assert.ok(quality.includes("LOSS 3.3%") && quality.includes("RTX 4.7%"), "each row carries both figures")
     assert.ok(quality.indexOf("RTX 4.7%") < quality.indexOf("LOSS 3.3%"), "retransmit before loss")
     // The second probe lost nothing, so its row names no loss at all.

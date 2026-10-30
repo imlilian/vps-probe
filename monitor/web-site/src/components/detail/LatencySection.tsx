@@ -21,6 +21,10 @@ import { RangeBar } from "./RangeBar"
 
 const ms = (value: number | null) => value === null ? "—" : `${Math.round(value)} ms`
 
+/** A bucket's length as the chart's subtitle says it: 5 分钟, 1 小时. */
+const span = (seconds: number) =>
+  seconds >= 3_600 ? `${Math.round(seconds / 3_600)} 小时` : `${Math.round(seconds / 60)} 分钟`
+
 /**
  * A percentage as a screen reader hears it: the card's own precision, and zero
  * spoken as zero.
@@ -35,6 +39,12 @@ const spokenPct = (value: number) => `${fmtLoss(value)}%`
 /**
  * One probe's card: the colour that keys it to the chart, then the three numbers
  * a reader acts on, then the two that say how often the line went wrong.
+ *
+ * `AVG` and `MIN`/`MAX` rather than `延迟` and `P50`/`P99`. The chart below is
+ * titled 延迟, so the word was a caption for a caption; and a public page that
+ * says P50 and P99 asks the visitor to know what a percentile is before they can
+ * read their own machine's card. The percentiles are still in the ⓘ, where they
+ * are what answers "how bad is the bad part" for anyone who asks.
  *
  * The two failure figures are labelled in Latin -- LOSS and RTX -- because they
  * sit in a row of columns where a two-word Chinese label is both wider and, in
@@ -100,9 +110,9 @@ export function ProbeCard({ stat, color, on, onClick }: {
           </span>
         </span>
         <span className="mt-1 flex flex-wrap items-baseline gap-x-1.5 text-2xs text-muted-foreground">
-          <span>延迟 {ms(stat.avg)}</span>
+          <span>AVG {ms(stat.avg)}</span>
           <span>·</span>
-          <span>P50 {ms(stat.p50)} / P99 {ms(stat.p99)}</span>
+          <span>MIN {ms(stat.min)} / MAX {ms(stat.max)}</span>
         </span>
         {/* The retransmit rate always, the loss only when there was one -- the
             same rule as the card's rows, so a clean line never spends a column
@@ -217,7 +227,12 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-sm font-semibold">延迟</h3>
-                <p className="text-3xs text-muted-foreground">每桶中位数 · 毫秒</p>
+                {/* The bucket's own length, from the answer rather than a
+                    constant: the chart draws ten-minute points at a day and
+                    hour-long ones at a month, and `每桶中位数 · 毫秒` said neither
+                    -- the unit is on the axis below, and the `·` split two ideas
+                    into one line of 10px text under a 14px title. */}
+                <p className="mt-1 text-2xs text-muted-foreground">每 {span(answer.step || 60)} 的中位数</p>
               </div>
               <Chip
                 pressed={smooth}

@@ -533,6 +533,13 @@ function useLazyPing(node: Node, hours: number) {
  * blocks are six pixels each, which shows a colour but never a run -- and a run
  * is the only thing a strip is better at than a number. Which probe and how bad
  * is one press away on the node's own page.
+ *
+ * The figures are the card's own: the reading, then the retransmit rate, then the
+ * loss when there was one. An amber dot stood here for the retransmit rate --
+ * "something came back late" without spending a number's width -- and the labels
+ * are short enough now that the number itself fits in less space than the dot and
+ * its tooltip took, so the dot is gone and the compact card says what the big one
+ * says.
  */
 export function ProbeLines({ node, hours = HOURS }: { node: Node; hours?: number }) {
   const [ref, entry] = useLazyPing(node, hours)
@@ -556,15 +563,14 @@ export function ProbeLines({ node, hours = HOURS }: { node: Node; hours?: number
             <span className="truncate text-muted-foreground">{probe.name}</span>
             <span className="tnum flex shrink-0 items-baseline gap-1.5">
               <span className={cn("font-semibold", INK[probeLatencySignal(probe)])}>{fmtLatency(reading(probe))}</span>
-              <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>{fmtPct(probe.loss)}</span>
-              {/* A retransmit is a low-frequency exception, and this card has no
-                  room for a second strip: one dot says "something came back
-                  late in this hour", and the figure is in the title. Nothing at
-                  all when the line was clean -- this line's layout must not
-                  change on a healthy fleet. */}
-              {probe.retx ? (
-                <span className="ml-0.5 size-[3px] shrink-0 self-center rounded-full bg-signal-4" title={`重传 ${fmtPct(probe.retx)}`} />
-              ) : null}
+              {probe.retxKnown && (
+                <span className={cn("font-medium", qualityInk(probe.retx, 4))}>RTX {fmtPct(probe.retx)}</span>
+              )}
+              {lost(probe) && (
+                <span className={cn("font-medium", qualityInk(probe.loss, lossSignal(probe.loss)))}>
+                  LOSS {fmtPct(probe.loss)}
+                </span>
+              )}
             </span>
           </div>
         ))
