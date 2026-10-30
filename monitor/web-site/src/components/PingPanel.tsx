@@ -377,14 +377,17 @@ function SoloRow({ probe, className }: { probe: ProbeStats; className?: string }
  * One probe of two or three: two rows, the figures above and the two strips
  * under them, in one grid so each figure sits over the bar it describes.
  *
- * `grid-cols-[3fr_2fr]` for both rows: the latency strip takes three fifths and
- * the quality strip two, because the latency strip is a bar to be scanned and the
- * quality one a line of markers, and markers need less room to say the same
- * thing. The reading is at the right edge of the latency column, LOSS at the left
- * edge of the quality column and RTX at its right -- two letters each, over the
- * bar they colour. No column header: at this width it was a row of words costing
- * 12px of height to say what `ms` and the percentages already say, and the
- * reviewer's eye went to the numbers either way.
+ * `grid-cols-2` for both rows: an even split, because the right column has to
+ * hold `LOSS 99.9%` and `RTX 99.9%` side by side and three fifths was already
+ * tight at `LOSS 33%` -- at a hundred per cent it would have run into the
+ * latency column. Even blocks are 6px each at this width rather than 7.7 and
+ * 4.8, which is no loss: the two strips are equally legible, and the count, not
+ * the width, is what carries the three-minute resolution.
+ *
+ * The reading is at the right edge of the left column, LOSS at the left edge of
+ * the right one and RTX at its right -- two letters each, over the bar they
+ * colour. No column header: at this width it was a row of words costing 12px of
+ * height to say what `ms` and the percentages already say.
  */
 function Probe({
   probe, hours, extra = false, quality,
@@ -401,7 +404,7 @@ function Probe({
       title={`${probe.name} · 近 ${hours} 小时的延迟${quality ? "、丢包与重传" : "与丢包"}`}
       aria-label={spoken(probe, quality)}
     >
-      <div className="grid grid-cols-[3fr_2fr] items-baseline gap-2 text-2xs">
+      <div className="grid grid-cols-2 items-baseline gap-2 text-2xs">
         <span className="flex min-w-0 items-baseline justify-between gap-2">
           <span className="truncate text-muted-foreground">{probe.name}</span>
           <span className={cn("tnum shrink-0 font-semibold", INK[probeLatencySignal(probe)])}>
@@ -417,7 +420,7 @@ function Probe({
           <span className={cn("tnum text-right font-medium", INK[lossSignal(probe.loss)])}>LOSS {fmtPct(probe.loss)}</span>
         )}
       </div>
-      <div className={cn("mt-1 grid gap-2", quality ? "grid-cols-[3fr_2fr]" : "grid-cols-1")}>
+      <div className={cn("mt-1 grid gap-2", quality ? "grid-cols-2" : "grid-cols-1")}>
         <Strip slots={probe.slots} clock={clock} />
         {quality && <QualityStrip slots={probe.slots} clock={clock} />}
       </div>
@@ -537,10 +540,16 @@ export function PingPanel({ node, hours = HOURS }: { node: Node; hours?: number 
   const quality = probes[0]?.retxKnown ?? false
 
   return (
-    // 104px, all three probe counts, measured rather than guessed: three rows of
+    // 124px, all three probe counts, measured rather than guessed: three rows of
     // (16px reading + 4px gap + 4px strip) plus the 8px between them is 88, and
     // two rows carrying their MIN/MAX line each come to the same 88. The 16px of
-    // padding either side makes 104.
+    // padding either side leaves 108 inside, so 20px is shared out between the
+    // probes -- and the solo card, which has a curve instead of a third row,
+    // gives all of its share to the curve (64px of drawing).
+    //
+    // The height went up from 104 once the two-column layout landed: at 104 the
+    // solo curve was 44px, which is too little for a link whose window spans a
+    // 3x range -- a spike and its foot would be six pixels apart.
     //
     // Fixed, and not `flex-1`: letting the well eat the row's leftover was this
     // design's first answer, and in a screenshot it read as two probes stretched
@@ -556,13 +565,17 @@ export function PingPanel({ node, hours = HOURS }: { node: Node; hours?: number 
     // step, a third line per probe -- has to move this number with it.
     <div
       ref={ref}
-      className="mt-2.5 flex h-26 flex-col rounded-lg border border-border-soft bg-card-2 px-2.5 py-2"
+      className="mt-2.5 flex h-31 flex-col rounded-lg border border-border-soft bg-card-2 px-2.5 py-2"
     >
       {probes.length ? (
         solo ? (
           <Solo probe={probes[0]} hours={hours} quality={quality} />
         ) : (
-          <div className="flex flex-col">
+          // `justify-between` and not a stack at the top: the 20px the fixed
+          // height leaves over is shared between the probes, so the first and
+          // last rows stay pinned to the well's edges -- the same rhythm whether
+          // there are two of them or three.
+          <div className="flex flex-1 flex-col justify-between">
             {probes.map((probe) => (
               <Probe key={probe.id} probe={probe} hours={hours} extra={probes.length === 2} quality={quality} />
             ))}

@@ -310,7 +310,7 @@ try {
     // One height for all three probe counts: three rows of 24 and the 8px
     // between them is 88px, two rows carrying MIN/MAX come to the same, and the
     // 16px of padding makes 104.
-    assert.ok(solo.includes("mt-2.5 flex h-26 flex-col"), "the well is 104px, whatever the probe count")
+    assert.ok(solo.includes("mt-2.5 flex h-31 flex-col"), "the well is 124px, whatever the probe count")
     assert.ok(!solo.includes("min-h-31"), "and no longer grows with the row")
   } finally {
     globalThis.fetch = asked
@@ -322,7 +322,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 100))
     const pair = card(1)
     assert.ok(pair.includes("上海电信") && pair.includes("上海联通"), "both probes are named")
-    assert.ok(pair.includes("h-26"), "and the well is the same fixed box")
+    assert.ok(pair.includes("h-31"), "and the well is the same fixed box")
     assert.equal(pair.match(/grid-cols-20/g)?.length, 2, "two probes keep two strips")
     assert.ok(!pair.includes("linearGradient"), "and no curve: two rows of blocks stay scannable")
     for (const want of ["MIN", "MAX"]) {
@@ -368,9 +368,12 @@ try {
     // Both rows use one grid, so each figure sits over the bar it colours: the
     // reading at the right of the latency column, LOSS and RTX at the two ends of
     // the quality one.
-    assert.equal(pair.match(/grid-cols-\[3fr_2fr\]/g)?.length, 4, "figures and strips share a grid")
+    // An even split, both rows: the quality column has to hold `LOSS 99.9%` and
+    // `RTX 99.9%` side by side, and three fifths left it tight at a third of that.
+    assert.equal(pair.match(/grid-cols-2 items-baseline/g)?.length, 2, "each reading row splits evenly")
+    assert.equal(pair.match(/mt-1 grid gap-2 grid-cols-2/g)?.length, 2, "and each strip row with it")
     assert.ok(pair.includes("LOSS ") && pair.includes("RTX "), "the two labels sit over their strip")
-    assert.ok(pair.includes("h-26"), "and the well is the one fixed height")
+    assert.ok(pair.includes("h-31"), "and the well is the one fixed height")
   } finally {
     globalThis.fetch = asked
     fetchPing(2)

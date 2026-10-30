@@ -18,11 +18,11 @@ assert.equal(span(720, 180).step, 14_400, "30d is four-hour buckets")
 assert.ok(span(168, 168).rows >= 168, "7d covers the requested week")
 assert.ok(span(720, 180).rows >= 180, "30d covers the requested month")
 
-const legacy = history(5, "metrics", 168, 168, now).metrics[0]!
+const legacy = history(1, "metrics", 168, 168, now).metrics[0]!
 for (const field of ["swap_used", "tcp", "udp", "procs", "net_rx_max", "cpu_max", "minutes"]) {
   assert.ok(!(field in legacy), `legacy hub omits ${field}`)
 }
-assert.ok(nodeList(now).find((node) => node.id === 5)?.agent_version === "1.2.0", "legacy node says so")
+assert.ok(nodeList(now).find((node) => node.id === 1)?.agent_version === "1.2.0", "legacy node says so")
 
 const gapped = history(4, "metrics", 168, 168, now).metrics
 let holes = 0
@@ -45,7 +45,7 @@ assert.ok(flagged.every((row) => (row.retx as number) > 0), "a zero is an absent
 
 // A hub from before the metric: no key at all, on the answer or on any row.
 {
-  const old = history(5, "ping", 6, 180, now)
+  const old = history(1, "ping", 6, 180, now)
   assert.ok(!("retx" in old), "an old hub answers without the retransmit map")
   assert.ok(old.ping.length > 0, "and still has samples to draw")
   assert.ok(old.ping.every((row) => !("retx" in row)), "with no bucket marked")

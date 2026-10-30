@@ -94,6 +94,11 @@ const SPECS: Spec[] = [
     monthUsed: 0.38, rxBase: 2.6 * MiB, txBase: 5.4 * MiB,
     cpuBase: 18, cpuAmp: 9, memPct: 0.46, diskPct: 0.31,
     tcp: 96, udp: 14, procs: 132, uptime: 92 * 86400, probes: [1, 2, 3], online: true,
+    // The fleet's old hub: no swap/socket/process history, no peaks, and no
+    // retransmit metric -- so its card runs no quality strip at all, and its
+    // detail page has no quality card. Next to the node below it, it is also the
+    // side-by-side of what a card looks like on each kind of hub.
+    legacy: true,
     publicRemark: "CN2 GIA 回程，晚高峰偶有拥塞。限速 100 Mbps。",
   },
   {
@@ -139,11 +144,9 @@ const SPECS: Spec[] = [
     monthUsed: 0.12, rxBase: 1.1 * MiB, txBase: 1.8 * MiB,
     cpuBase: 9, cpuAmp: 5, memPct: 0.33, diskPct: 0.19,
     tcp: 41, udp: 6, procs: 88, uptime: 168 * 86400,
-    // Two probes: the panel must fill the row rather than leave a hole. And this
-    // is the fleet's old hub -- no swap/socket/process history, no peaks, and no
-    // retransmit metric at all, so its card is where the quality strip has to be
-    // absent rather than green.
-    legacy: true,
+    // Two probes: the panel must fill the row rather than leave a hole, and two
+    // is the count that shows what a card does with the line it saves -- it keeps
+    // the same two columns as three and spends the room on MIN/MAX.
     probes: [1, 2], online: true,
   },
   {
