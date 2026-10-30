@@ -259,16 +259,15 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
                     <XAxis {...timeAxis(rows, hours)} />
                     {/* Not anchored at zero: these lines live in a narrow band
                         far from it, and zero flattens every wobble. */}
-                    {/* `auto`: the axis is as wide as `180ms`, not as wide as a
-                        constant chosen for the widest window. On a phone the
-                        difference is a fifth of the drawing.
-
-                        No label at zero: the first clock tick sits in the corner
-                        directly below it, and two labels for one gap read as a
-                        collision. The baseline stays, so a line at rest still
-                        hugs the floor rather than floating. */}
+                    {/* 48px: enough for `180ms` and for the first clock tick's
+                        label to hang beside it -- an axis fitted exactly to its
+                        own text (`width="auto"`) leaves the time label nowhere to
+                        go. No label at zero: the first clock tick sits in the
+                        corner directly below it, and two labels for one gap read
+                        as a collision. The baseline stays, so a line at rest hugs
+                        the floor rather than floating. */}
                     <YAxis
-                      width="auto"
+                      width={48}
                       domain={["auto", "auto"]}
                       tickFormatter={hideZero((value) => `${Math.round(value)}ms`)}
                       {...AXIS}

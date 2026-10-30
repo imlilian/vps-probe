@@ -19,12 +19,18 @@ export const COLOR = {
 export const AXIS = { stroke: "currentColor", fontSize: 11, tickLine: false, axisLine: false } as const
 
 /**
- * The stacked panels' value axes. The width follows the labels rather than a
- * constant: `auto` measures what the ticks actually say, and a constant wide
- * enough for `100 MB/s` spent 68px of the plot on a phone, where the card is
- * 300px wide -- a fifth of the drawing, empty.
+ * The stacked panels' value axes.
+ *
+ * 56 and not `auto`. `auto` fits the axis to its own labels and nothing more,
+ * which sounds ideal and is not: the first clock tick of the X axis sits at the
+ * plot's left edge, its label centred on it, so half that label falls in the
+ * axis's column -- with the column exactly as wide as the Y labels, the two sets
+ * of text land on top of each other and the time looks like it was dropped. The
+ * axis keeps a few pixels of room for its neighbour, which is also why it is not
+ * the 68 it started as: `100 MB` needs 44, and the rest was a phone's fifth of
+ * the drawing.
  */
-export const VALUE_AXIS = { ...AXIS, width: "auto", interval: 0 } as const
+export const VALUE_AXIS = { ...AXIS, width: 56, interval: 0 } as const
 
 /** The grid and crosshair the panels share; `2 4` at the hairline token. */
 export const GRID = { strokeDasharray: "2 4", className: "stroke-border-soft", vertical: false } as const

@@ -258,7 +258,7 @@ function NetworkPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRo
               ticks={ticks}
               tickFormatter={hideZero((value) => `${axisBytes(value)}/s`)}
               {...AXIS}
-              width="auto"
+              width={68}
               interval={0}
             />
             <Tooltip {...TOOLTIP} formatter={(value) => detailRate(Number(value))} />
