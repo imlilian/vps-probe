@@ -73,15 +73,20 @@ export function ChartCard({ icon: Icon, tone, title, subtitle, note, legend, emp
       {/* The plot gets 192px, 224px past xl: a longer aspect than 160px gave,
           and enough to keep a 30-day line from reading as a texture. A sentence
           takes the same box, so switching a series off does not move the cards
-          below it. */}
+          below it.
+          
+          `mt-4` and not `mt-2`: the heading and the plot were 8px apart on every
+          card, which read as a caption stuck to a title. The card's height is
+          free -- the grid stretches every card in a row to the tallest anyway --
+          so the 8px buys the reading distance the heading needs. */}
       {empty != null ? (
-        <div className="mt-2 grid h-48 w-full place-items-center text-sm text-muted-foreground xl:h-56">{empty}</div>
+        <div className="mt-4 grid h-48 w-full place-items-center text-sm text-muted-foreground xl:h-56">{empty}</div>
       ) : (
-        <div className="mt-2 h-48 w-full text-muted-foreground xl:h-56" role="img" aria-label={`${title} 曲线`}>
+        <div className="mt-4 h-48 w-full text-muted-foreground xl:h-56" role="img" aria-label={`${title} 曲线`}>
           {children}
         </div>
       )}
-      {legend != null && <div className="mt-2">{legend}</div>}
+      {legend != null && <div className="mt-3">{legend}</div>}
     </Card>
   )
 }

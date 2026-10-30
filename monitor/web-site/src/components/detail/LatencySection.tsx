@@ -8,7 +8,7 @@ import { Card } from "@/components/ui/card"
 import { Chip } from "@/components/ui/chip"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { Node } from "@/lib/api"
-import { AXIS, GRID, LINE, TOOLTIP, probeStyle, timeAxis } from "@/lib/chart"
+import { AXIS, GRID, hideZero, LINE, TOOLTIP, probeStyle, timeAxis } from "@/lib/chart"
 import { pingWindows } from "@/lib/format"
 import { fmtLoss, fmtPct } from "@/lib/ping"
 import { usePingHistory } from "@/lib/history"
@@ -249,7 +249,7 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
                 平滑峰值
               </Chip>
             </div>
-            <div className="mt-2 h-80 text-muted-foreground" role="img" aria-label="延迟曲线">
+            <div className="mt-4 h-80 text-muted-foreground" role="img" aria-label="延迟曲线">
               {shown.length === 0 ? (
                 <p className="py-8 text-center text-sm">没有选中任何探测</p>
               ) : (
@@ -261,8 +261,18 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
                         far from it, and zero flattens every wobble. */}
                     {/* `auto`: the axis is as wide as `180ms`, not as wide as a
                         constant chosen for the widest window. On a phone the
-                        difference is a fifth of the drawing. */}
-                    <YAxis unit="ms" width="auto" domain={["auto", "auto"]} {...AXIS} />
+                        difference is a fifth of the drawing.
+
+                        No label at zero: the first clock tick sits in the corner
+                        directly below it, and two labels for one gap read as a
+                        collision. The baseline stays, so a line at rest still
+                        hugs the floor rather than floating. */}
+                    <YAxis
+                      width="auto"
+                      domain={["auto", "auto"]}
+                      tickFormatter={hideZero((value) => `${Math.round(value)}ms`)}
+                      {...AXIS}
+                    />
                     <Tooltip
                       {...TOOLTIP}
                       formatter={(value, name, item) => {

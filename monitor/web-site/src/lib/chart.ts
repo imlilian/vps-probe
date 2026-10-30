@@ -53,6 +53,18 @@ export const PEAK = {
   strokeDasharray: "6 3",
 } as const
 
+/**
+ * A tick that prints nothing at the baseline.
+ *
+ * Every one of these cards has a time label in the corner below the axis, and a
+ * `0 B` printed at that same corner is two labels fighting for one gap -- which
+ * is what made `20:30` look shoved up against `0 B`. The baseline itself stays,
+ * because an area chart that does not start at zero lies about the fill; only its
+ * label goes, which is what charts on the web do everywhere.
+ */
+export const hideZero = (format: (value: number) => string) => (value: unknown) =>
+  Number(value) === 0 ? "" : format(Number(value))
+
 export const CPU_TICKS = [0, 20, 40, 60, 80, 100]
 
 export const TOOLTIP = {

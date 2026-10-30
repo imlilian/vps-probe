@@ -92,7 +92,7 @@ export function QualitySection({ series, hidden, hours }: {
           and gets whatever the two labels leave. The strip is the subject; it
           gets the width, and the blocks line up down the card because every row
           starts at the same x. */}
-      <div className="mt-2.5 space-y-2">
+      <div className="mt-4 space-y-2">
         {series.map((probe) => {
           // Blocks of seconds, from the buckets the chart above is drawn from:
           // one fold for the card and the detail page alike.
@@ -137,7 +137,7 @@ export function QualitySection({ series, hidden, hours }: {
         })}
       </div>
 
-      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-3xs text-muted-foreground">
+      <div className="mt-3.5 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-3xs text-muted-foreground">
         {QUALITY_LEGEND.map(({ quality, label }) => (
           <span key={quality} className="inline-flex items-center gap-1.5">
             <span className={cn("size-2 shrink-0 rounded-xs", QUALITY_FILL[quality])} aria-hidden />

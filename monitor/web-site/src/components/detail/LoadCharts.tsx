@@ -7,7 +7,7 @@ import {
 import { ChartFade } from "./ChartFade"
 import type { Node } from "@/lib/api"
 import {
-  AXIS, COLOR, CPU_TICKS, DERIVED, GRID, LINE, PEAK, TOOLTIP, VALUE_AXIS, timeAxis,
+  AXIS, COLOR, CPU_TICKS, DERIVED, GRID, hideZero, LINE, PEAK, TOOLTIP, VALUE_AXIS, timeAxis,
 } from "@/lib/chart"
 import { detailBytes, detailRate, diskForecast } from "@/lib/detail"
 import { decimate } from "@/lib/downsample"
@@ -81,7 +81,7 @@ function CpuPanel({ node, rows, hours, smooth, budget }: { node: Node; rows: Cha
             <ChartFade id={fade} color={COLOR.cpu} />
             <CartesianGrid {...GRID} />
             <XAxis {...timeAxis(chart, hours)} />
-            <YAxis domain={[0, 100]} ticks={CPU_TICKS} unit="%" {...VALUE_AXIS} />
+            <YAxis domain={[0, 100]} ticks={CPU_TICKS} tickFormatter={hideZero((v) => `${v}%`)} {...VALUE_AXIS} />
             <Tooltip {...TOOLTIP} formatter={(value, name) => [`${Number(value).toFixed(1)}%`, name]} />
             {!hidden.includes("cpu") && (
               <Area dataKey={smooth ? "cpu_s" : "cpu"} name="CPU" stroke={COLOR.cpu} fill={`url(#${fade})`} {...LINE} />
@@ -135,7 +135,12 @@ function MemoryPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow
             <ChartFade id={fade} color={COLOR.mem} />
             <CartesianGrid {...GRID} />
             <XAxis {...timeAxis(data, hours)} />
-            <YAxis domain={[0, node.mem_total]} ticks={quarters(node.mem_total)} tickFormatter={axisBytes} {...VALUE_AXIS} />
+            <YAxis
+              domain={[0, node.mem_total]}
+              ticks={quarters(node.mem_total)}
+              tickFormatter={hideZero(axisBytes)}
+              {...VALUE_AXIS}
+            />
             <Tooltip {...TOOLTIP} formatter={(value) => detailBytes(Number(value))} />
             {!hidden.includes("memTotal") && (
               <Line dataKey="mem_total" name="RAM 总量" stroke={COLOR.memTotal} {...DERIVED} />
@@ -186,7 +191,12 @@ function DiskPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRow[]
             <ChartFade id={fade} color={COLOR.disk} />
             <CartesianGrid {...GRID} />
             <XAxis {...timeAxis(data, hours)} />
-            <YAxis domain={[0, node.disk_total]} ticks={quarters(node.disk_total)} tickFormatter={axisBytes} {...VALUE_AXIS} />
+            <YAxis
+              domain={[0, node.disk_total]}
+              ticks={quarters(node.disk_total)}
+              tickFormatter={hideZero(axisBytes)}
+              {...VALUE_AXIS}
+            />
             <Tooltip {...TOOLTIP} formatter={(value) => detailBytes(Number(value))} />
             {!hidden.includes("diskTotal") && (
               <Line dataKey="disk_total" name="磁盘总量" stroke={COLOR.diskTotal} {...DERIVED} />
@@ -246,8 +256,7 @@ function NetworkPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRo
               scale="log"
               domain={domain}
               ticks={ticks}
-              tickFormatter={axisBytes}
-              unit="/s"
+              tickFormatter={hideZero((value) => `${axisBytes(value)}/s`)}
               {...AXIS}
               width="auto"
               interval={0}
@@ -291,7 +300,12 @@ function ConnectionsPanel({ node, rows, hours, budget }: { node: Node; rows: Cha
           <LineChart data={data}>
             <CartesianGrid {...GRID} />
             <XAxis {...timeAxis(data, hours)} />
-            <YAxis domain={[0, "auto"]} allowDecimals={false} {...VALUE_AXIS} />
+            <YAxis
+              domain={[0, "auto"]}
+              allowDecimals={false}
+              tickFormatter={hideZero((value) => String(Math.round(value)))}
+              {...VALUE_AXIS}
+            />
             <Tooltip {...TOOLTIP} formatter={(value) => Math.round(Number(value))} />
             {!hidden.includes("tcp") && <Line dataKey="tcp" name="TCP" stroke={COLOR.tcp} {...LINE} />}
             {!hidden.includes("udp") && <Line dataKey="udp" name="UDP" stroke={COLOR.udp} {...LINE} />}
@@ -316,7 +330,12 @@ function ProcessPanel({ node, rows, hours, budget }: { node: Node; rows: ChartRo
         <LineChart data={data}>
           <CartesianGrid {...GRID} />
           <XAxis {...timeAxis(data, hours)} />
-          <YAxis domain={[0, "auto"]} allowDecimals={false} {...VALUE_AXIS} />
+          <YAxis
+            domain={[0, "auto"]}
+            allowDecimals={false}
+            tickFormatter={hideZero((value) => String(Math.round(value)))}
+            {...VALUE_AXIS}
+          />
           <Tooltip {...TOOLTIP} formatter={(value) => Math.round(Number(value))} />
           <Line dataKey="procs" name="进程" stroke={COLOR.proc} {...LINE} />
         </LineChart>
