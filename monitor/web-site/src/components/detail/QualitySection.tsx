@@ -82,12 +82,12 @@ export function QualitySection({ series, hidden, hours }: {
             >
               <span className="truncate text-2xs text-muted-foreground">{probe.name}</span>
               <span className="tnum shrink-0 text-right text-2xs">
-                <span className={cn("font-medium", probe.loss > 0 ? "text-red-700 dark:text-red-400" : "text-muted-foreground")}>
-                  LOSS {fmtPct(probe.loss)}
-                </span>
-                <span aria-hidden className="text-border"> · </span>
                 <span className={cn("font-medium", probe.retx ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
                   RTX {fmtPct(probe.retx ?? null)}
+                </span>
+                <span aria-hidden className="text-border"> · </span>
+                <span className={cn("font-medium", probe.loss > 0 ? "text-red-700 dark:text-red-400" : "text-muted-foreground")}>
+                  LOSS {fmtPct(probe.loss)}
                 </span>
               </span>
               <SignalStrip

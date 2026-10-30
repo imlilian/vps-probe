@@ -78,8 +78,22 @@ function QualityStrip({ slots, clock, className }: { slots: Slot[]; clock: (ms: 
 function spoken(probe: ProbeStats, quality: boolean) {
   const latency = probe.timedOut ? "超时" : probe.reading !== null ? `${fmtMs(probe.reading)} 毫秒` : "无读数"
   const loss = probe.loss === null ? "无样本" : `丢包 ${fmtLoss(probe.loss)}%`
-  const retx = quality && probe.retx !== null ? `，重传 ${fmtLoss(probe.retx)}%` : ""
-  return `${probe.name}，延迟 ${latency}，${loss}${retx}`
+  // Spoken in the order the row prints them: mild before severe.
+  const retx = quality && probe.retx !== null ? `重传 ${fmtLoss(probe.retx)}%，` : ""
+  return `${probe.name}，延迟 ${latency}，${retx}${loss}`
+}
+
+/**
+ * The ink a quality figure earns: the colour of the step it reached, or plain
+ * muted grey where it reached nothing.
+ *
+ * A zero is a dash, and a dash in emerald is louder than the figure beside it
+ * that actually happened -- `LOSS -` painted green pulled the eye away from the
+ * `RTX 10%` that is the news, and a reader who only caught the word read it as
+ * a loss. What happened is what is coloured; what did not recedes.
+ */
+function qualityInk(pct: number | null, signal: number) {
+  return pct !== null && pct > 0 ? INK[signal] : INK[0]
 }
 
 /**
@@ -336,7 +350,11 @@ function Solo({ probe, hours, quality }: { probe: ProbeStats; hours: number; qua
           {/* One probe, no header: without a quality strip the loss figure stays
               beside the reading it belongs to, and with one the bottom row
               carries all four numbers. */}
-          {!quality && <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>LOSS {fmtPct(probe.loss)}</span>}
+          {!quality && (
+            <span className={cn("font-medium", qualityInk(probe.loss, lossSignal(probe.loss)))}>
+              LOSS {fmtPct(probe.loss)}
+            </span>
+          )}
         </span>
       </div>
       <Curve probe={probe} className="mt-1 min-h-8 flex-1" />
@@ -384,10 +402,12 @@ function SoloRow({ probe, className }: { probe: ProbeStats; className?: string }
  * 4.8, which is no loss: the two strips are equally legible, and the count, not
  * the width, is what carries the three-minute resolution.
  *
- * The reading is at the right edge of the left column, LOSS at the left edge of
- * the right one and RTX at its right -- two letters each, over the bar they
- * colour. No column header: at this width it was a row of words costing 12px of
- * height to say what `ms` and the percentages already say.
+ * The reading is at the right edge of the left column; in the right one RTX sits
+ * at the inner edge and LOSS at the outer -- mild before severe, as the legend
+ * reads and as `首包丢失 = 重传 + 丢包` does, with the worse figure landing where
+ * the eye stops. Two or three letters each, over the bar they colour. No column
+ * header: at this width it was a row of words costing 12px of height to say what
+ * `ms` and the percentages already say.
  */
 function Probe({
   probe, hours, extra = false, quality,
@@ -413,11 +433,15 @@ function Probe({
         </span>
         {quality ? (
           <span className="tnum flex items-baseline justify-between gap-1.5">
-            <span className={cn("font-medium", INK[lossSignal(probe.loss)])}>LOSS {fmtPct(probe.loss)}</span>
-            <span className={cn("font-medium", INK[probe.retx ? 4 : 0])}>RTX {fmtPct(probe.retx)}</span>
+            <span className={cn("font-medium", qualityInk(probe.retx, 4))}>RTX {fmtPct(probe.retx)}</span>
+            <span className={cn("font-medium", qualityInk(probe.loss, lossSignal(probe.loss)))}>
+              LOSS {fmtPct(probe.loss)}
+            </span>
           </span>
         ) : (
-          <span className={cn("tnum text-right font-medium", INK[lossSignal(probe.loss)])}>LOSS {fmtPct(probe.loss)}</span>
+          <span className={cn("tnum text-right font-medium", qualityInk(probe.loss, lossSignal(probe.loss)))}>
+            LOSS {fmtPct(probe.loss)}
+          </span>
         )}
       </div>
       <div className={cn("mt-1 grid gap-2", quality ? "grid-cols-2" : "grid-cols-1")}>
@@ -425,9 +449,18 @@ function Probe({
         {quality && <QualityStrip slots={probe.slots} clock={clock} />}
       </div>
       {/* Two probes leave the room three do not, and a link is worth more than its
-          last five minutes: the hour's median and its worst bucket are what tell
-          `a steady 230 ms` from `230 ms with a cliff`. */}
-      {extra && <StatRow probe={probe} className="mt-1" />}
+          last five minutes: the hour's ends are what tell `a steady 230 ms` from
+          `230 ms with a cliff`.
+          
+          Under the latency column and not across both columns: MIN and MAX are
+          the ends of the latency strip, and putting MAX at the card's right edge
+          drew a latency figure under the quality strip, where it read as that
+          strip's own range. */}
+      {extra && (
+        <div className={cn("mt-1 grid gap-2", quality && "grid-cols-2")}>
+          <StatRow probe={probe} />
+        </div>
+      )}
     </div>
   )
 }

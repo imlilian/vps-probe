@@ -66,6 +66,8 @@ export function ProbeCard({ stat, color, on, onClick }: {
     ...retxInfo,
     `丢包 ${spokenPct(stat.loss)}，样本 ${stat.samples}`,
   ].join("，")
+  // The printed row reads RTX before LOSS -- mild before severe, the order the
+  // legend and the card use -- so the sentence does too.
   const info = [
     `最小 ${ms(stat.min)}`,
     `最大 ${ms(stat.max)}`,
@@ -103,13 +105,13 @@ export function ProbeCard({ stat, color, on, onClick }: {
           <span>P50 {ms(stat.p50)} / P99 {ms(stat.p99)}</span>
         </span>
         <span className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 text-2xs text-muted-foreground">
-          <span>LOSS {fmtPct(stat.loss)}</span>
           {stat.retx !== null && (
             <>
-              <span>·</span>
               <span>RTX {fmtPct(stat.retx)}</span>
+              <span>·</span>
             </>
           )}
+          <span>LOSS {fmtPct(stat.loss)}</span>
         </span>
       </span>
     </button>

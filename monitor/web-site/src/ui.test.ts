@@ -213,13 +213,17 @@ try {
     assert.ok(!strip.includes(">延迟<"), "no header row")
     assert.ok(strip.includes("LOSS "), "the loss figure is labelled")
     assert.ok(strip.includes("RTX "), "and so is the retransmit rate")
+    // One order everywhere: the retransmit rate first, the loss at the outer
+    // edge, as the legend escalates and as the sentence above reads.
+    assert.ok(words(strip).indexOf("RTX") < words(strip).indexOf("LOSS"), "mild before severe")
     assert.ok(!strip.includes("丢包 · 重传"), "and the header's words are gone")
     // Each probe is one sentence to a screen reader, because the strips above are
-    // aria-hidden and twenty unlabelled boxes say nothing.
+    // aria-hidden and twenty unlabelled boxes say nothing. The sentence follows
+    // the printed order: mild before severe.
     assert.match(
       strip,
-      /aria-label="上海移动，延迟 \d+(\.\d)? 毫秒，丢包 \d+(\.\d)?%，重传 \d+(\.\d)?%"/,
-      "a probe row is spoken: name, latency, loss, retransmit",
+      /aria-label="上海移动，延迟 \d+(\.\d)? 毫秒，重传 \d+(\.\d)?%，丢包 \d+(\.\d)?%"/,
+      "a probe row is spoken: name, latency, retransmit, loss",
     )
     // The quality strip marks exceptions only: a third-strength green where
     // nothing went wrong, amber where a handshake came back late, rose where one
@@ -328,6 +332,9 @@ try {
     for (const want of ["MIN", "MAX"]) {
       assert.ok(pair.includes(want), `two probes can afford ${want}`)
     }
+    // Without a quality column the MIN/MAX row has the whole width to itself, as
+    // it always had.
+    assert.equal(pair.match(/mt-1 grid gap-2"/g)?.length, 2, "MIN/MAX spans the card on an old hub")
   } finally {
     globalThis.fetch = asked
     fetchPing(2)
@@ -354,7 +361,7 @@ try {
     assert.match(words(solo), /RTX [\d.]+%/, "the bottom row carries the retransmit rate")
     assert.match(words(solo), /LOSS [\d.]+%/, "beside the loss")
     // The colour of the strip's blocks and the figure above are the same reading.
-    assert.match(solo, /aria-label="上海电信，延迟 [^"]*，丢包 [^"]*，重传 [^"]*"/)
+    assert.match(solo, /aria-label="上海电信，延迟 [^"]*，重传 [^"]*，丢包 [^"]*"/)
   } finally {
     globalThis.fetch = asked
   }
@@ -371,9 +378,16 @@ try {
     // An even split, both rows: the quality column has to hold `LOSS 99.9%` and
     // `RTX 99.9%` side by side, and three fifths left it tight at a third of that.
     assert.equal(pair.match(/grid-cols-2 items-baseline/g)?.length, 2, "each reading row splits evenly")
-    assert.equal(pair.match(/mt-1 grid gap-2 grid-cols-2/g)?.length, 2, "and each strip row with it")
+    assert.equal(
+      pair.match(/mt-1 grid gap-2 grid-cols-2"><div class="grid gap-px/g)?.length, 2,
+      "and each strip row with it",
+    )
     assert.ok(pair.includes("LOSS ") && pair.includes("RTX "), "the two labels sit over their strip")
     assert.ok(pair.includes("h-31"), "and the well is the one fixed height")
+    // MIN and MAX stay in the latency column: they are the ends of that strip, and
+    // a MAX at the card's right edge read as the quality strip's own range.
+    assert.equal(pair.match(/grid-cols-2"><div class="tnum flex/g)?.length, 2,
+      "each MIN/MAX row stays under its own strip")
   } finally {
     globalThis.fetch = asked
     fetchPing(2)
@@ -715,6 +729,7 @@ try {
     assert.ok(card.includes("延迟 51 ms"), "the card leads with the latency")
     assert.ok(card.includes("P50 51 ms / P99 62 ms"), "and its two quantiles beside it")
     assert.ok(card.includes("RTX 2.1%") && card.includes("LOSS -"), "then the two failure figures")
+    assert.ok(card.indexOf("RTX") < card.indexOf("LOSS"), "in the same order the card uses")
     // A zero is a dash: the hub leaves it out of the answer, and the panel prints
     // the same absence.
     assert.ok(!card.includes("LOSS 0%"), "a clean window prints a dash, not a zero")
@@ -748,6 +763,7 @@ try {
     // The block length is the window's, and the title says which.
     assert.ok(quality.includes("首包重传与丢包 · 每块 3 分钟"), "the block length is stated")
     assert.ok(quality.includes("LOSS 3.3%") && quality.includes("RTX 4.7%"), "each row carries both figures")
+    assert.ok(quality.indexOf("RTX 4.7%") < quality.indexOf("LOSS 3.3%"), "retransmit before loss")
     assert.ok(quality.includes("LOSS -"), "and a quiet line shows a dash")
     // One row per probe, at the window's block count: an hour is twenty blocks of
     // three minutes, and the strip is a template rather than the card's twenty
