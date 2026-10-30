@@ -225,14 +225,14 @@ export function LatencySection({ node, historyDays }: { node: Node; historyDays:
 
           <Card className="min-w-0 gap-0 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
+              {/* The bucket's own length, beside the title rather than under it:
+                  it comes from the answer rather than a constant, and the unit is
+                  on the axis below. A caption on its own line under a 14px
+                  heading is what read as a draft -- and on a phone that line wraps
+                  first and strands the title. */}
+              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
                 <h3 className="text-sm font-semibold">延迟</h3>
-                {/* The bucket's own length, from the answer rather than a
-                    constant: the chart draws ten-minute points at a day and
-                    hour-long ones at a month, and `每桶中位数 · 毫秒` said neither
-                    -- the unit is on the axis below, and the `·` split two ideas
-                    into one line of 10px text under a 14px title. */}
-                <p className="mt-1 text-2xs text-muted-foreground">每 {span(answer.step || 60)} 的中位数</p>
+                <span className="text-2xs text-muted-foreground">每 {span(answer.step || 60)} 的中位数</span>
               </div>
               <Chip
                 pressed={smooth}

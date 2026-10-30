@@ -65,17 +65,29 @@ export function QualitySection({ series, hidden, hours }: {
 
   return (
     <Card className="min-w-0 gap-0 p-4">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
+      <div className="flex items-start justify-between gap-2">
+        {/* The block length rides beside the title rather than on a line of its
+            own: a caption under a 14px heading reads as a draft, and on a phone
+            the second line wraps first and leaves the heading alone. What the two
+            figures mean is the ⓘ's job, in a sentence. */}
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
           <h3 className="text-sm font-semibold">线路质量</h3>
-          <p className="mt-1 text-2xs text-muted-foreground">每块 {window.label} · 首包重传与丢包</p>
+          <span className="text-2xs text-muted-foreground">每块 {window.label}</span>
         </div>
         <span className="shrink-0 text-muted-foreground" role="img" title={EXPLAIN} aria-label={EXPLAIN}>
           <Info size={14} aria-hidden />
         </span>
       </div>
 
-      <div className="mt-2 space-y-1">
+      {/* Two lines per probe, the card's own rhythm: the figures above, the
+          strip across the full width below.
+          
+          It was one row -- name, figures, strip -- which reads well at 1400px and
+          falls apart on a phone, where the strip is the third column of a grid
+          and gets whatever the two labels leave. The strip is the subject; it
+          gets the width, and the blocks line up down the card because every row
+          starts at the same x. */}
+      <div className="mt-2.5 space-y-2">
         {series.map((probe) => {
           // Blocks of seconds, from the buckets the chart above is drawn from:
           // one fold for the card and the detail page alike.
@@ -89,28 +101,30 @@ export function QualitySection({ series, hidden, hours }: {
           return (
             <div
               key={probe.id}
-              className={cn("grid grid-cols-[1fr_auto_1fr] items-center gap-2", !on && "opacity-30")}
+              className={cn("min-w-0", !on && "opacity-30")}
               aria-label={`${probe.name}，重传 ${pct(probe.retx ?? null)}，丢包 ${pct(probe.loss)}`}
             >
-              <span className="truncate text-2xs text-muted-foreground">{probe.name}</span>
-              {/* Retransmit always, loss only when there was one: a clean line
-                  spends no column on a dash, and the strip beside it is green
-                  end to end. */}
-              <span className="tnum shrink-0 text-right text-2xs">
-                <span className={cn("font-medium", probe.retx ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
-                  RTX {fmtPct(probe.retx ?? null)}
+              <div className="flex items-baseline justify-between gap-2 text-2xs">
+                <span className="truncate text-muted-foreground">{probe.name}</span>
+                {/* Retransmit always, loss only when there was one: a clean line
+                    spends no column on a dash. */}
+                <span className="tnum shrink-0">
+                  <span className={cn("font-medium", probe.retx ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
+                    RTX {fmtPct(probe.retx ?? null)}
+                  </span>
+                  {probe.loss > 0 && (
+                    <>
+                      <span aria-hidden className="text-border"> · </span>
+                      <span className="font-medium text-red-700 dark:text-red-400">LOSS {fmtPct(probe.loss)}</span>
+                    </>
+                  )}
                 </span>
-                {probe.loss > 0 && (
-                  <>
-                    <span aria-hidden className="text-border"> · </span>
-                    <span className="font-medium text-red-700 dark:text-red-400">LOSS {fmtPct(probe.loss)}</span>
-                  </>
-                )}
-              </span>
+              </div>
               <SignalStrip
                 slots={slots}
                 clock={clock}
                 fill={qualityFill}
+                className="mt-1"
                 style={{ gridTemplateColumns: `repeat(${slots.length}, minmax(0, 1fr))` }}
               />
             </div>

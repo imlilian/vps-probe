@@ -251,6 +251,10 @@ try {
     // retransmit rate as a figure where an amber dot used to stand.
     const compact = block.replace(/<!-- -->/g, "")
     assert.match(compact, /RTX \d+(\.\d)?%/, "the retransmit rate is printed")
+    // The reading is pinned last, so its column never moves between cards; the
+    // figures that may be absent come before it.
+    const seen = compact.replace(/<[^>]+>/g, " ")
+    assert.ok(seen.indexOf("RTX") < seen.indexOf(" ms"), "the latency sits to the right of the optional figures")
     assert.ok(!compact.includes("grid-cols-20"), "and still no strip")
     assert.ok(!compact.includes("size-[3px]"), "the amber dot is gone: the number is shorter")
   }
@@ -776,7 +780,11 @@ try {
     })))
     assert.ok(quality.includes("线路质量"), "the quality card is titled")
     // The block length is the window's, and the title says which.
-    assert.ok(quality.includes("每块 3 分钟 · 首包重传与丢包"), "the block length is stated")
+    // The block length rides beside the title instead of under it: a caption on
+    // its own line under a 14px heading read as a draft, and wraps first on a
+    // phone.
+    assert.ok(quality.includes("每块 3 分钟"), "the block length is stated")
+    assert.ok(quality.includes("items-baseline gap-x-2"), "and it sits beside the title")
     assert.ok(quality.includes("LOSS 3.3%") && quality.includes("RTX 4.7%"), "each row carries both figures")
     assert.ok(quality.indexOf("RTX 4.7%") < quality.indexOf("LOSS 3.3%"), "retransmit before loss")
     // The second probe lost nothing, so its row names no loss at all.
@@ -784,8 +792,13 @@ try {
     // One row per probe, at the window's block count: an hour is twenty blocks of
     // three minutes, and the strip is a template rather than the card's twenty
     // fixed columns.
+    // Two lines per probe -- figures above, strip across the width below -- so
+    // the strip is not squeezed by a column of labels on a phone.
     assert.equal(quality.match(/repeat\(20, minmax\(0, 1fr\)\)/g)?.length, 2, "twenty blocks per probe")
     assert.equal(quality.match(/h-1 rounded-xs/g)?.length, 40, "two strips of twenty")
+    assert.equal(quality.match(/items-baseline justify-between gap-2 text-2xs/g)?.length, 2,
+      "each probe is a figures row above a full-width strip")
+    assert.ok(!quality.includes("grid-cols-[1fr_auto_1fr]"), "no three-column row to squeeze")
     // Amber where a handshake came back late, clean green where nothing did, and
     // the four legend entries under the rows.
     assert.ok(quality.includes("bg-signal-4"), "a retransmitted block is amber")

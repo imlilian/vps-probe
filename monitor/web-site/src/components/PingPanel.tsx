@@ -534,12 +534,13 @@ function useLazyPing(node: Node, hours: number) {
  * is the only thing a strip is better at than a number. Which probe and how bad
  * is one press away on the node's own page.
  *
- * The figures are the card's own: the reading, then the retransmit rate, then the
- * loss when there was one. An amber dot stood here for the retransmit rate --
- * "something came back late" without spending a number's width -- and the labels
- * are short enough now that the number itself fits in less space than the dot and
- * its tooltip took, so the dot is gone and the compact card says what the big one
- * says.
+ * The figures are the card's own, in the order a line reads: the two that may be
+ * absent, then the one that is always there. The reading is pinned to the right
+ * edge -- every node has one, so its column never moves -- and the retransmit
+ * rate, then a loss when there was one, sit to its left. Pinning the variable
+ * figures and right-aligning the fixed one is what keeps a column of these cards
+ * from looking ragged: a line with no loss simply has one less word before the
+ * number, rather than a hole in the middle of the row.
  */
 export function ProbeLines({ node, hours = HOURS }: { node: Node; hours?: number }) {
   const [ref, entry] = useLazyPing(node, hours)
@@ -561,8 +562,7 @@ export function ProbeLines({ node, hours = HOURS }: { node: Node; hours?: number
             aria-label={spoken(probe, probe.retxKnown)}
           >
             <span className="truncate text-muted-foreground">{probe.name}</span>
-            <span className="tnum flex shrink-0 items-baseline gap-1.5">
-              <span className={cn("font-semibold", INK[probeLatencySignal(probe)])}>{fmtLatency(reading(probe))}</span>
+            <span className="tnum flex shrink-0 items-baseline justify-end gap-1.5">
               {probe.retxKnown && (
                 <span className={cn("font-medium", qualityInk(probe.retx, 4))}>RTX {fmtPct(probe.retx)}</span>
               )}
@@ -571,6 +571,7 @@ export function ProbeLines({ node, hours = HOURS }: { node: Node; hours?: number
                   LOSS {fmtPct(probe.loss)}
                 </span>
               )}
+              <span className={cn("font-semibold", INK[probeLatencySignal(probe)])}>{fmtLatency(reading(probe))}</span>
             </span>
           </div>
         ))
