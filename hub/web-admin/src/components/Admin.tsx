@@ -1368,7 +1368,245 @@ function upgradeCommand(site: string) {
   return scriptCommand(site, () => ["--upgrade"])
 }
 
-export type Versions = { hub: string; hub_latest: string; agent_latest: string; notice: boolean }
+export type Versions = {
+  hub: string
+  hub_latest: string
+  agent_latest: string
+  /** The release's own name, as the source labels it; empty when it does not say. */
+  tag: string
+  /** The address releases are fetched from, as the hub resolved it. */
+  source: string
+  /** True where `--release-base` fixed that address, which locks the panel's field. */
+  source_fixed: boolean
+  /** Whether `source` is this project's own GitHub page. */
+  source_official: boolean
+  notice: boolean
+}
+
+/** What "测试" learns about a release source; see the hub's `release_source`. */
+export type SourceProbe = {
+  source: string
+  fixed: boolean
+  /** The address probed is typed but not saved, so nothing uses it yet. */
+  draft: boolean
+  version_url: string
+  tag?: string
+  hub?: string
+  agent?: string
+  download?: string
+  asset_base?: string
+  assets?: { arch: string; url: string; error: string | null }[]
+  error: string | null
+}
+
+/** One probe of the release source, of `draft` when the field holds an unsaved one. */
+const probeSource = (draft?: string) =>
+  api<SourceProbe>("/release/source", {
+    method: "POST",
+    body: JSON.stringify(draft ? { release_source: draft } : {}),
+  })
+
+/** One line of the source's own answer. */
+function Answer({ label, value, mono = true }: { label: string; value: React.ReactNode; mono?: boolean }) {
+  return (
+    <div className="flex gap-3">
+      <span className="w-17 shrink-0 text-muted-foreground">{label}</span>
+      <span className={`min-w-0 flex-1 break-all ${mono ? "font-mono" : ""}`}>{value}</span>
+    </div>
+  )
+}
+
+/**
+ * Where releases come from, and the two answers that go with it: this project's
+ * own GitHub page, optionally behind a proxy; or a mirror of one's own.
+ *
+ * On this page rather than the settings page, where the GitHub proxy used to
+ * live: both halves decide what the rest of the page reports and which binary
+ * every node installs, and a field that changes an outcome belongs beside it.
+ *
+ * The two are mutually exclusive because they answer one question. A proxy in
+ * front of github.com does nothing for a mirror that states its own address, and
+ * a source address that is only read when the official one is not in play would
+ * be a field that does nothing -- worse than one that is not there.
+ */
+function ReleaseSource({ versions, reload }: { versions: Versions; reload: () => void }) {
+  const { s, saved, set, save } = useSettings()
+  const [probe, setProbe] = useState<SourceProbe | null>(null)
+  const [testing, setTesting] = useState(false)
+  const [saving, setSaving] = useState(false)
+  // Which of the two the card is showing. The stored value answers it on open;
+  // picked here it stays a draft until saved, so switching back and forth costs
+  // nothing.
+  const [picked, setPicked] = useState<"official" | "mirror" | null>(null)
+
+  // Read once on opening, so the card shows what the source says now rather than
+  // what it said when the panel started. It is a small file, and a mirror that is
+  // down answers with the reason within ten seconds.
+  useEffect(() => {
+    let live = true
+    probeSource()
+      .then((answer) => live && setProbe(answer))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [])
+
+  if (!s) return null
+  const stored = String(saved?.release_source ?? "")
+  const proxy = String(s.github_proxy ?? "")
+  const fixed = versions.source_fixed
+  // A fixed source is not in the panel's setting -- it is on the command line --
+  // so the card opens on the mirror half and shows the address the hub reported,
+  // which is the only place it is written down outside the unit file.
+  const kind = picked ?? (fixed || stored ? "mirror" : "official")
+  const typed = fixed ? versions.source : String(s.release_source ?? "")
+
+  async function test() {
+    setTesting(true)
+    try {
+      setProbe(await probeSource(kind === "mirror" && typed !== stored ? typed : undefined))
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  // One button for whichever half is on screen: the card asks a single question,
+  // so it has a single answer to store.
+  async function commit() {
+    setSaving(true)
+    const done = kind === "mirror" ? "发布源已保存" : "GitHub 代理已保存"
+    const patch: Record<string, string> =
+      kind === "mirror" ? { release_source: typed } : { github_proxy: proxy }
+    if (await save(patch, done)) {
+      reload()
+      await test()
+    }
+    setSaving(false)
+  }
+
+  const shown = probe
+  // Whichever half is on screen, a change to it is a draft: the proxy is a setting
+  // like the source, and the two share this card's one save button.
+  const dirty =
+    !fixed && (kind === "mirror" ? typed !== stored : proxy !== String(saved?.github_proxy ?? ""))
+
+  return (
+    <Card className="gap-4 p-5">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-medium">发布源</h3>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            「有没有新版本」和给节点装 agent 的二进制都从这里取。官方源是 GitHub 的发布页，可以再套一层代理；自建源是你自己的镜像——Gitee、Gitea、内网目录都行。
+            <Help width="max-w-72 min-[448px]:max-w-96">
+              <p>源可换，<span className="whitespace-nowrap">信任锚是签名不是源</span>：versions.json 本身没有签名，换源最多让面板显示错版本、让 hub 去别的地址取文件。agent 二进制要过编译进 hub 的 ed25519 公钥，装不进来。</p>
+              <p>hub 自身永不自我更新：升级 hub 永远走 install-hub.sh。</p>
+              <p>自建源目录里要有 versions.json 和 probe-hub-/probe-agent-&lt;arch&gt;-unknown-linux-musl 及各自的 .sig；资产不放在同一目录时，由 versions.json 的 download 字段指过去。仓库里的 scripts/mirror.sh 就是照这个形状做镜像的。</p>
+            </Help>
+          </p>
+        </div>
+        {fixed && <Badge variant="secondary">安装器固定</Badge>}
+      </div>
+
+      {/* A fixed source is the unit file's answer: shown, not editable, since a
+          stored value would be ignored and the panel would be lying about what
+          the hub uses. */}
+      <div className="flex gap-2">
+        {([["official", "官方源"], ["mirror", "自建源"]] as const).map(([value, label]) => (
+          <Button
+            key={value}
+            size="sm"
+            variant={kind === value ? "default" : "outline"}
+            disabled={fixed || saving}
+            onClick={() => setPicked(value)}
+          >
+            {label}
+          </Button>
+        ))}
+      </div>
+
+      {kind === "official" ? (
+        <Field
+          label="GitHub 代理"
+          hint={fixed ? "这一项对安装器固定的自建源没有作用" : "留空直连；只在 hub 拉不到 GitHub 的发布物时填"}
+          helpWidth="max-w-58 min-[376px]:max-w-86"
+          help={<p>agent 有签名校验，只填信得过的镜像。它只影响 hub 往 GitHub 取发布物，不影响浏览器。</p>}
+        >
+          <Input value={proxy} onChange={(e) => set("github_proxy", e.target.value)} placeholder="https://ghfast.top" disabled={fixed} />
+        </Field>
+      ) : (
+        <Field
+          label="源地址"
+          hint={
+            fixed
+              ? "由安装器的 --release-base 固定，面板里改不了；换源要重跑 install-hub.sh"
+              : "填目录，不要带 /versions.json；末尾的 / 会被忽略。http 也能用（签名才是信任锚），只是不保密"
+          }
+        >
+          <Input
+            value={typed}
+            onChange={(e) => set("release_source", e.target.value)}
+            placeholder="https://dl.example.com/vps-probe"
+            disabled={fixed}
+          />
+        </Field>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" onClick={commit} disabled={fixed || saving || testing}>
+          {saving ? "保存中…" : "保存"}
+        </Button>
+        <Button size="sm" variant="secondary" onClick={test} disabled={testing}>
+          <Send /> {testing ? "测试中…" : "测试"}
+        </Button>
+        {dirty && <span className="text-2xs text-warn">有未保存的改动</span>}
+      </div>
+
+      {/* What the source actually says, which is the part a wrong address hides:
+          a 404 page parses as neither, and a mirror without .sig parses fine and
+          fails only on a node. */}
+      {shown && (
+        <div className="space-y-1 rounded-lg border bg-muted/30 p-3 text-xs">
+          {shown.error ? (
+            <p className="text-destructive">取不到：{shown.error}</p>
+          ) : (
+            <>
+              <Answer label="versions" value={shown.version_url} />
+              <Answer
+                label="发布"
+                value={[shown.tag && `v${shown.tag}`, shown.hub && `hub ${shown.hub}`, shown.agent && `agent ${shown.agent}`]
+                  .filter(Boolean)
+                  .join(" · ") || "源上没有说版本"}
+              />
+              <Answer label="资产目录" value={shown.asset_base} />
+              {shown.assets?.map((asset) => (
+                <Answer
+                  key={asset.arch}
+                  label={asset.arch}
+                  mono={false}
+                  value={
+                    asset.error ? (
+                      <span className="text-destructive" title={asset.url}>
+                        {asset.error}
+                      </span>
+                    ) : (
+                      <span title={asset.url}>签名文件在</span>
+                    )
+                  }
+                />
+              ))}
+            </>
+          )}
+          {shown.draft && <p className="text-warn">这是上面还没保存的地址</p>}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+
 
 /**
  * What is running and what is published. Read once per panel load: the hub holds
@@ -2650,18 +2888,6 @@ function SettingsTab({ onSaved, hubSite, siteFixed }: { onSaved: () => void; hub
               />
             </div>
           </Field>
-          <Field
-            label="GitHub 代理"
-            hint="留空直连，只在 hub 拉不到 agent 的 GitHub Release 时填"
-            helpWidth="max-w-58 min-[376px]:max-w-86"
-            help={<p>agent 有签名校验，只填信得过的镜像。</p>}
-          >
-            <Input
-              value={String(s.github_proxy ?? "")}
-              onChange={(e) => set("github_proxy", e.target.value)}
-              placeholder="https://ghfast.top"
-            />
-          </Field>
         </div>
         <div className="space-y-4">
           <SwitchRow
@@ -2708,7 +2934,6 @@ function SettingsTab({ onSaved, hubSite, siteFixed }: { onSaved: () => void; hub
                 // `||` rather than `??`: an emptied box saves the default, ""
                 // being the one value this key's write path refuses.
                 retention_days: String(s.retention_days || "30"),
-                github_proxy: String(s.github_proxy ?? ""),
                 origin_cdn_only: s.origin_cdn_only === "on" ? "on" : "off",
                 // Strict for the same reason: this form is saved whole, so a
                 // value the switch did not mean would be written here instead.
@@ -2739,6 +2964,9 @@ const SAMPLE_NOTE: Record<string, string> = {
 }
 
 const PLACEHOLDERS = "{{title}} {{message}} {{node}} {{event}} {{site}} {{time}}"
+
+/** The port each protection is conventionally on; see `Security::default_port`. */
+const PORT_OF: Record<string, number> = { tls: 465, starttls: 587, none: 25 }
 
 // A starting point the hub offers for the webhook body. The templates live in
 // the hub rather than here: it is the renderer that has to cope with them, and
@@ -2880,6 +3108,17 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
     notify_webhook_body: text("notify_webhook_body"),
     ...typed("notify_webhook_url", "notify_webhook_headers"),
   })
+  const smtpPatch = () => ({
+    notify_smtp_host: text("notify_smtp_host"),
+    notify_smtp_port: text("notify_smtp_port"),
+    notify_smtp_security: text("notify_smtp_security"),
+    notify_smtp_user: text("notify_smtp_user"),
+    notify_smtp_from: text("notify_smtp_from"),
+    notify_smtp_to: text("notify_smtp_to"),
+    notify_smtp_subject: text("notify_smtp_subject"),
+    notify_smtp_text: text("notify_smtp_text"),
+    ...typed("notify_smtp_password"),
+  })
 
   // What a channel needs before a test means anything: Telegram a bot token and a
   // chat, Webhook a URL. The token and the URL are blank in the form when one is
@@ -2888,6 +3127,9 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
   const ready = {
     telegram: filled("notify_telegram_token", "notify_telegram_token_set") && text("notify_telegram_chat").trim() !== "",
     webhook: filled("notify_webhook_url", "notify_webhook_url_set"),
+    // The same two fields the hub needs to consider the channel configured; a
+    // password is not one of them, since a relay nearby takes none.
+    smtp: text("notify_smtp_host").trim() !== "" && text("notify_smtp_to").trim() !== "",
   }
 
   // Whether this card is only a draft. A secret cannot be compared -- the hub never
@@ -2897,13 +3139,17 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
   const unsaved = {
     telegram: changed(["notify_telegram_chat", "notify_telegram_text"], "notify_telegram_token"),
     webhook: changed(["notify_webhook_body"], "notify_webhook_url") || text("notify_webhook_headers") !== "",
+    smtp:
+      ["notify_smtp_host", "notify_smtp_port", "notify_smtp_security", "notify_smtp_user", "notify_smtp_from",
+        "notify_smtp_to", "notify_smtp_subject", "notify_smtp_text"].some((k) => text(k) !== String(saved?.[k] ?? ""))
+      || text("notify_smtp_password") !== "",
   }
 
   // The test sends this card's form, not the saved settings: an operator tuning a
   // channel gets that channel's own answer before committing it, and a half-typed
   // one never lands in the settings just to be tried. No save is implied here --
   // that is the difference between a test and a write.
-  async function test(channel: "telegram" | "webhook", form: Record<string, string>, drafting: boolean) {
+  async function test(channel: "telegram" | "webhook" | "smtp", form: Record<string, string>, drafting: boolean) {
     setTesting(channel)
     try {
       const { sent } = await api<{ sent: string[] }>(`/notify/test?channel=${channel}`, {
@@ -2930,7 +3176,7 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
       <Card className="gap-1 p-5">
         <h3 className="text-sm font-medium">通知渠道</h3>
         <p className="text-xs leading-relaxed text-muted-foreground">
-          Telegram 和 Webhook 配了哪个就发哪个，也可以同时用。每个渠道下面的「发送测试」按该栏当前的内容发一条，不需要先保存，也不会把没填完的配置写进去。离线通知在下方按节点打开；流量和到期提醒对填了额度、到期日的节点生效。
+          Telegram、Webhook 和 SMTP 邮件配了哪个就发哪个，也可以同时用。每个渠道下面的「发送测试」按该栏当前的内容发一条，不需要先保存，也不会把没填完的配置写进去。离线通知在下方按节点打开；流量和到期提醒对填了额度、到期日的节点生效。
         </p>
       </Card>
 
@@ -3055,6 +3301,141 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
           )}
           {s.notify_webhook_url_set && (
             <Button size="sm" variant="ghost" onClick={() => save({ notify_webhook_url: "", notify_webhook_headers: "" }, "已清除 Webhook")}>
+              清除
+            </Button>
+          )}
+        </div>
+      </ChannelCard>
+
+      <ChannelCard title="SMTP 邮件" configured={!!text("notify_smtp_host").trim() && !!text("notify_smtp_to").trim()}>
+        <div className="grid gap-4 sm:grid-cols-3">
+          <Field label="服务器" hint="主机名或 IP，不带端口">
+            <Input
+              value={text("notify_smtp_host")}
+              onChange={(e) => set("notify_smtp_host", e.target.value)}
+              placeholder="smtp.example.com"
+              autoComplete="off"
+            />
+          </Field>
+          <Field label="端口" hint="465 / 587 / 25">
+            <Input
+              type="number"
+              min={1}
+              max={65535}
+              value={text("notify_smtp_port")}
+              onChange={(e) => set("notify_smtp_port", e.target.value)}
+              placeholder="465"
+            />
+          </Field>
+          <Field
+            label="加密"
+            hint="必须和端口对上：465 是 tls，587 是 starttls"
+            helpWidth="max-w-62 min-[392px]:max-w-90"
+            help={
+              <>
+                <p>tls：连上就是加密的，一般是 465。starttls：先明文连上、握手后加密，一般是 587。不加密：本机或内网中继，通常是 25。</p>
+                <p>服务器没有提供 STARTTLS 时不会退化成明文——那等于把授权码发出去，所以直接报错。</p>
+                <p>证书按二进制里编译的根证书校验，自签证书的服务器只能走「不加密」，或者给它一张正经证书。</p>
+              </>
+            }
+          >
+            <Select
+              value={text("notify_smtp_security") || "tls"}
+              onValueChange={(value) => {
+                // The port follows the choice while it still is the previous
+                // choice's port: 465 with starttls is the mistake this prevents,
+                // and a port typed by hand is left alone.
+                const was = PORT_OF[text("notify_smtp_security") || "tls"]
+                set("notify_smtp_security", value)
+                if (!text("notify_smtp_port").trim() || text("notify_smtp_port") === String(was)) {
+                  set("notify_smtp_port", String(PORT_OF[value]))
+                }
+              }}
+            >
+              <SelectTrigger className="w-full" aria-label="选择加密方式">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper">
+                <SelectItem value="tls">tls（465）</SelectItem>
+                <SelectItem value="starttls">starttls（587）</SelectItem>
+                <SelectItem value="none">不加密（25）</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="用户名" hint="不填就不登录，本机中继通常不用">
+            <Input
+              value={text("notify_smtp_user")}
+              onChange={(e) => set("notify_smtp_user", e.target.value)}
+              placeholder="probe@example.com"
+              autoComplete="off"
+            />
+          </Field>
+          <Field label="密码 / 授权码" hint={secretHint("notify_smtp_password")}>
+            <Input
+              type="password"
+              autoComplete="off"
+              placeholder={s.notify_smtp_password_set ? "••••••••" : "邮箱的 SMTP 授权码，不是登录密码"}
+              value={text("notify_smtp_password")}
+              onChange={(e) => set("notify_smtp_password", e.target.value)}
+            />
+          </Field>
+          <Field label="发件人" hint="留空就用上面的用户名；很多服务要求它等于登录账号">
+            <Input
+              value={text("notify_smtp_from")}
+              onChange={(e) => set("notify_smtp_from", e.target.value)}
+              placeholder="Probe <probe@example.com>"
+            />
+          </Field>
+          <Field label="收件人" hint="多个用逗号隔开，最多 10 个">
+            <Input
+              value={text("notify_smtp_to")}
+              onChange={(e) => set("notify_smtp_to", e.target.value)}
+              placeholder="ops@example.com, me@example.com"
+            />
+          </Field>
+        </div>
+        <Field label="主题" hint={`占位符 ${PLACEHOLDERS}`}>
+          <Input value={text("notify_smtp_subject")} onChange={(e) => set("notify_smtp_subject", e.target.value)} placeholder="{{title}}" />
+        </Field>
+        <Field label="正文" hint={`纯文本。占位符 ${PLACEHOLDERS}`}>
+          <textarea rows={4} className={TEXTAREA} value={text("notify_smtp_text")} onChange={(e) => set("notify_smtp_text", e.target.value)} />
+        </Field>
+        <TemplatePreview template={text("notify_smtp_text")} site={text("site_name") || "Monitor"} />
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          常见填法：QQ 邮箱 <span className="whitespace-nowrap">smtp.qq.com 465 tls</span>、163 <span className="whitespace-nowrap">smtp.163.com 465</span>、
+          Gmail <span className="whitespace-nowrap">smtp.gmail.com 465</span>（要应用专用密码）、企业微信 <span className="whitespace-nowrap">smtp.exmail.qq.com 465</span>。
+          面板只发纯文本，不带附件，也不支持 OAuth 认证。
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" onClick={() => save(smtpPatch())}>
+            保存 SMTP
+          </Button>
+          {unsaved.smtp && <span className="text-2xs text-warn">有未保存的改动</span>}
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!!testing || !ready.smtp}
+            title={ready.smtp ? "按这一栏当前的内容发一封测试信，不保存设置" : "填好服务器和收件人才能测试"}
+            onClick={() => test("smtp", smtpPatch(), unsaved.smtp)}
+          >
+            <Send /> {testing === "smtp" ? "发送中…" : "发送测试"}
+          </Button>
+          {!ready.smtp && <span className="text-2xs text-muted-foreground">填好服务器和收件人才能测试</span>}
+          {s.notify_smtp_password_set && (
+            <Button size="sm" variant="ghost" onClick={() => save({ notify_smtp_password: "" }, "已清除 SMTP 密码")}>
+              清除密码
+            </Button>
+          )}
+          {!!text("notify_smtp_host").trim() && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() =>
+                save({ notify_smtp_host: "", notify_smtp_to: "", notify_smtp_password: "" }, "已清除 SMTP")
+              }
+            >
               清除
             </Button>
           )}
@@ -3695,10 +4076,13 @@ function Update({ versions, reload, nodes, site, refusal }: {
 
   return (
     <div className="space-y-4">
+      <ReleaseSource versions={versions} reload={reload} />
+
       {unreachable && (
         <Card className="p-5">
           <p className="text-sm text-muted-foreground">
-            查不到最新版本：这台 hub 连不上 api.github.com。GitHub 代理不作用于这一项。
+            查不到最新版本：这台 hub 读不到发布源（<span className="font-mono break-all">{versions.source}</span>
+            ）。上面「发布源」里的「测试」会说清是哪一步不通。
           </p>
         </Card>
       )}
@@ -3708,7 +4092,9 @@ function Update({ versions, reload, nodes, site, refusal }: {
           <h3 className="text-sm font-medium">hub</h3>
           <div className="flex items-center gap-3">
             <VersionPair current={versions.hub} latest={versions.hub_latest} />
-            {behind(versions.hub, versions.hub_latest) && (
+            {/* Only where the source is GitHub: the notes live on its tag page, and
+                a mirror serves the files, not the changelog they belong to. */}
+            {behind(versions.hub, versions.hub_latest) && versions.source_official && (
               <Button size="sm" variant="ghost" asChild>
                 <a href={releaseUrl(versions.hub_latest)} target="_blank" rel="noreferrer">
                   发布说明
@@ -3749,7 +4135,7 @@ function Update({ versions, reload, nodes, site, refusal }: {
                   <Button size="sm" variant="secondary" onClick={() => copy(upgrade)}>
                     <Copy className="size-4" /> 复制命令
                   </Button>
-                  {versions.agent_latest && (
+                  {versions.agent_latest && versions.source_official && (
                     <Button size="sm" variant="ghost" asChild>
                       <a href={releaseUrl(versions.agent_latest)} target="_blank" rel="noreferrer">
                         发布说明

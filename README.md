@@ -84,8 +84,24 @@ sudo sh install-hub.sh --purge         # 数据库和系统用户一起删
 sudo sh install-hub.sh --release-base https://dl.example.com/vps-probe
 ```
 
-那个地址下要有同名文件（`probe-hub-<arch>-unknown-linux-musl` 和它的 `.sig`、`versions.json`）。
-拿不到 tag 只影响屏幕上那行版本，不影响安装。装完 `probe-hub --version` 可以核对实际版本。
+那个地址下要有同名文件（`probe-hub-<arch>-unknown-linux-musl` 和它的 `.sig`、`versions.json`）；
+资产不放在同一目录时，由 `versions.json` 的 `download` 字段指过去。拿不到 `versions.json`
+只影响屏幕上那行版本，不影响安装。装完 `probe-hub --version` 可以核对实际版本。
+
+**这个地址会被记住**：写进 systemd 单元（`--release-base`），所以面板的「更新」页照着它取版本、
+给节点转发 agent 二进制，并且那一页写明「安装器固定」、面板里改不了——换源就重跑安装器，改回
+官方源用 `--release-base official`。升级（不带参数的 `sh install-hub.sh --upgrade`）会沿用上次的
+源，不会悄悄退回 GitHub。
+
+自己做镜像用 `scripts/mirror.sh`，它读官方 `versions.json`、拷走两个架构的二进制与 `.sig`、
+生成带 `tag` 与 `download` 的新 `versions.json`，再 rsync 到你的目录：
+
+```sh
+scripts/mirror.sh --dest /srv/dl/vps-probe --public-base https://dl.example.com/vps-probe
+```
+
+漏了 `.sig` 它会直接报错退出——那个漏项在节点上的表现是「签名校验不通过，已丢弃下载的文件」，
+看着像被投毒。镜像侧的缓存：`versions.json` 用 `max-age=300`，资产用 `immutable`。
 
 ## 安装 agent
 
@@ -141,6 +157,23 @@ curl -fsSL https://your-hub/install-agent.sh | sh -s -- --uninstall
 - **允许登录的用户列表是必填的，空着谁也登不进去**。这是故意的：留空等于 provider 上的任何
   账号都能进面板。匹配的是 `preferred_username`，所以 scope 里带了 `profile`。
 - GitHub 登录的允许列表同理，匹配的是 GitHub 用户名；scope 只有 `read:user`。
+
+## 通知
+
+节点掉线与恢复、流量越过阈值、到期与自动续期、面板登录，都能推到下面三个渠道。配了哪个就发
+哪个，也可以同时用；每个渠道都能先「发送测试」再保存（面板「通知」页，离线通知还要在下方按
+节点打开，默认关）。
+
+| 渠道 | 要填什么 | 说明 |
+|---|---|---|
+| Telegram | Bot Token + Chat ID | 纯文本模板 |
+| Webhook | URL（+ 可选请求头、请求体模板） | 请求体是 JSON 模板，自带飞书/钉钉/企业微信/Slack/Discord/Bark 预设 |
+| SMTP 邮件 | 服务器、端口、加密方式、账号、收件人 | 支持用户名密码（含授权码），465 `tls` / 587 `starttls` / 25 不加密 |
+
+模板占位符：`{{title}} {{message}} {{node}} {{event}} {{site}} {{time}}`。邮件按编进二进制的
+根证书校验证书，自签证书的中继只能走「不加密」（内网中继的常见形态）；服务器没提供 STARTTLS
+时不会退化成明文，而是直接报错。只发纯文本，不带附件，也不支持 OAuth 认证——Gmail 用应用
+专用密码即可。
 
 ## 健康检查（接外部 uptime）
 
@@ -199,6 +232,15 @@ make test     # 前端测试 + cargo test
 同时含两个组件的全部资产：本次没改的组件**原样继承**上一版的二进制 + 签名（不重编译、
 不重签），CI 从两个 Cargo.toml 生成 `versions.json` 随 release 发布，面板读它区分
 「hub/agent 是否需要更新」，读不到则回退 tag（旧 hub 的行为不变）。
+
+`versions.json` 的形状（`tag` 只用于显示，不参与拼 URL，镜像可以改成可读标签）：
+
+```json
+{"tag": "v1.1.0", "hub": "1.1.1", "agent": "1.1.0", "download": "https://dl.example.com/vps-probe/v1.1.0"}
+```
+
+`download` 由镜像脚本写（`scripts/mirror.sh`），官方 GitHub 的发布物里没有这一项——那里的
+`latest/download` 本身就是稳定地址。
 
 版本号别手改，交给脚本，bump 谁由参数决定：
 

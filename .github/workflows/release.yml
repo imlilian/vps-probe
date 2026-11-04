@@ -206,8 +206,12 @@ jobs:
             gh release download "$PREV_TAG" -p 'probe-agent-*-musl*' -D dist/ --clobber
           fi
           # 2) Changed components are in dist/ already, built and signed above.
-          # 3) versions.json, from the manifests alone.
-          printf '{"hub":"%s","agent":"%s"}\n' \
+          # 3) versions.json, from the manifests alone, plus the tag: the two
+          #    versions say what is inside the release, the tag says which release
+          #    it is. The panel shows the tag and never joins a URL from it, so a
+          #    mirror is free to relabel it.
+          printf '{"tag":"%s","hub":"%s","agent":"%s"}\n' \
+            "$GITHUB_REF_NAME" \
             "$(sed -n 's/^version = "\(.*\)"/\1/p' hub/Cargo.toml)" \
             "$(sed -n 's/^version = "\(.*\)"/\1/p' agent/Cargo.toml)" > dist/versions.json
           # 4) The sums cover every binary this release ships, inherited ones

@@ -20,7 +20,12 @@ REPO="imlilian/vps-probe"
 # what a relocated repository or a company-internal copy amounts to. Re-running
 # this script is the upgrade, so a released copy staying put is correct -- the
 # binary is what moves.
-BASE="https://github.com/$REPO/releases/latest/download"
+#
+# When it has been moved, the hub is told: the same address is written into the
+# unit and passed as `--release-base`, which is what makes the panel fetch agents
+# from the same mirror. See the `args=` line in install_hub.
+DEFAULT_BASE="https://github.com/$REPO/releases/latest/download"
+BASE="$DEFAULT_BASE"
 SERVICE="probe-hub"
 UNIT="/etc/systemd/system/probe-hub.service"
 # Everything but the unit lives under one directory: the binary at the top and
@@ -42,6 +47,7 @@ PORT="28080"
 PORT_SET=""
 SITE=""
 SITE_SET=""
+BASE_SET=""
 YES=""
 FORCE=""
 PURGE=""
@@ -241,6 +247,18 @@ install_hub() {
 		*--site\ *) SITE="${carried##*--site }"; SITE="${SITE%% *}" ;;
 		esac
 	fi
+	# Same for the source. Without this, one `--upgrade` would quietly point a
+	# mirror deployment back at GitHub -- and the panel, told the source, would
+	# show the flag's absence as "official" with nothing to explain the change.
+	if [ -z "$BASE_SET" ]; then
+		carried="$(old_exec)"
+		case "$carried" in
+		*--release-base\ *) BASE="${carried##*--release-base }"; BASE="${BASE%% *}" ;;
+		esac
+		# The unit is the only record, and a hand-edited one could hold anything;
+		# the download below is what would fail if it were wrong.
+		[ -z "$BASE" ] || BASE="${BASE%/}"
+	fi
 	check_port "$PORT"
 
 	# Before anything is stopped, replaced or downloaded: a port conflict must
@@ -315,34 +333,38 @@ install_hub() {
 		[ ! -f "$SOURCE.sig" ] || cp "$SOURCE.sig" "$tmp/$asset.sig"
 		ok "来源" "$SOURCE"
 	else
-		# The tag comes from GitHub's own redirect for "latest", so there is no API
-		# call to be rate-limited and no JSON to parse. Only the first hop carries
-		# it -- the chain ends on release-assets.githubusercontent.com, whose URL
-		# contains no tag -- so this must not follow redirects. A missing asset
-		# still redirects, so the download below is what catches an architecture
-		# that was never published.
-		tag="$(curl -fsSI -o /dev/null -w '%{redirect_url}' "$BASE/$asset" 2>/dev/null |
-			sed -n 's#.*/download/\([^/]*\)/.*#\1#p')" || true
-		# Not fatal: the tag is a label on screen, and the file that matters is
-		# fetched below and verified by signature. A source that does not answer
-		# GitHub's "latest" redirect -- a mirror serving plain files, or a forge
-		# without that route -- can still install; it just cannot say which release
-		# this is, and the download below reports a real failure if there is one.
-		[ -n "$tag" ] || warn "查不到最新发布版的 tag（源不可达，或它不是 GitHub 那种 \"latest\" 布局）；继续按 $BASE 下载"
-		# A tag is only the release's sequence number; versions.json, written by
-		# CI from hub/Cargo.toml, says which hub the release actually
-		# carries. It is a best-effort read: a release without it (older, or the
-		# file failed to download) shows the tag alone, which is still true.
-		ver="$(curl -fsSL --max-time 10 "$BASE/versions.json" 2>/dev/null |
-			sed -n 's/.*"hub": *"\([^"]*\)".*/\1/p' | head -1)" || ver=""
-		# Whatever is known, and nothing said when neither is: a source with no tag
-		# and no versions.json still installs, and "版本  " with a blank would read
-		# as a bug rather than as an unlabelled release.
-		[ -z "$tag$ver" ] || ok "版本" "${tag:-（未标注的发行）}${ver:+（hub $ver）}"
+		# One read of the source's versions.json, and the only place this script
+		# learns anything about the release: which tag it is, which hub version it
+		# carries, and -- where a forge does not keep its assets beside the file --
+		# which directory they are in. Read through a variable rather than piped
+		# three times, since it is one small file.
+		#
+		# Everything in it is best effort. A source that has never published the
+		# file (this project before it existed), or that is momentarily unreadable,
+		# installs exactly as it did before: the tag and version are labels on
+		# screen, and what matters -- the binary and its signature -- is fetched
+		# below and verified against the key.
+		meta="$(curl -fsSL --max-time 10 "$BASE/versions.json" 2>/dev/null || true)"
+		tag="$(printf '%s' "$meta" | sed -n 's/.*"tag": *"\([^"]*\)".*/\1/p' | head -1)"
+		ver="$(printf '%s' "$meta" | sed -n 's/.*"hub": *"\([^"]*\)".*/\1/p' | head -1)"
+		dir="$(printf '%s' "$meta" | sed -n 's/.*"download": *"\([^"]*\)".*/\1/p' | head -1)"
+		# Whatever is known, and nothing said when neither is: "版本  " with a blank
+		# would read as a bug rather than as an unlabelled release.
+		if [ -n "$tag$ver" ]; then
+			ok "版本" "${tag:-（未标注的发行）}${ver:+（hub $ver）}"
+		else
+			warn "源上没有 versions.json（或它不可读）：按 $BASE 直接下载，屏幕上不会有版本号"
+		fi
+		# Where this release's files are. A stable versions.json next to assets
+		# that live under a per-release path says so here; a source that keeps
+		# them together -- GitHub's `latest/download` is one -- needs nothing.
+		DIR="${dir:-$BASE}"
+		DIR="${DIR%/}"
+		[ "$DIR" = "$BASE" ] || ok "资产" "$DIR"
 
-		curl -fsSL --max-time 300 "$BASE/$asset" -o "$tmp/$asset" || die "二进制下载失败：$BASE/$asset"
-		curl -fsSL --max-time 30 "$BASE/$asset.sig" -o "$tmp/$asset.sig" ||
-			die "签名下载失败：$BASE/$asset.sig"
+		curl -fsSL --max-time 300 "$DIR/$asset" -o "$tmp/$asset" || die "二进制下载失败：$DIR/$asset"
+		curl -fsSL --max-time 30 "$DIR/$asset.sig" -o "$tmp/$asset.sig" ||
+			die "签名下载失败：$DIR/$asset.sig"
 		ok "下载" "$(du -h "$tmp/$asset" | cut -f1)"
 	fi
 
@@ -385,6 +407,17 @@ install_hub() {
 	# every proxy's default upstream; the hub binds one address, not both.
 	args="--listen 127.0.0.1:$PORT --db $DATA/probe.db"
 	[ -z "$SITE" ] || args="$args --site $SITE"
+	# The source goes into the unit rather than into the database: it is how this
+	# host was installed, it survives every upgrade through this script, and the
+	# hub then answers the panel with it -- which is why the panel's own field is
+	# read-only there. `--site` is carried the same way and for the same reason.
+	[ "$BASE" = "$DEFAULT_BASE" ] || args="$args --release-base $BASE"
+	# What the unit said before is kept: a rollback that restores an older binary
+	# under a newer unit would hand it an argument it does not know, and the hub
+	# would refuse to start -- the one failure this rollback exists to prevent.
+	if [ -f "$UNIT" ]; then
+		cp -f "$UNIT" "$UNIT.old" || die "无法备份 $UNIT"
+	fi
 	cat >"$UNIT" <<UNIT
 [Unit]
 Description=probe hub
@@ -477,18 +510,25 @@ UNIT
 		# journal. A backup, if any, stays for the next run.
 		if [ -n "$first" ]; then
 			systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
-			rm -f "$DATA/probe.db" "$DATA/probe.db-wal" "$DATA/probe.db-shm"
+			rm -f "$DATA/probe.db" "$DATA/probe.db-wal" "$DATA/probe.db-shm" "$UNIT.old"
 			die "服务启动失败。日志：journalctl -u $SERVICE -n 50"
 		fi
 		if [ -n "$backup" ]; then
 			install -m 0755 "$backup" "$BIN"
 			rm -f "$backup"
+			# The unit goes back with it: the old binary knows nothing of a flag
+			# this run added, and a unit it cannot parse leaves the hub down --
+			# which is the state the rollback is here to avoid, not to produce.
+			if [ -f "$UNIT.old" ]; then
+				mv -f "$UNIT.old" "$UNIT"
+				systemctl daemon-reload
+			fi
 			systemctl restart "$SERVICE" 2>/dev/null || true
 			die "新版本没能启动，已回滚到上一版。日志：journalctl -u $SERVICE -n 50"
 		fi
 		die "服务启动失败。日志：journalctl -u $SERVICE -n 50"
 	fi
-	rm -f "$BIN.old"
+	rm -f "$BIN.old" "$UNIT.old"
 	ok "服务" "已启动并开机自启"
 
 	if [ -n "$first" ]; then done_title="安装完成"; else done_title="升级完成"; fi
@@ -505,6 +545,10 @@ UNIT
 		fi
 	fi
 	field "数据" "$DATA/probe.db"
+	if [ "$BASE" != "$DEFAULT_BASE" ]; then
+		field "发布源" "$BASE"
+		field "    " "${D}面板「更新」页照着用它，面板里改不了；换源重跑安装器${N}"
+	fi
 	field "服务" "systemctl status $SERVICE"
 	field "日志" "journalctl -u $SERVICE -f"
 	printf '\n'
@@ -586,7 +630,7 @@ uninstall_hub() {
 		confirm "卸载 probe hub？数据保留在 $DATA" || return 0
 	fi
 	systemctl disable --now "$SERVICE" 2>/dev/null || true
-	rm -f "$UNIT" "$BIN" "$BIN.old"
+	rm -f "$UNIT" "$UNIT.old" "$BIN" "$BIN.old"
 	systemctl daemon-reload
 	ok "服务" "已移除"
 	if [ -n "$PURGE" ]; then
@@ -661,11 +705,15 @@ probe hub 安装器
                  拿不到 Secure 标志）
   --from <file>  不从发布源取，改用本地文件；同名 .sig 要放在它旁边
   --release-base <url>
-                 换发布源：自建 Gitea、公司内网镜像、或者别的托管。它要和
-                 GitHub 的 latest/download 一样，在 <url>/ 下直接给出
-                 probe-hub-<arch>-unknown-linux-musl、同名 .sig 和 versions.json。
-                 二进制仍按签名校验，所以 http 的镜像也是安全的（少了保密，
-                 没有少验证）。拿不到 tag 只影响屏幕上那一行版本，不影响安装
+                 换发布源：自建 Gitea、公司内网镜像、或者别的托管。<url>/ 下
+                 要直接给出 probe-hub-<arch>-unknown-linux-musl、同名 .sig 和
+                 versions.json；资产不放在同一目录时，由 versions.json 的
+                 download 字段指过去。二进制仍按签名校验，所以 http 的镜像也是
+                 安全的（少了保密，没有少验证）。拿不到 versions.json 只影响
+                 屏幕上那行版本，不影响安装。
+                 这个地址会被记住：写进服务单元，面板的「更新」页照着它取版本和
+                 转发 agent 二进制，并且面板里改不了——换源就重跑安装器。改回
+                 官方源：--release-base official
   --yes, -y      跳过确认
   --force        升级时不管手上这份安装器是不是发布版里的那一份
   --help, -h     显示这段
@@ -676,8 +724,9 @@ hub 只监听 127.0.0.1，公网访问不到，需要自己配 nginx / caddy / C
 
 二进制按 ed25519 签名校验：签名私钥只在发布流水线里，任何机器上都没有，
 所以发布源被换掉也装不进来。校验不过直接拒绝，不落盘。
-重跑一次就是升级，起不来会自动回滚到上一版；没写的参数沿用上次的，升级
-不会把端口和 --site 冲掉。二进制和数据都在 $ROOT 下，服务账号是 $USER_NAME。
+重跑一次就是升级，起不来会自动回滚到上一版（服务单元一起回滚，否则旧二进制
+会不认识新参数）；没写的参数沿用上次的，升级不会把端口、--site 和
+--release-base 冲掉。二进制和数据都在 $ROOT 下，服务账号是 $USER_NAME。
 卸载默认保留数据和账号；--purge 把两者一起删掉（数据没了就没有理由再留一个
 固定属主，留下的账号会让重装拿到新 uid、认不出旧数据库）。
 TXT
@@ -691,7 +740,18 @@ while [ $# -gt 0 ]; do
 	--port) [ $# -ge 2 ] || die "--port 后面要跟端口号"; PORT="$2"; PORT_SET=1; shift 2 ;;
 	--site) [ $# -ge 2 ] || die "--site 后面要跟地址"; SITE="$2"; SITE_SET=1; shift 2 ;;
 	--from) [ $# -ge 2 ] || die "--from 后面要跟文件路径"; SOURCE="$2"; shift 2 ;;
-	--release-base) [ $# -ge 2 ] || die "--release-base 后面要跟地址"; BASE="${2%/}"; shift 2 ;;
+	--release-base)
+		[ $# -ge 2 ] || die "--release-base 后面要跟地址"
+		BASE="${2%/}"
+		# The way back. Without a word for it, a hub installed from a mirror could
+		# only return to GitHub by uninstalling, since the unit is what holds the
+		# answer and this script is what writes the unit.
+		case "$BASE" in
+		official | default) BASE="$DEFAULT_BASE" ;;
+		esac
+		BASE_SET=1
+		shift 2
+		;;
 	# Named for what it does, though it is also what a bare run does: the
 	# distinction users care about is install versus the other actions.
 	--upgrade) ACTION=install; shift ;;
@@ -742,6 +802,11 @@ http://?*)
 	warn "发布源走明文 http：$BASE。二进制仍然按签名校验，改动会被拒绝"
 	;;
 *) die "--release-base 要以 https:// 或 http:// 开头：$BASE" ;;
+esac
+# It goes into a unit file's ExecStart, which is split on spaces: one in the
+# address would silently end the argument and leave the rest as a stray flag.
+case "$BASE" in
+*[[:space:]]*) die "--release-base 里不能有空格或换行：$BASE" ;;
 esac
 [ "$(id -u)" = 0 ] || die "需要 root：sudo sh $0"
 # A local file needs no network, and uninstalling needs neither network nor
