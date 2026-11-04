@@ -1,8 +1,10 @@
 # 私有文档与本地 AI 工作区数据，不入库
-/docs/
+# docs/ 顶层是不带编号的常驻文档，随代码入库；docs/dev/ 是开发过程记录（中间产物），不入库。
+/docs/dev/
 /.workbuddy/
 /CLAUDE.md
 /.claude/
+/AGENTS.md
 
 # 运行期数据与本地环境
 *.db
