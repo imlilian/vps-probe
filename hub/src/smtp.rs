@@ -559,7 +559,7 @@ fn refused(step: Step, code: u16, text: &str) -> Failed {
         (Step::Auth, _) => "对方拒绝了这次登录",
         (Step::Mail, 550 | 553) => "发件人被拒绝：很多服务要求发件人就是登录账号本身",
         (Step::Mail, _) => "对方不接受这个发件人",
-        (Step::Rcpt, 550 | 551 | 552) => "收件人被拒绝：地址不对，或对方不收这个域",
+        (Step::Rcpt, 550..=552) => "收件人被拒绝：地址不对，或对方不收这个域",
         (Step::Rcpt, _) => "对方不接受这个收件人",
         (Step::Data, 552 | 554) => "邮件被拒收，多半被判成了垃圾邮件",
         (Step::Data, _) => "对方不接受这封信",
@@ -794,7 +794,7 @@ mod tests {
         let mut server = server();
         server.user = "probe".into();
         server.password = "wrong".into();
-        let failed = session(client, &server, &message(), false).await.err().expect("refused");
+        let failed = session(client, &server, &message(), false).await.expect_err("refused");
         assert!(!failed.retry, "a wrong password fails the same way next time");
         assert_eq!(failed.shown, "用户名或密码不对（535）");
         assert!(failed.reason.contains("535"), "the server's own words reach the log: {}", failed.reason);
@@ -815,7 +815,7 @@ mod tests {
             ],
             peer,
         );
-        let failed = session(client, &server(), &message(), false).await.err().expect("refused");
+        let failed = session(client, &server(), &message(), false).await.expect_err("refused");
         assert!(!failed.retry);
         assert!(failed.shown.starts_with("收件人被拒绝"), "{}", failed.shown);
         let _ = peer.await;
@@ -827,14 +827,14 @@ mod tests {
     async fn a_temporary_refusal_is_retried_and_a_permanent_one_is_not() {
         let (client, peer) = tokio::io::duplex(64 * 1024);
         let peer = relay(vec!["421 4.3.2 Service not available\r\n"], peer);
-        let failed = session(client, &server(), &message(), false).await.err().expect("refused");
+        let failed = session(client, &server(), &message(), false).await.expect_err("refused");
         assert!(failed.retry, "4xx is temporary");
         let _ = peer.await;
 
         // 5xx at the same step: the port is wrong, waiting will not fix it.
         let (client, peer) = tokio::io::duplex(64 * 1024);
         let peer = relay(vec!["554 5.3.2 No SMTP service here\r\n"], peer);
-        let failed = session(client, &server(), &message(), false).await.err().expect("refused");
+        let failed = session(client, &server(), &message(), false).await.expect_err("refused");
         assert!(!failed.retry, "5xx is permanent");
         assert!(failed.shown.contains("检查端口与加密方式"), "{}", failed.shown);
         let _ = peer.await;
@@ -849,7 +849,7 @@ mod tests {
             let (_, mut write) = tokio::io::split(peer);
             write.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").await.unwrap();
         });
-        let failed = session(client, &server(), &message(), false).await.err().expect("refused");
+        let failed = session(client, &server(), &message(), false).await.expect_err("refused");
         assert!(failed.shown.contains("不是邮件服务"), "{}", failed.shown);
         let _ = peer.await;
     }
@@ -862,7 +862,7 @@ mod tests {
         let peer =
             relay(vec!["220 mail.example.com ESMTP\r\n", "250-mail.example.com\r\n250 AUTH PLAIN\r\n"], peer);
         let mut conn = Conn::new(client);
-        let failed = begin_starttls(&mut conn).await.err().expect("refused");
+        let failed = begin_starttls(&mut conn).await.expect_err("refused");
         assert!(failed.shown.contains("没有提供 STARTTLS"), "{}", failed.shown);
         let _ = peer.await;
     }
@@ -933,7 +933,7 @@ mod tests {
         let mut server = server();
         server.user = "probe".into();
         server.password = "s3cret".into();
-        let failed = authenticate(&mut conn, &server, &caps).await.err().expect("refused");
+        let failed = authenticate(&mut conn, &server, &caps).await.expect_err("refused");
         assert!(failed.shown.contains("XOAUTH2"), "{}", failed.shown);
         let _ = peer.await;
     }
