@@ -43,6 +43,7 @@ PORT_SET=""
 SITE=""
 SITE_SET=""
 YES=""
+FORCE=""
 PURGE=""
 ACTION=""
 SOURCE=""
@@ -113,6 +114,13 @@ press() {
 # re-running the release URL is the upgrade. What matters is the binary, and that
 # is verified by signature below, so even a stale copy of this script installs
 # only bytes the release key signed.
+#
+# What a stale copy does that the signature cannot catch is run stale *logic*,
+# and that is not hypothetical: a copy from before an account rename performed
+# the rename check the old way, recreated the account it was renamed away from,
+# and handed it the data directory. The service then ran as that account, which
+# could walk the directory and not read the database inside it. So an upgrade
+# asks the release whether this copy is the current one -- see check_current.
 
 check_port() {
 	case "$1" in "" | *[!0-9]*) die "端口必须是 1-65535 的整数：$1" ;; esac
@@ -180,8 +188,39 @@ old_port() {
 	esac
 }
 
+# Refuses to upgrade with a copy of this script that is not the one the release
+# publishes, since running it would reinstall under whatever account name that
+# copy happens to know. Fatal rather than a warning: the failure this prevents is
+# silent, takes a running hub down, and is not repairable from the hub itself.
+#
+# Three cases keep it out of the way. `--from` installs a local binary on purpose
+# (offline host, working tree), a piped run has no saved copy to compare (`$0` is
+# the shell), and a source that cannot be reached must not block an upgrade -- an
+# offline mirror is a supported deployment, and `--force` says the operator knows.
+check_current() {
+	[ -z "$SOURCE" ] || return 0
+	[ -z "$FORCE" ] || return 0
+	[ -f "$0" ] || return 0
+	command -v cmp >/dev/null 2>&1 || return 0
+	fresh="$(mktemp)"
+	if curl -fsSL --max-time 20 "$BASE/install-hub.sh" -o "$fresh" 2>/dev/null; then
+		if ! cmp -s "$fresh" "$0"; then
+			rm -f "$fresh"
+			die "这份 install-hub.sh 与发布版里的不是同一份，继续跑会用它的旧逻辑（旧逻辑可能用旧账号名重装，并把 data/ 交给那个账号）。
+     升级请重新取一份：
+       curl -fsSL $BASE/install-hub.sh -o install-hub.sh && sudo sh install-hub.sh --upgrade
+     确实要用手上这份，加 --force"
+		fi
+	fi
+	rm -f "$fresh"
+}
+
 # ---- install ----
 install_hub() {
+	# Before anything is stopped, created or chowned: the copy of this script
+	# decides which account the hub is about to run as.
+	if [ -f "$BIN" ]; then check_current; fi
+
 	case "$(uname -m)" in
 	x86_64 | amd64) arch=x86_64 ;;
 	aarch64 | arm64) arch=aarch64 ;;
@@ -230,17 +269,36 @@ install_hub() {
 	first=""
 	[ -f "$DATA/probe.db" ] || first=1
 
-	# A database that is already here belongs to whichever account the last
-	# install created, and `install -d` above only re-owns the directory, not what
-	# is inside it. After the account was renamed -- or if the file was restored
-	# by root -- the hub starts as a uid that cannot open its own database: it
-	# exits, the rollback puts the previous binary back, and that binary fails the
-	# same way, with nothing on screen naming the owner as the cause.
+	# Everything under data/ has to belong to the account the service runs as, and
+	# `install -d` above owns only the directory -- not the database inside it. A
+	# half-finished migration leaves the two on different uids, which surfaces as
+	# "unable to open database file" from a process that can walk the directory
+	# and not read the 0600 file within it: an error naming neither the account
+	# nor the permission, followed by a rollback that fails the same way.
+	#
+	# Two different faults, told apart by whether the directory and the database
+	# agree:
+	#
+	#   * they disagree -- a rename that reached the files, a hand `chown` of one
+	#     of them, an account recreated under a name that was free. This
+	#     installer's own directory, so it is put right here rather than left for
+	#     an operator to find.
+	#   * they agree and are still not this account -- something else owns this
+	#     hub entirely: the account was renamed without telling this script, or
+	#     this copy of the script is older than the machine's install and would
+	#     reintroduce the name it was renamed away from. Not repaired, because
+	#     the repair would hand the database to the wrong account.
 	if [ -z "$first" ]; then
-		owner="$(stat -c %U "$DATA/probe.db" 2>/dev/null || true)"
-		if [ -n "$owner" ] && [ "$owner" != "$USER_NAME" ]; then
-			die "$DATA/probe.db 的属主是 $owner，不是 $USER_NAME：这台机器上的 hub 是另一个账号装的。
-     改名或换账号之后先跑 sudo chown -R $USER_NAME $DATA，再重跑本脚本"
+		uid_now="$(id -u "$USER_NAME")"
+		dir_uid="$(stat -c %u "$DATA" 2>/dev/null || true)"
+		db_uid="$(stat -c %u "$DATA/probe.db" 2>/dev/null || true)"
+		if [ -n "$db_uid" ] && [ -n "$dir_uid" ] && [ "$dir_uid" != "$db_uid" ]; then
+			chown -R "$USER_NAME" "$DATA" || die "无法把 $DATA 交给 $USER_NAME"
+			ok "属主" "data/ 已交给 $USER_NAME（目录与库原本分属两个账号）"
+		elif [ -n "$db_uid" ] && [ "$db_uid" != "$uid_now" ]; then
+			die "$DATA 属于账号 $(stat -c %U "$DATA/probe.db" 2>/dev/null)，不是 $USER_NAME。
+     这台机器上的 hub 是用另一个账号装的：要么账号改过名（先 sudo usermod -l $USER_NAME <旧名>），
+     要么这份 install-hub.sh 比机器上装的那份旧——用它只会把旧名字装回来。"
 		fi
 	fi
 
@@ -609,6 +667,7 @@ probe hub 安装器
                  二进制仍按签名校验，所以 http 的镜像也是安全的（少了保密，
                  没有少验证）。拿不到 tag 只影响屏幕上那一行版本，不影响安装
   --yes, -y      跳过确认
+  --force        升级时不管手上这份安装器是不是发布版里的那一份
   --help, -h     显示这段
 
 hub 只监听 127.0.0.1，公网访问不到，需要自己配 nginx / caddy / CF 隧道把
@@ -640,6 +699,9 @@ while [ $# -gt 0 ]; do
 	--purge) ACTION=uninstall; PURGE=1; shift ;;
 	--reset-password) ACTION=reset; shift ;;
 	--yes | -y) YES=1; shift ;;
+	# For the upgrade whose script is a local copy on purpose: a mirror host, a
+	# hand-edited BASE, a release candidate. See check_current.
+	--force) FORCE=1; shift ;;
 	-h | --help) usage; exit 0 ;;
 	*) die "未知参数：$1（--help 看用法）" ;;
 	esac

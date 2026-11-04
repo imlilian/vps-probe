@@ -55,10 +55,23 @@ OIDC 登录必须有这个地址：授权请求和换 token 都要原样带上�
 升级与卸载（重跑即升级，端口和 `--site` 沿用上次的，起不来自动回滚）：
 
 ```sh
+# 升级：安装器不自我替换，先重新取一份。
+# 手上那份如果不是发布版里的，--upgrade 会直接拒绝（加 --force 才继续）——
+# 旧脚本会用旧逻辑重装，包括它认识的那个旧账号名。
+curl -fsSL https://github.com/imlilian/vps-probe/releases/latest/download/install-hub.sh -o install-hub.sh
 sudo sh install-hub.sh --upgrade
+
+# 或者一条命令（没有终端时不进菜单，直接按参数装）
+curl -fsSL https://github.com/imlilian/vps-probe/releases/latest/download/install-hub.sh |
+  sudo sh -s -- --upgrade
+
 sudo sh install-hub.sh --uninstall     # 保留数据与系统用户
 sudo sh install-hub.sh --purge         # 数据库和系统用户一起删
 ```
+
+安装器不自替换是有意的：从网络取一个 shell 脚本并以 root 执行，等于以 root 执行任意代码，
+而被签名的是**二进制**，脚本没有签名。代价是"重跑手上那份"不等于升级，所以它至少会拒绝
+在旧副本上做升级。
 
 二进制、数据和服务账号：`/opt/probe/probe-hub`、`/opt/probe/data/probe.db`（0700，属主
 `probe-hub`）、账号 `probe-hub`（系统账号，无 home、nologin，跟服务名一致）。数据在，账号
