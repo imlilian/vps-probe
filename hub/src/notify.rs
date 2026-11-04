@@ -1,6 +1,6 @@
-//! Outbound alerts through a Telegram bot, a webhook with a JSON body template,
-//! or both. Channels are read from the settings at send time, so a panel edit
-//! applies to the next alert.
+//! Outbound alerts through a Telegram bot, a webhook with a JSON body template, an
+//! SMTP relay, or any combination of them. Channels are read from the settings at
+//! send time, so a panel edit applies to the next alert.
 //!
 //! Events: a node going offline and returning, a billing period's traffic
 //! crossing the threshold and the full allowance, expiry dates approaching or
@@ -68,6 +68,11 @@ const FLAP_GRACE: i64 = 1_800;
 pub const DEFAULT_BODY: &str =
     r#"{"event":"{{event}}","node":"{{node}}","title":"{{title}}","message":"{{message}}"}"#;
 pub const DEFAULT_TEXT: &str = "{{title}}\n{{message}}";
+/// Mail carries its own subject line, so the title is not repeated in the body:
+/// the notification shade shows the subject and the first line of the body, and
+/// the same text twice reads as an error.
+pub const DEFAULT_MAIL_SUBJECT: &str = "{{title}}";
+pub const DEFAULT_MAIL_TEXT: &str = "{{message}}\n\n{{site}} · {{time}}";
 
 /// Feishu (Lark) custom bot, as an interactive card: the coloured header carries
 /// the alert, the body the detail, the footer which hub it came from.
@@ -132,12 +137,53 @@ const NUMBERS: [(&str, i64, i64, i64, &str); 3] = [
 
 /// Credentials, reported to the panel only as set or unset. A webhook URL is
 /// commonly the credential itself (Discord, Slack, DingTalk, WeCom, Bark).
-const SECRETS: [&str; 3] = ["notify_telegram_token", "notify_webhook_url", "notify_webhook_headers"];
+const SECRETS: [&str; 4] =
+    ["notify_telegram_token", "notify_webhook_url", "notify_webhook_headers", "notify_smtp_password"];
+
+/// The most recipients one mail may carry. A relay refuses a long list rather than
+/// the message; this keeps the card from becoming a mailing list.
+const MAIL_RECIPIENTS: usize = 10;
 
 fn number(app: &App, key: &str) -> i64 {
     let (_, min, max, default, _) =
         NUMBERS.iter().copied().find(|(k, ..)| *k == key).expect("a numeric setting");
     app.db.get(key).and_then(|v| v.parse().ok()).filter(|n| (min..=max).contains(n)).unwrap_or(default)
+}
+
+/// The mail relay's protection, defaulting to implicit TLS: the one that encrypts
+/// from the first byte, and the one RFC 8314 puts submission on.
+fn security(app: &App) -> crate::smtp::Security {
+    app.db
+        .get("notify_smtp_security")
+        .and_then(|v| crate::smtp::Security::parse(v.trim()))
+        .unwrap_or(crate::smtp::Security::Tls)
+}
+
+/// The recipients in `notify_smtp_to`, one per line or comma: what a person types
+/// into a box, in either shape.
+fn mailboxes(value: &str) -> Vec<String> {
+    value.split([',', ';', '\n', '\r']).map(str::trim).filter(|a| !a.is_empty()).map(str::to_owned).collect()
+}
+
+/// Whether one recipient is plausible as a mailbox. Deliberately loose -- a relay
+/// may accept local addresses a stricter pattern would reject -- and strict about
+/// the two things that would corrupt the envelope command it goes into.
+fn mailbox(value: &str) -> bool {
+    let value = value.trim();
+    let address = match (value.rfind('<'), value.rfind('>')) {
+        (Some(open), Some(close)) if close > open => &value[open + 1..close],
+        (None, None) => value,
+        _ => return false,
+    };
+    let mut parts = address.split('@');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(local), Some(domain), None) => {
+            !local.is_empty()
+                && !domain.is_empty()
+                && !address.chars().any(|c| c.is_whitespace() || c == '<' || c == '>' || c == ',')
+        }
+        _ => false,
+    }
 }
 
 fn setting(app: &App, key: &str) -> Option<String> {
@@ -160,6 +206,23 @@ pub fn settings(app: &App, out: &mut serde_json::Map<String, Value>) {
     out.insert("notify_telegram_chat".into(), json!(app.db.get("notify_telegram_chat").unwrap_or_default()));
     out.insert("notify_telegram_text".into(), json!(template(app, "notify_telegram_text", DEFAULT_TEXT)));
     out.insert("notify_webhook_body".into(), json!(template(app, "notify_webhook_body", DEFAULT_BODY)));
+    out.insert("notify_smtp_host".into(), json!(app.db.get("notify_smtp_host").unwrap_or_default()));
+    // The two fields with a value the stored row does not always carry: an empty
+    // row means the default, and answering "" would have the panel show a blank
+    // box for a working configuration. Both are what this hub would use.
+    out.insert(
+        "notify_smtp_port".into(),
+        json!(app.db.get("notify_smtp_port").filter(|p| !p.is_empty()).unwrap_or_else(|| "465".into())),
+    );
+    out.insert("notify_smtp_security".into(), json!(security(app).name().to_owned()));
+    out.insert("notify_smtp_user".into(), json!(app.db.get("notify_smtp_user").unwrap_or_default()));
+    out.insert("notify_smtp_from".into(), json!(app.db.get("notify_smtp_from").unwrap_or_default()));
+    out.insert("notify_smtp_to".into(), json!(app.db.get("notify_smtp_to").unwrap_or_default()));
+    out.insert(
+        "notify_smtp_subject".into(),
+        json!(template(app, "notify_smtp_subject", DEFAULT_MAIL_SUBJECT)),
+    );
+    out.insert("notify_smtp_text".into(), json!(template(app, "notify_smtp_text", DEFAULT_MAIL_TEXT)));
     for key in SECRETS {
         out.insert(format!("{key}_set"), json!(setting(app, key).is_some()));
     }
@@ -202,6 +265,49 @@ pub fn setting_error(key: &str, value: &str) -> Option<String> {
             };
             (!valid).then_some("Telegram Chat ID 要填数字 ID 或 @用户名")
         }
+        // Empty clears a channel's field, or restores a template's default -- and
+        // for the two SMTP fields that carry a default, an empty row means the
+        // default too, so a cleared box is not an error.
+        "notify_smtp_host"
+        | "notify_smtp_port"
+        | "notify_smtp_security"
+        | "notify_smtp_user"
+        | "notify_smtp_password"
+        | "notify_smtp_from"
+        | "notify_smtp_to"
+        | "notify_smtp_subject"
+        | "notify_smtp_text"
+            if value.is_empty() =>
+        {
+            None
+        }
+        // The host is joined into `connect` and into the TLS server name, so it is
+        // a bare name or address: no scheme, no port, no path.
+        "notify_smtp_host" => (value.chars().any(|c| c.is_whitespace() || "/@:?".contains(c)))
+            .then_some("SMTP 服务器只填主机名或 IP，端口填在下一项"),
+        "notify_smtp_port" if !value.is_empty() => {
+            (!value.parse::<u16>().is_ok_and(|p| p > 0)).then_some("SMTP 端口要填 1 到 65535 之间的数字")
+        }
+        "notify_smtp_security" if !value.is_empty() => {
+            crate::smtp::Security::parse(value).is_none().then_some("加密方式只能是 tls、starttls 或 none")
+        }
+        // The sender may be `name@host` or `Name <name@host>`; the envelope takes
+        // the address inside the brackets and the header keeps both.
+        "notify_smtp_from" => {
+            (!mailbox(value)).then_some("发件人要写成 name@example.com，或 名称 <name@example.com>")
+        }
+        // Named in the answer, so the message is built rather than borrowed.
+        "notify_smtp_to" => {
+            let list = mailboxes(value);
+            if list.len() > MAIL_RECIPIENTS {
+                return Some(format!("收件人最多 {MAIL_RECIPIENTS} 个"));
+            }
+            if let Some(bad) = list.iter().find(|a| !mailbox(a)) {
+                return Some(format!("收件人 {bad} 不是一个邮箱地址"));
+            }
+            None
+        }
+        "notify_smtp_subject" | "notify_smtp_text" => None,
         // Plain http is accepted: a relay on the hub's own host or network is a
         // common target, and only an admin can set this.
         "notify_webhook_url" => (!reqwest::Url::parse(value)
@@ -284,6 +390,7 @@ fn render(template: &str, note: &Note, site: &str, json: bool) -> String {
 enum Channel {
     Telegram { token: String, chat: String, text: String },
     Webhook { url: String, headers: String, body: String },
+    Email { server: crate::smtp::Server, from: String, to: Vec<String>, subject: String, text: String },
 }
 
 impl Channel {
@@ -291,6 +398,7 @@ impl Channel {
         match self {
             Channel::Telegram { .. } => "Telegram",
             Channel::Webhook { .. } => "Webhook",
+            Channel::Email { .. } => "SMTP",
         }
     }
 }
@@ -312,6 +420,24 @@ pub struct Draft {
     notify_webhook_headers: Option<String>,
     #[serde(default)]
     notify_webhook_body: Option<String>,
+    #[serde(default)]
+    notify_smtp_host: Option<String>,
+    #[serde(default)]
+    notify_smtp_port: Option<String>,
+    #[serde(default)]
+    notify_smtp_security: Option<String>,
+    #[serde(default)]
+    notify_smtp_user: Option<String>,
+    #[serde(default)]
+    notify_smtp_password: Option<String>,
+    #[serde(default)]
+    notify_smtp_from: Option<String>,
+    #[serde(default)]
+    notify_smtp_to: Option<String>,
+    #[serde(default)]
+    notify_smtp_subject: Option<String>,
+    #[serde(default)]
+    notify_smtp_text: Option<String>,
 }
 
 impl Draft {
@@ -373,6 +499,56 @@ fn channels(app: &App, draft: Option<&Draft>) -> Vec<Channel> {
                 .template(template(app, "notify_webhook_body", DEFAULT_BODY), &draft.notify_webhook_body),
         });
     }
+    // A host and at least one recipient make a mail channel; the password does
+    // not, since a relay on the hub's own network commonly takes none. The port
+    // follows the protection chosen when it was left empty, because those two have
+    // to agree and swapping 465 with 587 is the usual mistake.
+    let host = Draft::shown(setting(app, "notify_smtp_host"), &draft.notify_smtp_host)
+        .filter(|h| !h.trim().is_empty());
+    let to = Draft::shown(setting(app, "notify_smtp_to"), &draft.notify_smtp_to).unwrap_or_default();
+    let to = mailboxes(&to);
+    if let (Some(host), true) = (host, !to.is_empty()) {
+        let protection = draft
+            .notify_smtp_security
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .and_then(crate::smtp::Security::parse)
+            .unwrap_or_else(|| security(app));
+        let port = Draft::shown(setting(app, "notify_smtp_port"), &draft.notify_smtp_port)
+            .and_then(|p| p.trim().parse::<u16>().ok())
+            .filter(|p| *p > 0)
+            .unwrap_or(protection.default_port());
+        let from = Draft::shown(setting(app, "notify_smtp_from"), &draft.notify_smtp_from)
+            .map(|f| f.trim().to_owned())
+            .filter(|f| !f.is_empty())
+            // A relay that insists the sender be the authenticated account is the
+            // common case, so an empty field means "the account".
+            .unwrap_or_else(|| {
+                Draft::shown(setting(app, "notify_smtp_user"), &draft.notify_smtp_user).unwrap_or_default()
+            });
+        out.push(Channel::Email {
+            server: crate::smtp::Server {
+                host: host.trim().to_owned(),
+                port,
+                security: protection,
+                user: Draft::shown(setting(app, "notify_smtp_user"), &draft.notify_smtp_user)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned(),
+                password: draft
+                    .keep(setting(app, "notify_smtp_password"), &draft.notify_smtp_password)
+                    .unwrap_or_default(),
+            },
+            from,
+            to,
+            subject: draft.template(
+                template(app, "notify_smtp_subject", DEFAULT_MAIL_SUBJECT),
+                &draft.notify_smtp_subject,
+            ),
+            text: draft
+                .template(template(app, "notify_smtp_text", DEFAULT_MAIL_TEXT), &draft.notify_smtp_text),
+        });
+    }
     out
 }
 
@@ -406,8 +582,40 @@ fn client() -> &'static reqwest::Client {
     })
 }
 
+/// The longest one mail may take, whole: connecting, the TLS handshake, every
+/// reply and the payload. Above the 15 s an HTTP channel gets, because a session
+/// is several round trips, and below the queue's tolerance for a channel that is
+/// merely slow.
+const MAIL_BUDGET: u64 = 30;
+
 async fn post(app: &App, channel: &Channel, note: &Note) -> Result<(), Failure> {
     let site = site_name(app);
+    // Mail is its own protocol, so it leaves before the HTTP request is built --
+    // and with a budget of its own: a relay that answers every step slowly would
+    // otherwise hold the alert queue for minutes, where an HTTP channel is bounded
+    // by its client's timeout.
+    if let Channel::Email { server, from, to, subject, text } = channel {
+        let message = crate::smtp::Message {
+            from: from.clone(),
+            to: to.clone(),
+            subject: render(subject, note, &site, false),
+            body: render(text, note, &site, false),
+        };
+        return match tokio::time::timeout(
+            Duration::from_secs(MAIL_BUDGET),
+            crate::smtp::send(server, &message),
+        )
+        .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(f)) => Err(Failure { retry: f.retry, reason: f.reason, shown: f.shown }),
+            Err(_) => Err(Failure {
+                retry: true,
+                reason: format!("the SMTP session took longer than {MAIL_BUDGET} s"),
+                shown: "邮件服务器太慢，这次没发出去".into(),
+            }),
+        };
+    }
     let request = match channel {
         // Plain text: under a parse mode Telegram rejects a message whose node
         // name happens to contain markup.
@@ -430,6 +638,8 @@ async fn post(app: &App, channel: &Channel, note: &Note) -> Result<(), Failure> 
             }
             client().post(url).headers(map).body(render(body, note, &site, true))
         }
+        // Handled above: a mail never reaches this match.
+        Channel::Email { .. } => unreachable!("mail is delivered before the request is built"),
     };
     // The URL is stripped from the error: Telegram's carries the bot token and a
     // webhook's is often the credential, and the error reaches both the journal
@@ -540,7 +750,7 @@ pub async fn test(_: Admin, State(app): State<Shared>, Query(which): Query<Which
     };
     let wanted = which.channel.as_deref().map(str::to_ascii_lowercase);
     if let Some(name) = &wanted {
-        if name != "telegram" && name != "webhook" {
+        if !matches!(name.as_str(), "telegram" | "webhook" | "smtp") {
             return answer(StatusCode::BAD_REQUEST, "没有这个通知渠道");
         }
     }
@@ -555,7 +765,8 @@ pub async fn test(_: Admin, State(app): State<Shared>, Query(which): Query<Which
             StatusCode::BAD_REQUEST,
             match wanted.as_deref() {
                 Some("telegram") => "还没有配置 Telegram",
-                Some(_) => "还没有配置 Webhook",
+                Some("webhook") => "还没有配置 Webhook",
+                Some(_) => "还没有配置 SMTP：服务器和至少一个收件人",
                 None => "还没有配置通知渠道",
             },
         );
@@ -867,6 +1078,168 @@ mod tests {
         serde_json::from_value(json).expect("a form the panel could send")
     }
 
+    /// The mail channel, as the card holds it: a host and one recipient are what
+    /// make it exist, the port follows the protection when it was left empty, the
+    /// sender falls back to the authenticated account, and none of it needs a
+    /// password (a relay on the hub's own network takes none).
+    #[test]
+    fn a_mail_channel_needs_a_host_and_a_recipient_and_fills_in_the_rest() {
+        let app = app();
+        assert!(channels(&app, None).is_empty(), "nothing stored, nothing to send");
+
+        // A host with no recipient is not a channel: there is nowhere to send.
+        app.db.set("notify_smtp_host", "mail.example.com").unwrap();
+        assert!(channels(&app, None).is_empty(), "no recipient yet");
+
+        app.db.set("notify_smtp_to", "ops@example.com, dev@example.com").unwrap();
+        let only = channels(&app, None);
+        assert_eq!(only.len(), 1);
+        match &only[0] {
+            Channel::Email { server, from, to, subject, text } => {
+                assert_eq!(server.host, "mail.example.com");
+                assert_eq!(server.port, 465, "implicit TLS is what an empty row means");
+                assert_eq!(server.security, crate::smtp::Security::Tls);
+                assert!(server.user.is_empty() && server.password.is_empty(), "a relay may want no account");
+                assert_eq!(to, &vec!["ops@example.com".to_owned(), "dev@example.com".to_owned()]);
+                assert_eq!(from, "", "nothing to fall back to either: the envelope says so");
+                assert_eq!(subject, DEFAULT_MAIL_SUBJECT);
+                assert_eq!(text, DEFAULT_MAIL_TEXT);
+            }
+            other => unreachable!(
+                "a mail form is {}, not {}",
+                Channel::Email {
+                    server: crate::smtp::Server {
+                        host: String::new(),
+                        port: 0,
+                        security: crate::smtp::Security::Plain,
+                        user: String::new(),
+                        password: String::new(),
+                    },
+                    from: String::new(),
+                    to: Vec::new(),
+                    subject: String::new(),
+                    text: String::new(),
+                }
+                .name(),
+                other.name()
+            ),
+        }
+
+        // A sender left blank is the account, which is what most relays require;
+        // and the port follows the protection chosen rather than the one stored.
+        app.db.set("notify_smtp_user", "probe@example.com").unwrap();
+        app.db.set("notify_smtp_security", "starttls").unwrap();
+        app.db.set("notify_smtp_port", "").unwrap();
+        match &channels(&app, None)[0] {
+            Channel::Email { server, from, .. } => {
+                assert_eq!(from, "probe@example.com", "the account names the sender");
+                assert_eq!(server.port, 587, "STARTTLS is 587 by convention");
+                assert_eq!(server.security, crate::smtp::Security::StartTls);
+            }
+            other => unreachable!("still mail, not {}", other.name()),
+        }
+
+        // An explicit port wins, even where it disagrees with the convention: a
+        // relay on a non-standard port is a real deployment.
+        app.db.set("notify_smtp_port", "2525").unwrap();
+        match &channels(&app, None)[0] {
+            Channel::Email { server, .. } => assert_eq!(server.port, 2525),
+            other => unreachable!("still mail, not {}", other.name()),
+        }
+    }
+
+    /// The card can be tried before it is saved, like the others: the form's host,
+    /// recipient, protection and password are the ones used, and the stored
+    /// password stands in where the form left the field blank.
+    #[test]
+    fn a_mail_test_sends_the_unsaved_form_and_keeps_the_stored_password() {
+        let app = app();
+        app.db.set("notify_smtp_password", "stored").unwrap();
+
+        let typed = draft(json!({
+            "notify_smtp_host": "mail.example.com",
+            "notify_smtp_to": "ops@example.com",
+            "notify_smtp_security": "none",
+            "notify_smtp_user": "probe",
+            "notify_smtp_password": "",
+            "notify_smtp_subject": "",
+        }));
+        match &channels(&app, Some(&typed))[0] {
+            Channel::Email { server, subject, .. } => {
+                assert_eq!(server.security, crate::smtp::Security::Plain);
+                assert_eq!(server.port, 25, "the protection's own port, not the stored 465");
+                assert_eq!(server.password, "stored", "a blank secret means the stored one");
+                assert_eq!(subject, DEFAULT_MAIL_SUBJECT, "a blank template means the default");
+            }
+            other => unreachable!("a mail form is mail, not {}", other.name()),
+        }
+        assert!(channels(&app, None).is_empty(), "and none of that reached the settings");
+    }
+
+    /// What the card may store: a host without a scheme or port, a port in range,
+    /// one of the three protections, plausible mailboxes on both ends, and a relay
+    /// that takes no credentials at all.
+    #[test]
+    fn a_mail_setting_is_held_to_what_the_dialogue_can_carry() {
+        assert_eq!(setting_error("notify_smtp_host", "mail.example.com"), None);
+        assert_eq!(setting_error("notify_smtp_host", "127.0.0.1"), None);
+        assert!(setting_error("notify_smtp_host", "smtp://mail.example.com").is_some(), "no scheme");
+        assert!(
+            setting_error("notify_smtp_host", "mail.example.com:587").is_some(),
+            "the port is its own field"
+        );
+        assert!(
+            setting_error("notify_smtp_host", "user@mail.example.com").is_some(),
+            "a name, not an address"
+        );
+        assert_eq!(setting_error("notify_smtp_host", ""), None, "clearing the channel");
+
+        assert_eq!(setting_error("notify_smtp_port", "587"), None);
+        assert_eq!(setting_error("notify_smtp_port", ""), None, "empty means the default");
+        assert!(setting_error("notify_smtp_port", "0").is_some());
+        assert!(setting_error("notify_smtp_port", "70000").is_some());
+        assert!(setting_error("notify_smtp_port", "五八七").is_some());
+
+        assert_eq!(setting_error("notify_smtp_security", "tls"), None);
+        assert_eq!(setting_error("notify_smtp_security", "starttls"), None);
+        assert_eq!(setting_error("notify_smtp_security", "none"), None);
+        assert_eq!(setting_error("notify_smtp_security", ""), None, "empty means the default");
+        assert!(setting_error("notify_smtp_security", "ssl").is_some(), "465 is called tls here");
+
+        assert_eq!(setting_error("notify_smtp_from", "probe@example.com"), None);
+        assert_eq!(setting_error("notify_smtp_from", "探针 <probe@example.com>"), None);
+        assert_eq!(setting_error("notify_smtp_from", ""), None, "empty means the account");
+        assert!(setting_error("notify_smtp_from", "probe").is_some(), "no @");
+        assert!(setting_error("notify_smtp_from", "probe@").is_some());
+        assert!(setting_error("notify_smtp_from", "a@b c@d").is_some(), "one address only");
+
+        assert_eq!(setting_error("notify_smtp_to", "ops@example.com"), None);
+        assert_eq!(setting_error("notify_smtp_to", "ops@example.com, dev@example.com"), None);
+        assert_eq!(setting_error("notify_smtp_to", "ops@example.com\ndev@example.com"), None);
+        assert!(setting_error("notify_smtp_to", "ops@example.com, oops").is_some(), "names the bad one");
+        let many = (1..=MAIL_RECIPIENTS + 1).map(|n| format!("a{n}@example.com")).collect::<Vec<_>>();
+        assert!(setting_error("notify_smtp_to", &many.join(",")).is_some(), "a card is not a mailing list");
+    }
+
+    /// The password is a secret like the others: reported as set or not, never
+    /// sent back.
+    #[test]
+    fn the_mail_password_is_never_read_back() {
+        use serde_json::Map;
+        let app = app();
+        let mut out = Map::new();
+        settings(&app, &mut out);
+        assert_eq!(out["notify_smtp_password_set"], false);
+        assert_eq!(out["notify_smtp_security"], "tls", "the default, so a save echoes something valid");
+        assert_eq!(out["notify_smtp_port"], "465");
+
+        app.db.set("notify_smtp_password", "s3cret").unwrap();
+        let mut out = Map::new();
+        settings(&app, &mut out);
+        assert_eq!(out["notify_smtp_password_set"], true);
+        assert!(!out.contains_key("notify_smtp_password"), "only the flag: {out:?}");
+    }
+
     /// The test button sends the card's own form, so a channel can be tried before
     /// it is saved -- and a secret the panel did not retype is the one the hub
     /// already holds, since it never sends a stored one back.
@@ -887,7 +1260,7 @@ mod tests {
                 assert_eq!((token.as_str(), chat.as_str()), ("1:AA-b_c", "-1001234"));
                 assert_eq!(text, DEFAULT_TEXT, "an empty template means the default one");
             }
-            Channel::Webhook { .. } => unreachable!("a Telegram form is Telegram"),
+            other => unreachable!("a Telegram form is Telegram, not {}", other.name()),
         }
 
         // Stored and then edited: what the form echoes wins, the blank secret keeps
@@ -905,7 +1278,7 @@ mod tests {
                 assert_eq!(chat, "-1001", "the edited chat does not");
                 assert_eq!(text, "typed");
             }
-            Channel::Webhook { .. } => unreachable!("a Telegram form is Telegram"),
+            other => unreachable!("a Telegram form is Telegram, not {}", other.name()),
         }
         assert_eq!(channels(&app, None).len(), 1, "and none of that was written to the settings");
 

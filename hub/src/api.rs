@@ -2,6 +2,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use axum::body::Bytes;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, FromRequestParts, Path, Query, Request, State};
@@ -1686,6 +1687,9 @@ const READABLE_SETTINGS: &[&str] = &[
     "oidc_provider_name",
     "retention_days",
     "github_proxy",
+    // Where releases are fetched from: empty is the project's own GitHub page.
+    // Read-only where the installer fixed it with `--release-base`.
+    "release_source",
     "update_notice",
     "favicon",
     "touch_icon",
@@ -2018,18 +2022,6 @@ pub async fn db_vacuum(_: Admin, State(app): State<Shared>) -> Response {
     }
 }
 
-/// How long a release lookup stands before the panel asks GitHub again, and how
-/// long a failed one does. The short retry keeps one unreachable moment from
-/// hiding an update for the rest of the day; the long one keeps a panel left
-/// open on a screen to four lookups a day, well inside the 60 per hour an
-/// unauthenticated caller is allowed.
-const RELEASES_FRESH: i64 = 6 * 3600;
-const RELEASES_RETRY: i64 = 600;
-
-/// The most a `versions.json` may weigh. It is two short version strings; this
-/// cap only keeps a redirected proxy page from being parsed as one.
-const MAX_VERSIONS_JSON: usize = 4096;
-
 /// What is running here, and what is published. The agent's own version travels
 /// in its hello and is already in the node list, so the panel compares the two
 /// itself and names the nodes to upgrade.
@@ -2039,104 +2031,178 @@ const MAX_VERSIONS_JSON: usize = 4096;
 /// is fetched until an administrator opens the panel, so a hub whose panel is
 /// never opened makes no outbound request.
 pub async fn versions(_: Admin, State(app): State<Shared>) -> Json<Value> {
-    // Poisoning is ignored on purpose. The lock holds a version number kept for
-    // display, so a write interrupted by a panic leaves nothing a reader has to
-    // trust; refusing to read it would take the panel down with it.
-    let cached = app.releases.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let latest = if fresh_enough(&cached, Utc::now().timestamp()) {
-        cached
-    } else {
-        let read = latest_versions(&app).await;
-        *app.releases.lock().unwrap_or_else(|e| e.into_inner()) = read.clone();
-        read
-    };
+    let latest = crate::releases_now(&app, crate::RELEASES_FRESH).await;
+    let source = crate::release_source(&app);
     Json(json!({
         "hub": env!("CARGO_PKG_VERSION"),
-        // Empty where GitHub could not be reached, which the panel renders as no
+        // Empty where the source could not be read, which the panel renders as no
         // update rather than as an error: a hub on a network that cannot reach
-        // github.com is a supported deployment, not a fault to report.
+        // github.com, or pointed at a mirror that is down, is a supported
+        // deployment, not a fault to report.
         "hub_latest": latest.hub,
         "agent_latest": latest.agent,
+        // The release's own name, for display only -- a mirror may relabel it, so
+        // nothing is ever joined from it. Empty for a release published before the
+        // field existed.
+        "tag": latest.tag,
+        // Where those numbers came from, so the page can say which source answered
+        // and whether the installer fixed it: the panel locks its own field when
+        // the command line owns the answer.
+        "source": source,
+        "source_fixed": !app.release_base.is_empty(),
+        "source_official": crate::is_official(&source),
         // Whether the navigation marks an update. It governs the mark alone: the
         // lookup runs either way, so the update page still answers when opened.
         "notice": app.db.get("update_notice").as_deref() != Some("off"),
     }))
 }
 
-/// The versions a release publishes for each component, read from its
-/// `versions.json` -- the only artifact that says which hub and which agent a
-/// tag carries, since the tag itself is just a sequence number. Falls back to
-/// the tag for both on any miss: a release cut before the file existed, or a
-/// hub that cannot reach GitHub at all, answers exactly as it did before.
-async fn latest_versions(app: &App) -> crate::Releases {
-    let url = crate::proxied(
-        app,
-        format!("https://github.com/{}/releases/latest/download/versions.json", crate::REPO),
-    );
-    let parsed = crate::fetch_asset(app, &url, "versions file", MAX_VERSIONS_JSON)
-        .await
-        .ok()
-        .and_then(|body| serde_json::from_slice::<ReleaseVersions>(&body).ok());
-    match parsed {
-        // Any empty field means the file is not saying; the tag is the better
-        // answer than a half-filled panel.
-        Some(v) if !v.hub.is_empty() && !v.agent.is_empty() => {
-            crate::Releases { read_at: Utc::now().timestamp(), hub: v.hub, agent: v.agent }
-        }
-        _ => {
-            let tag = latest_tag(app, crate::REPO).await;
-            crate::Releases {
-                read_at: Utc::now().timestamp(),
-                hub: tag.clone().unwrap_or_default(),
-                agent: tag.unwrap_or_default(),
-            }
-        }
+/// How long one probe of a release source may take, all of its requests
+/// together. Far below [`crate::RELAY_HEAD`], because this is a button an
+/// operator is watching rather than a transfer a node is waiting on.
+const SOURCE_PROBE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The architectures a release carries, as `install-agent.sh` asks for them.
+const PROBED_ARCHES: [&str; 2] = ["x86_64", "aarch64"];
+
+/// `POST /api/release/source`: what the release source answers right now.
+///
+/// The panel's 「测试」 button. Not part of `/api/version`, which answers from a
+/// cache up to six hours old on purpose -- the point of this route is to ask a
+/// source that was just typed, before it is saved, and to say why it cannot. The
+/// optional body is that draft (`{"release_source": "https://…"}`); without one
+/// this reads the source the hub is actually using.
+///
+/// What it answers is what an install would find: the versions file, the asset
+/// directory derived from it, and whether each architecture's signature is there
+/// beside its binary. The binaries themselves are not fetched -- that is 1.8 MB
+/// per architecture to prove something the node's own install verifies anyway --
+/// and a signature's *content* is not checked here either, which the panel says.
+pub async fn release_source(_: Admin, State(app): State<Shared>, body: Bytes) -> Response {
+    #[derive(Deserialize, Default)]
+    struct Draft {
+        #[serde(default)]
+        release_source: Option<String>,
     }
+    let draft = if body.is_empty() {
+        Draft::default()
+    } else {
+        match serde_json::from_slice::<Draft>(&body) {
+            Ok(draft) => draft,
+            Err(e) => return bad(&format!("测试参数无法解析：{e}")),
+        }
+    };
+    // A fixed source is not the panel's to test against something else: the
+    // command line owns the answer, and a probe of another address would describe
+    // a hub that is not this one.
+    let stored = app.db.get("release_source").unwrap_or_default();
+    let stored = stored.trim().trim_end_matches('/');
+    let mut drafted = false;
+    let source = if !app.release_base.is_empty() {
+        crate::release_source(&app)
+    } else {
+        match draft.release_source.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(typed) => {
+                if let Some(message) = source_error(typed) {
+                    return bad(&message);
+                }
+                let typed = typed.trim_end_matches('/');
+                drafted = typed != stored;
+                typed.to_owned()
+            }
+            None => crate::release_source(&app),
+        }
+    };
+    let mut answer = match tokio::time::timeout(SOURCE_PROBE, probe_source(&app, &source)).await {
+        Ok(Ok(answer)) => answer,
+        Ok(Err(reason)) => json!({"error": reason}),
+        Err(_) => json!({"error": format!("源在 {} 秒内没有回应", SOURCE_PROBE.as_secs())}),
+    };
+    if answer.get("version_url").is_none() {
+        answer["version_url"] = json!(crate::version_url_for(&app, &source));
+    }
+    answer["source"] = json!(source);
+    answer["fixed"] = json!(!app.release_base.is_empty());
+    // Whether this is a value the operator has typed but not saved. Said where
+    // they are looking, since a test that passes on a draft changes nothing until
+    // the field is stored.
+    answer["draft"] = json!(drafted);
+    Json(answer).into_response()
 }
 
-/// The two fields of `versions.json`, as CI writes it from the two manifests.
-#[derive(Deserialize)]
-struct ReleaseVersions {
-    hub: String,
-    agent: String,
+/// Everything one probe of `source` learns, or why it could not.
+async fn probe_source(app: &App, source: &str) -> Result<Value, String> {
+    let url = crate::version_url_for(app, source);
+    let versions = crate::read_versions_at(app, &url).await?;
+    let tag = versions.tag.trim().trim_start_matches('v').trim().to_owned();
+    let pick = |field: &str| {
+        let field = field.trim().to_owned();
+        if field.is_empty() {
+            tag.clone()
+        } else {
+            field
+        }
+    };
+    let base = crate::asset_base(&url, &versions.download);
+    let base = if versions.download.trim().is_empty() || !crate::is_official(source) {
+        base
+    } else {
+        crate::proxied(app, base)
+    };
+    // Only the signature is fetched: 64 bytes that answer "would an install find
+    // this asset", and the one thing a mirror most often forgets to copy.
+    let mut assets = Vec::new();
+    for arch in PROBED_ARCHES {
+        let asset = crate::release_url(&base, arch);
+        let sig = format!("{asset}.sig");
+        let state = match crate::fetch_asset(app, &sig, "agent signature", 64).await {
+            Ok(_) => json!({"arch": arch, "url": asset, "error": Value::Null}),
+            Err(e) => json!({"arch": arch, "url": asset, "error": e}),
+        };
+        assets.push(state);
+    }
+    Ok(json!({
+        "version_url": url,
+        "tag": tag,
+        "hub": pick(&versions.hub),
+        "agent": pick(&versions.agent),
+        "download": versions.download.trim(),
+        "asset_base": base,
+        "assets": assets,
+        "error": Value::Null,
+    }))
 }
 
-/// Whether the cached lookup still answers. One that returned nothing is held
-/// for [`RELEASES_RETRY`] instead, so a single unreachable moment does not hide
-/// an update for the rest of the day.
-fn fresh_enough(cached: &crate::Releases, now: i64) -> bool {
-    let holds =
-        if cached.hub.is_empty() || cached.agent.is_empty() { RELEASES_RETRY } else { RELEASES_FRESH };
-    // A negative age is a clock set back since the lookup, not a fresh one.
-    cached.read_at != 0 && (0..holds).contains(&(now - cached.read_at))
-}
-
-/// The tag of a repository's latest release, without its leading `v`, or None
-/// where GitHub could not be read, which costs only the update notice.
-async fn latest_tag(app: &App, repo: &str) -> Option<String> {
-    let tag = latest_release(app, repo).await.ok()?.tag_name;
-    Some(tag.strip_prefix('v').unwrap_or(&tag).to_owned())
-}
-
-/// The latest release of `owner/repo`. Unauthenticated: 60 requests per hour from
-/// this address. GitHub returns 403 without a User-Agent. Never through the
-/// panel's GitHub proxy, which most mirrors provide for release downloads alone.
-async fn latest_release(app: &App, repo: &str) -> reqwest::Result<Release> {
-    app.http
-        .get(format!("https://api.github.com/repos/{repo}/releases/latest"))
-        .header(header::USER_AGENT, "probe-hub")
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await
-}
-
-/// The one field of a release the hub still reads. The assets were listed for
-/// the theme archive, which the panel no longer installs.
-#[derive(Deserialize)]
-struct Release {
-    tag_name: String,
+/// Why a source address the panel offers cannot be stored or probed, or `None`
+/// when it can. Empty is legal: it means the official source.
+///
+/// Plain http is accepted, as the installer accepts it for `--release-base`: what
+/// makes a release trustworthy is the signature, not the transport, and a
+/// company-internal mirror behind a plaintext hop is a real deployment. What
+/// plaintext costs is privacy -- who learns which release is being fetched -- and
+/// the panel says so beside the field rather than refusing the address.
+fn source_error(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let Some(rest) = value.strip_prefix("https://").or_else(|| value.strip_prefix("http://")) else {
+        return Some("发布源要以 https:// 或 http:// 开头".into());
+    };
+    if value.chars().any(char::is_whitespace) {
+        return Some("发布源里不能有空格或换行".into());
+    }
+    // A query or fragment would be swallowed by the name appended to this
+    // address, and the failure would look like a missing file.
+    if value.contains('?') || value.contains('#') {
+        return Some("发布源不能带 ? 或 #：它是目录，后面会拼上文件名".into());
+    }
+    if rest.trim_start_matches('/').is_empty() {
+        return Some("发布源要写上主机名，例如 https://dl.example.com/vps-probe".into());
+    }
+    // A trailing slash, or the versions file's own name, is accepted: both are
+    // what a browser's address bar produces, and both are normalised on write.
+    None
 }
 
 /// Every live session, with the caller's own marked.
@@ -2301,6 +2367,8 @@ fn setting_error(key: &str, value: &Value) -> Option<String> {
         "origin_cdn_only" if !matches!(value, "" | "on" | "off") => {
             Some("源站只允许 CDN 访问：取值是 on 或 off".into())
         }
+        // Empty is the official source; see `source_error` for what a value may be.
+        "release_source" => source_error(value),
         k if k.starts_with("notify_") => crate::notify::setting_error(k, value),
         k if READABLE_SETTINGS.contains(&k) || k == "github_client_secret" || k == "oidc_client_secret" => {
             None
@@ -2347,6 +2415,13 @@ pub async fn save_settings(
         return bad("请用 https 域名访问面板后再设置站点 URL：从 http 保存会让会话 cookie 带上 Secure，
              而浏览器在 http 页面上会丢弃它，你就再也登不进来了");
     }
+    // The installer's `--release-base` is this hub's answer; a stored one would be
+    // ignored and the panel would show a value nothing reads. Refused here rather
+    // than only locked in the panel, so an API caller cannot create that state
+    // either.
+    if map.contains_key("release_source") && !app.release_base.is_empty() {
+        return bad("发布源已由安装器的 --release-base 固定，面板里改不了：换源要重跑 install-hub.sh");
+    }
     // Set when the password changed: the change signs every session out, and the
     // caller receives a replacement rather than being logged out by it.
     let mut reissued = String::new();
@@ -2379,11 +2454,20 @@ pub async fn save_settings(
             // otherwise produce `//.well-known` -- a path no provider serves.
             // See `issuer_address`.
             "oidc_issuer" => app.db.set("oidc_issuer", &issuer_address(value)),
+            // Stored as a bare directory: it is joined with `/versions.json` and
+            // with asset names, where a doubled slash is a different URL.
+            "release_source" => app.db.set("release_source", value.trim().trim_end_matches('/')),
             _ => app.db.set(key, value),
         };
         if let Err(e) = saved {
             return fail(e);
         }
+    }
+    // The answer held is the previous source's, and its six-hour window would
+    // otherwise keep showing the old versions after the change -- which reads as a
+    // panel that ignored the field. Cleared, so the next read asks the new source.
+    if map.contains_key("release_source") {
+        *app.releases.lock().unwrap_or_else(|e| e.into_inner()) = crate::Releases::default();
     }
     with_cookies(Json(json!({"ok": true})), [reissued])
 }
@@ -2438,47 +2522,6 @@ mod tests {
     /// and a test holding all of its permits would refuse a parallel one with a
     /// 503. Tokio's mutex, since the guard is held across awaits.
     static HISTORY_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-    /// A lookup nobody can refresh must not hide an update all day, and a panel
-    /// left open on a screen must not ask GitHub on every load.
-    #[test]
-    fn a_release_lookup_is_held_for_six_hours_and_a_failed_one_for_ten_minutes() {
-        let now = Utc::now().timestamp();
-        let read = |read_at, hub: &str, agent: &str| crate::Releases {
-            read_at,
-            hub: hub.into(),
-            agent: agent.into(),
-        };
-        assert!(!fresh_enough(&crate::Releases::default(), now), "nothing has been read yet");
-        assert!(fresh_enough(&read(now - 5 * 3600, "1.2.0", "1.1.0"), now));
-        assert!(!fresh_enough(&read(now - 7 * 3600, "1.2.0", "1.1.0"), now));
-        assert!(fresh_enough(&read(now - 300, "", ""), now), "a failure is held briefly");
-        assert!(!fresh_enough(&read(now - 1200, "1.2.0", ""), now), "half an answer is a failure");
-        assert!(
-            !fresh_enough(&read(now + 3600, "1.2.0", "1.1.0"), now),
-            "read before the clock was set back"
-        );
-    }
-
-    /// What the panel reads out of a release's `versions.json`, and what happens
-    /// when the file is missing, malformed or half-empty: the tag falls back for
-    /// both components, which is what a hub predating the file must keep seeing.
-    #[test]
-    fn a_versions_file_parses_and_falls_back_when_it_does_not() {
-        let versions = |body: &str| serde_json::from_str::<ReleaseVersions>(body).ok();
-        let read = |body: &str| {
-            versions(body).filter(|v| !v.hub.is_empty() && !v.agent.is_empty()).map(|v| (v.hub, v.agent))
-        };
-        assert_eq!(read(r#"{"hub":"0.3.2","agent":"0.4.0"}"#), Some(("0.3.2".into(), "0.4.0".into())));
-        assert_eq!(read(r#"{"hub":"0.3.2","agent":"0.3.1"}"#), Some(("0.3.2".into(), "0.3.1".into())));
-        // Not JSON, missing fields, or a field with nothing to say: each is the
-        // pre-versions.json world, answered by the tag.
-        assert_eq!(read("<html>404</html>"), None, "a proxy's error page is not a versions file");
-        assert_eq!(read(r#"{"hub":"0.3.2"}"#), None, "agent missing");
-        assert_eq!(read(r#"{"hub":"","agent":"0.4.0"}"#), None, "hub empty");
-        assert_eq!(read(r#"{"hub":"0.3.2","agent":""}"#), None, "agent empty");
-        assert_eq!(read("null"), None);
-    }
 
     fn app_with_site(site: &str) -> App {
         let mut state = app();
@@ -2627,6 +2670,98 @@ mod tests {
         let put_flagged =
             |body: Value| save_settings(Admin, State(flagged.clone()), peer(), HeaderMap::new(), Json(body));
         assert_eq!(put_flagged(json!({"site_url": "hub.example.com"})).await.status(), StatusCode::OK);
+    }
+
+    /// The release source is a directory that file names are joined onto, so what
+    /// may be stored is narrow; and where the installer fixed it, nothing may be
+    /// stored at all, or the panel would show a value nothing reads.
+    #[tokio::test]
+    async fn a_release_source_is_normalised_and_refused_where_the_installer_fixed_it() {
+        for bad in ["ftp://dl.example.com", "dl.example.com", "https://dl.example.com?x=1", "https://a b"] {
+            assert!(setting_error("release_source", &json!(bad)).is_some(), "{bad}");
+        }
+        assert_eq!(setting_error("release_source", &json!("")), None, "empty is the official source");
+        assert_eq!(
+            setting_error("release_source", &json!("http://mirror.internal/probe")),
+            None,
+            "a plaintext mirror is a real deployment: the signature is the trust anchor"
+        );
+
+        let app = std::sync::Arc::new(app());
+        let put = |state: std::sync::Arc<crate::App>, body: Value| async move {
+            save_settings(Admin, State(state), peer(), HeaderMap::new(), Json(body)).await
+        };
+        assert_eq!(
+            put(app.clone(), json!({"release_source": " https://dl.example.com/vps-probe/ "})).await.status(),
+            StatusCode::OK
+        );
+        assert_eq!(app.db.get("release_source").as_deref(), Some("https://dl.example.com/vps-probe"));
+
+        // The answer held belonged to the previous source, and its six-hour window
+        // would keep the old versions on screen after the change -- which reads as
+        // a panel that ignored the field.
+        *app.releases.lock().unwrap() =
+            crate::Releases { read_at: 1, hub: "9.9.9".into(), agent: "9.9.9".into(), ..Default::default() };
+        assert_eq!(put(app.clone(), json!({"release_source": ""})).await.status(), StatusCode::OK);
+        assert_eq!(*app.releases.lock().unwrap(), crate::Releases::default(), "the answer is cleared");
+
+        // Fixed by the installer: refused rather than ignored, so an API caller
+        // cannot create a state the panel has no way to show.
+        let mut pinned = app_with_site("");
+        pinned.release_base = "https://mirror.internal/probe".into();
+        let pinned = std::sync::Arc::new(pinned);
+        assert_eq!(
+            put(pinned.clone(), json!({"release_source": "https://dl.example.com"})).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(pinned.db.get("release_source"), None, "nothing was written");
+    }
+
+    /// The probe answers even where nothing answers: the address that could not
+    /// be read, the versions file it would have read, and why -- which is what the
+    /// panel shows instead of a blank block. A draft is marked as one only when it
+    /// differs from what the hub holds, and never where the installer fixed the
+    /// source, since the panel's field is inert there.
+    #[tokio::test]
+    async fn a_source_probe_answers_with_what_it_could_not_read() {
+        let app = std::sync::Arc::new(app());
+        let ask = |state: std::sync::Arc<crate::App>, body: Value| async move {
+            let answered =
+                release_source(Admin, State(state), serde_json::to_vec(&body).unwrap().into()).await;
+            let bytes = axum::body::to_bytes(answered.into_body(), 64 * 1024).await.unwrap();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        };
+
+        // Nothing is listening on port 9, so the fetch fails at once rather than on
+        // a timeout: the answer still names what it tried.
+        let body = ask(app.clone(), json!({"release_source": "http://127.0.0.1:9/vps-probe"})).await;
+        assert_eq!(body["source"], "http://127.0.0.1:9/vps-probe");
+        assert_eq!(body["version_url"], "http://127.0.0.1:9/vps-probe/versions.json");
+        assert_eq!(body["draft"], true, "the hub holds no source, so this one is a draft");
+        assert!(body["error"].as_str().is_some_and(|e| e.contains("127.0.0.1")), "{body}");
+
+        // The same address, saved, is no longer a draft.
+        app.db.set("release_source", "http://127.0.0.1:9/vps-probe").unwrap();
+        let body = ask(app.clone(), json!({"release_source": "http://127.0.0.1:9/vps-probe/"})).await;
+        assert_eq!(body["draft"], false, "a trailing slash is the same source");
+
+        // Refused before anything is fetched.
+        let answered = release_source(
+            Admin,
+            State(app.clone()),
+            serde_json::to_vec(&json!({"release_source": "ftp://x"})).unwrap().into(),
+        )
+        .await;
+        assert_eq!(answered.status(), StatusCode::BAD_REQUEST);
+
+        // Fixed by the installer: the body is ignored, and nothing is a draft.
+        let mut pinned = app_with_site("");
+        pinned.release_base = "http://127.0.0.1:9/fixed".into();
+        let pinned = std::sync::Arc::new(pinned);
+        let body = ask(pinned, json!({"release_source": "http://example.com"})).await;
+        assert_eq!(body["source"], "http://127.0.0.1:9/fixed");
+        assert_eq!(body["fixed"], true);
+        assert_eq!(body["draft"], false);
     }
 
     /// A peer behind a proxy is the address the proxy forwarded, by the same

@@ -11,7 +11,7 @@ anyhow = "1"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync", "fs", "io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 axum = { version = "0.8", features = ["ws", "macros"] }
@@ -41,6 +41,17 @@ tower = { version = "0.5", default-features = false, features = ["util"] }
 # connections. Pure Rust on Linux, so the cross-built musl binary gains no C
 # dependency.
 rustix = { version = "1", features = ["process", "net"] }
+
+# The SMTP client's TLS (`smtp.rs`), for mail relays that want 465 or STARTTLS.
+# `ring` and not the default provider: reqwest already builds rustls with it, so
+# nothing new compiles and no C toolchain enters the cross build -- an aws-lc-rs
+# here would put one in the path of a musl binary.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+# The same root store the agent's TLS uses, compiled in: a hub in a container has
+# no CA bundle to read, and one that trusted system roots would fail differently
+# on every host.
+webpki-roots = "1"
 
 [dev-dependencies]
 serde_urlencoded = "0.7"

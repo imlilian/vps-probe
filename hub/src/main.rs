@@ -31,6 +31,7 @@ mod db;
 mod frontend;
 mod notify;
 mod rates;
+mod smtp;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -78,6 +79,11 @@ pub struct App {
     /// set, or a loopback listener would place 127.0.0.1 in the install commands
     /// the panel builds.
     pub site: String,
+    /// Where releases are fetched from when `--release-base` named one, empty
+    /// otherwise. Written by the installer into the unit file, and the reason the
+    /// panel's own `release_source` setting is read-only there: two answers to one
+    /// question would drift apart with nothing saying which one a hub used.
+    pub release_base: String,
     /// Alerts on their way out; see `notify::send`.
     pub notes: tokio::sync::mpsc::Sender<notify::Note>,
     /// The OIDC provider's endpoints, as last fetched, with the moment they may
@@ -85,9 +91,9 @@ pub struct App {
     /// would make the hub a relay anyone can point at the provider; see
     /// `auth::discovery_for`.
     pub oidc: Mutex<Option<auth::Cached>>,
-    /// The latest published tags, as last read from GitHub. Filled when the panel
-    /// asks rather than on a timer, so a hub nobody opens makes no outbound
-    /// request; see `api::versions`.
+    /// The release source's last answer, as read from its `versions.json`. Filled
+    /// when the panel asks or an agent is relayed, never on a timer, so a hub
+    /// nobody opens makes no outbound request; see [`releases_now`].
     pub releases: Mutex<Releases>,
     /// When this process started. Read by `/api/health` and by nothing else: a
     /// checker outside the hub learns there what the hub cannot see about
@@ -96,17 +102,30 @@ pub struct App {
     pub started: std::time::Instant,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug, PartialEq)]
 pub struct Releases {
     /// The second these were read, 0 before the first read.
     pub read_at: i64,
-    /// Tags without their leading `v`, empty where the lookup failed.
+    /// The versions the release carries, without any leading `v`, empty where the
+    /// lookup failed.
     pub hub: String,
     pub agent: String,
+    /// The release's own name, shown but never joined into a URL: a mirror may
+    /// relabel it, and an install must not depend on the label.
+    pub tag: String,
+    /// Where this release's assets are, from its `versions.json`; empty when the
+    /// file does not say, which is every release published before the field
+    /// existed and every GitHub-shaped source. See [`asset_base`].
+    pub download: String,
 }
 
 impl App {
-    fn new(db: Db, site: String, notes: tokio::sync::mpsc::Sender<notify::Note>) -> Self {
+    fn new(
+        db: Db,
+        site: String,
+        release_base: String,
+        notes: tokio::sync::mpsc::Sender<notify::Note>,
+    ) -> Self {
         Self {
             db,
             agents: RwLock::default(),
@@ -119,6 +138,7 @@ impl App {
                 .build()
                 .expect("http client"),
             site,
+            release_base,
             notes,
             oidc: Mutex::default(),
             releases: Mutex::default(),
@@ -129,7 +149,7 @@ impl App {
     #[cfg(test)]
     pub fn for_test(db: Db) -> Self {
         // Nothing delivers in tests; `notify::send` drops into the closed channel.
-        Self::new(db, String::new(), tokio::sync::mpsc::channel(1).0)
+        Self::new(db, String::new(), String::new(), tokio::sync::mpsc::channel(1).0)
     }
 
     /// Whether the public page answers without a session. Off unless it was
@@ -223,9 +243,96 @@ fn forwarded_proto(headers: &HeaderMap) -> Option<&str> {
 /// Where this project publishes its releases. One tag carries every asset the
 /// hub reads -- both agent architectures, each beside its signature -- so a
 /// single repository name answers for the hub's own lookup and for the relay.
-/// Not a setting: redirecting it implies a fork, which rebuilds this line
-/// anyway.
+///
+/// The *default* source, not the only one: a host can point the hub at a mirror
+/// with the installer's `--release-base` or with the panel's own setting. What
+/// both keep is the shape -- one directory holding `versions.json` and the
+/// assets by name -- since the signature, not the address, is what makes a
+/// release trustworthy. See [`release_source`].
 pub const REPO: &str = "imlilian/vps-probe";
+
+/// The address a hub fetches releases from when nothing else was said.
+pub fn official_release_base() -> String {
+    format!("https://github.com/{REPO}/releases/latest/download")
+}
+
+/// The base releases are fetched from: the installer's `--release-base` if this
+/// hub was started with one, else the panel's `release_source`, else
+/// [`official_release_base`].
+///
+/// The command line wins, as `--site` does and for the same reason: the flag is
+/// what the unit file carries across upgrades, it is the more explicit statement
+/// of intent, and the panel says so by refusing to edit the setting. A mirror
+/// deployment is by definition one whose hub is upgraded by re-running
+/// `install-hub.sh`, so the flag is always at hand there.
+///
+/// Normalised to a bare base -- no trailing slash -- because it is joined with
+/// `/…` paths, where a doubled slash is a different URL.
+pub fn release_source(app: &App) -> String {
+    let fixed = app.release_base.trim().trim_end_matches('/');
+    if !fixed.is_empty() {
+        return fixed.to_owned();
+    }
+    let saved = app.db.get("release_source").unwrap_or_default();
+    let saved = saved.trim().trim_end_matches('/');
+    if saved.is_empty() {
+        official_release_base()
+    } else {
+        saved.to_owned()
+    }
+}
+
+/// Whether `source` is this project's own release page, the one the panel's
+/// GitHub proxy is written for. A mirror states its own address, which a proxy
+/// for github.com cannot help with.
+pub fn is_official(source: &str) -> bool {
+    source.trim_end_matches('/') == official_release_base()
+}
+
+/// The `versions.json` the source publishes. Accepted with or without the file
+/// name, so a source can be written either as the directory the assets sit in or
+/// as the file itself; both are stored as the directory.
+///
+/// Behind the panel's GitHub proxy only for the official source: a hub that
+/// cannot reach github.com cannot relay to any node, so the answer is the same
+/// for every install command, and the proxy is what turns that around.
+pub fn version_url(app: &App) -> String {
+    version_url_for(app, &release_source(app))
+}
+
+/// As [`version_url`], for a source the caller already has: the panel's test
+/// reads a value that is typed but not saved, which the hub has never stored.
+pub fn version_url_for(app: &App, source: &str) -> String {
+    let source = source.trim().trim_end_matches('/');
+    let url = if source.ends_with("/versions.json") {
+        source.to_owned()
+    } else {
+        format!("{source}/versions.json")
+    };
+    if is_official(source) {
+        proxied(app, url)
+    } else {
+        url
+    }
+}
+
+/// The directory the release assets live in, from what the source's
+/// `versions.json` said: its `download` field when it names one, else the
+/// directory the versions file itself came from.
+///
+/// Two positions are needed because a release's metadata wants a stable address
+/// while its assets must never change. GitHub's `latest/download` is both at
+/// once; a forge that publishes under `/releases/download/<tag>/` is not, and
+/// then `download` is the field that says where this version's files are. Kept
+/// free of any template of our own: `versions.json` is per release, so the file
+/// itself is where the answer belongs.
+pub fn asset_base(version_url: &str, download: &str) -> String {
+    let download = download.trim().trim_end_matches('/');
+    if !download.is_empty() {
+        return download.to_owned();
+    }
+    version_url.strip_suffix("/versions.json").unwrap_or(version_url).trim_end_matches('/').to_owned()
+}
 
 /// The one-line installer pasted onto a new VPS. Served under two paths: the
 /// current name, and `/install.sh`, which commands pasted before the rename
@@ -235,20 +342,16 @@ async fn install_script() -> Response {
     ([(header::CONTENT_TYPE, "text/x-shellscript")], include_str!("../install-agent.sh")).into_response()
 }
 
-/// Where the hub fetches an agent release, behind the panel's GitHub proxy when
-/// one is configured. The proxy belongs to the hub rather than to each install
-/// command: a hub that cannot reach github.com cannot relay to any node, so the
-/// answer is the same for all of them.
+/// Where one agent binary of the current release is, given the asset directory
+/// [`asset_base_now`] resolved.
 ///
-/// This URL is fetched on an anonymous request, so setting it redirects that
-/// path. It remains within the bounds `agent_binary` already enforces: four
-/// concurrent transfers, a response within [`RELAY_HEAD`], a capped body and a
-/// signature.
-fn release_url(app: &App, arch: &str) -> String {
-    proxied(
-        app,
-        format!("https://github.com/{REPO}/releases/latest/download/probe-agent-{arch}-unknown-linux-musl"),
-    )
+/// The name is fixed by the release job and by `install-agent.sh`, which asks for
+/// the same one through `/probe/{arch}`; a mirror has to serve it unchanged. This
+/// URL is fetched on an anonymous request, so the source decides that path. It
+/// remains within the bounds `agent_binary` already enforces: four concurrent
+/// transfers, a response within [`RELAY_HEAD`], a capped body and a signature.
+fn release_url(asset_base: &str, arch: &str) -> String {
+    format!("{asset_base}/probe-agent-{arch}-unknown-linux-musl")
 }
 
 /// Places the panel's GitHub proxy in front of a github.com URL when one is
@@ -259,6 +362,150 @@ pub fn proxied(app: &App, url: String) -> String {
         Some(proxy) => format!("{}/{url}", proxy.trim().trim_end_matches('/')),
         None => url,
     }
+}
+
+/// A source's `versions.json`, as the hub reads it.
+///
+/// `tag` names the release, `hub` and `agent` say which versions of the two
+/// components it carries, and `download` says where its assets are -- needed only
+/// where the assets do not sit in the directory the file came from. Every field
+/// is optional on the wire: a release cut before a field existed, a hand-written
+/// mirror, and a source that has only ever published `hub`/`agent` must all
+/// install.
+#[derive(serde::Deserialize, Default)]
+pub struct ReleaseVersions {
+    #[serde(default)]
+    pub tag: String,
+    #[serde(default)]
+    pub hub: String,
+    #[serde(default)]
+    pub agent: String,
+    #[serde(default)]
+    pub download: String,
+}
+
+/// The most a `versions.json` may weigh. It is four short strings; this cap only
+/// keeps a redirected proxy page from being parsed as one.
+const MAX_VERSIONS_JSON: usize = 4096;
+
+/// How long a successful read answers when the panel asks. A panel left open on a
+/// screen costs four lookups a day, well inside what a source tolerates.
+pub const RELEASES_FRESH: i64 = 6 * 3600;
+
+/// How long a failed read is remembered, so a single unreachable moment does not
+/// hide an update for the rest of the day and a source that is down is not asked
+/// again on every page load.
+pub const RELEASES_RETRY: i64 = 600;
+
+/// How long the asset directory is reused when a node is relayed an agent.
+///
+/// Far shorter than the panel's window, and for a reason that does not apply to
+/// version numbers: `download` names one release's directory, so a stale answer
+/// hands the previous agent to every node that installs -- which presents as "the
+/// upgrade did nothing", with nothing in any log to say why. The cost is one small
+/// GET, and only when an agent is actually relayed.
+pub const RELEASE_ASSET_FRESH: i64 = 300;
+
+/// One GET of the source's `versions.json`, or `None` where it could not be read
+/// or parsed. The parse error is kept apart from the fetch error for the panel's
+/// test, where "not JSON" is the answer to a source address that serves a page.
+pub async fn read_versions_at(app: &App, url: &str) -> Result<ReleaseVersions, String> {
+    let body = fetch_asset(app, url, "versions file", MAX_VERSIONS_JSON).await?;
+    serde_json::from_slice(&body)
+        .map_err(|e| format!("{} 的这个文件不是 versions.json：{e}", source_name(url)))
+}
+
+pub async fn read_versions(app: &App) -> Option<ReleaseVersions> {
+    read_versions_at(app, &version_url(app)).await.ok()
+}
+
+/// The source's answer, refreshed when the one held is older than `max_age`.
+///
+/// Two callers want different ages -- version numbers may be hours old, an asset
+/// directory may not -- over one stored answer, so each passes its own. A failed
+/// read replaces the answer with an empty one rather than serving the old one as
+/// current; both callers hold it only for their retry window, so the next attempt
+/// is soon.
+///
+/// Where the file does not say which versions it carries, the tag answers for
+/// both, which is what this did before the file existed and what a release cut
+/// before it did.
+pub async fn releases_now(app: &App, max_age: i64) -> Releases {
+    let now = Utc::now().timestamp();
+    // Poisoning is ignored on purpose. The lock holds version numbers kept for
+    // display, so a write interrupted by a panic leaves nothing a reader has to
+    // trust; refusing to read it would take the panel down with it.
+    let cached = app.releases.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if fresh_enough(&cached, now, max_age) {
+        return cached;
+    }
+    let read = match read_versions(app).await {
+        Some(v) => interpreted(v, now),
+        None => Releases { read_at: now, ..Default::default() },
+    };
+    *app.releases.lock().unwrap_or_else(|e| e.into_inner()) = read.clone();
+    read
+}
+
+/// Whether the answer held still stands for a caller that accepts `max_age`.
+///
+/// A failed read -- one that carried no versions at all -- stands only for
+/// [`RELEASES_RETRY`], so a single unreachable moment does not hide an update for
+/// the rest of the day, and never for longer than the caller asked for.
+pub fn fresh_enough(cached: &Releases, now: i64, max_age: i64) -> bool {
+    let holds =
+        if cached.hub.is_empty() || cached.agent.is_empty() { RELEASES_RETRY.min(max_age) } else { max_age };
+    // A negative age is a clock set back since the read, not a fresh answer.
+    cached.read_at != 0 && (0..holds).contains(&(now - cached.read_at))
+}
+
+/// What a parsed `versions.json` amounts to.
+///
+/// A field the file leaves out falls back to the tag, which is what a release cut
+/// before the file existed leaves us: the tag is then the only name the source
+/// published, and it is true. `v1.2.0` and `1.2.0` are the same release -- the
+/// panel prints its own `v` in front of what it shows -- so the leading one is
+/// dropped once, here, rather than by every reader.
+pub fn interpreted(v: ReleaseVersions, now: i64) -> Releases {
+    let tag = v.tag.trim().trim_start_matches('v').trim().to_owned();
+    let pick = |field: &str| {
+        let field = field.trim();
+        if field.is_empty() {
+            tag.clone()
+        } else {
+            field.to_owned()
+        }
+    };
+    Releases {
+        read_at: now,
+        hub: pick(&v.hub),
+        agent: pick(&v.agent),
+        tag,
+        download: v.download.trim().to_owned(),
+    }
+}
+
+/// The directory agent binaries are fetched from right now; see [`asset_base`].
+pub async fn asset_base_now(app: &App) -> String {
+    let read = releases_now(app, RELEASE_ASSET_FRESH).await;
+    let base = asset_base(&version_url(app), &read.download);
+    // A `download` naming a github.com address still needs the proxy; one derived
+    // from the versions URL already sits behind it.
+    if read.download.trim().is_empty() || !is_official(&release_source(app)) {
+        base
+    } else {
+        proxied(app, base)
+    }
+}
+
+/// The name to blame in a message about a URL: the host it addresses. The path is
+/// left out because a source address is sometimes an internal one, and what the
+/// reader needs is which machine did not answer.
+fn source_name(url: &str) -> String {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "the release source".to_owned())
 }
 
 /// How many release downloads the hub relays concurrently.
@@ -376,13 +623,17 @@ fn relayable(key: &[u8], binary: &[u8], signature: &[u8], arch: &str) -> bool {
 /// One GET of a release asset, whole, refused past `max` bytes. Public for the
 /// panel's version lookup, which reads `versions.json` through the same
 /// channel -- proxy included -- as the agent binary it describes.
+///
+/// What failed is named by host, never by URL: a source address is sometimes an
+/// internal one, and nothing a reader can act on lives in its path. The whole URL
+/// and the error behind it go to the log, which is not reachable from outside.
 pub async fn fetch_asset(app: &App, url: &str, what: &str, max: usize) -> Result<Vec<u8>, String> {
-    let who = if url.starts_with("https://github.com/") { "GitHub" } else { "the GitHub proxy" };
+    let who = source_name(url);
     // The default client timeout is sized for API calls; the caller bounds the
     // download as a whole.
     let mut res = app.http.get(url).timeout(RELAY_HEAD).send().await.map_err(|e| {
         warn!("fetching {url} failed: {e:#}");
-        "the hub could not reach GitHub or its GitHub proxy; its log has the details".to_owned()
+        format!("the hub could not reach the release source ({who}); its log has the details")
     })?;
     if !res.status().is_success() {
         return Err(format!("{who} answered {} for the {what}", res.status()));
@@ -439,10 +690,15 @@ async fn agent_binary(State(app): State<Shared>, Path(arch): Path<String>) -> Re
     let Ok(Ok(permit)) = tokio::time::timeout(RELAY_WAIT, RELAY_GATE.acquire()).await else {
         return api::answer(StatusCode::SERVICE_UNAVAILABLE, "too many downloads in flight, try again");
     };
-    let url = release_url(&app, &arch);
-    let sig = format!("{url}.sig");
+    // Reading the asset directory costs one request before the binary itself, and
+    // only where the source publishes under a per-release path. It sits inside the
+    // deadline, so a source too slow to answer that is refused the same way as one
+    // too slow to answer for the binary.
+    //
     // English, as `install-agent.sh` prints it after its own English line.
     let fetched = async {
+        let url = release_url(&asset_base_now(&app).await, &arch);
+        let sig = format!("{url}.sig");
         let (binary, signature) = tokio::try_join!(
             fetch_asset(&app, &url, "agent binary", MAX_AGENT_BINARY),
             fetch_asset(&app, &sig, "agent signature", 64),
@@ -457,10 +713,10 @@ async fn agent_binary(State(app): State<Shared>, Path(arch): Path<String>) -> Re
     };
     let budget = RELAY_HEAD.saturating_sub(asked.elapsed());
     let Ok(fetched) = tokio::time::timeout(budget, fetched).await else {
-        warn!("fetching {url} took longer than {} s; not relayed", RELAY_HEAD.as_secs());
+        warn!("relaying an agent for {arch} took longer than {} s", RELAY_HEAD.as_secs());
         return api::answer(
             StatusCode::BAD_GATEWAY,
-            "GitHub or the GitHub proxy was too slow to deliver the agent before the response deadline",
+            "the release source was too slow to deliver the agent before the response deadline",
         );
     };
     match fetched {
@@ -483,6 +739,9 @@ struct Args {
     listen_defaulted: bool,
     database: String,
     site: String,
+    /// Empty when the release source was not named on the command line, which
+    /// leaves the panel's setting in charge; see [`release_source`].
+    release_base: String,
     reset_password: bool,
 }
 
@@ -505,6 +764,7 @@ fn parse_args() -> Result<Args> {
     let mut listen = None;
     let mut database = "probe.db".to_owned();
     let mut site = String::new();
+    let mut release_base = String::new();
     let mut reset_password = false;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -513,6 +773,7 @@ fn parse_args() -> Result<Args> {
             "--listen" => listen = Some(value()),
             "--db" => database = value(),
             "--site" => site = value(),
+            "--release-base" => release_base = value(),
             "--reset-password" => reset_password = true,
             "-V" | "--version" => {
                 println!("probe-hub {}", env!("CARGO_PKG_VERSION"));
@@ -522,6 +783,7 @@ fn parse_args() -> Result<Args> {
                 println!(
                     "probe-hub {}\n\n\
                      Usage: probe-hub [--listen [::]:28080] [--db probe.db] [--site https://hub.example.com]\n       \
+                     probe-hub [--release-base https://dl.example.com/vps-probe]\n       \
                      probe-hub --db probe.db --reset-password\n\n\
                      --listen defaults to [::]:28080, one socket serving IPv6 and IPv4\n\
                      both; where the kernel has no dual-stack sockets it is 0.0.0.0:28080.\n\
@@ -536,6 +798,15 @@ fn parse_args() -> Result<Args> {
                      other than Cloudflare ahead of an nginx that rewrites it to http --\n\
                      since it then sets the session cookie's Secure flag. A value that is\n\
                      not an https:// domain disables adding nodes.\n\
+                     --release-base is the directory releases are fetched from, when it is\n\
+                     not this project's own GitHub page: a mirror, a company-internal copy,\n\
+                     a forge of another shape. It must serve the same file names under\n\
+                     <url>/, or name its own directory in the versions.json field\n\
+                     `download`, and the binaries are still checked against the compiled-in\n\
+                     key, so an http:// mirror is as safe as an https:// one -- less\n\
+                     private, no less verified. Given here it is what the panel uses and\n\
+                     the panel cannot change it; the installer writes it when it was told\n\
+                     the same thing.\n\
                      --reset-password replaces the emergency password, signs every session\n\
                      out, prints the new password and exits. The database must exist.",
                     env!("CARGO_PKG_VERSION")
@@ -552,6 +823,16 @@ fn parse_args() -> Result<Args> {
         listen_defaulted,
         database,
         site: site.trim_end_matches('/').to_owned(),
+        // Only the scheme is checked here: a hub that refuses to start over the
+        // shape of an address is worse than one that answers 502 and says which
+        // host it could not reach. The panel's write path holds the same rule.
+        release_base: {
+            let base = release_base.trim().trim_end_matches('/').to_owned();
+            if !base.is_empty() && !(base.starts_with("https://") || base.starts_with("http://")) {
+                anyhow::bail!("--release-base must start with https:// or http://: {base}");
+            }
+            base
+        },
         reset_password,
     })
 }
@@ -623,7 +904,8 @@ async fn main() -> Result<()> {
         warn!("SQLite keeps its temporary files in its default directory: {e:#}");
     }
     let (notes, inbox) = tokio::sync::mpsc::channel(notify::QUEUE);
-    let app = Arc::new(App::new(Db::open(&args.database)?, args.site.clone(), notes));
+    let app =
+        Arc::new(App::new(Db::open(&args.database)?, args.site.clone(), args.release_base.clone(), notes));
     let url = advertised_url(&args.site, args.listen);
     first_run(&app, &url)?;
     let port = args.listen.port();
@@ -747,6 +1029,7 @@ fn router(app: Shared) -> Router {
         .route("/api/sessions/{id}", delete(api::delete_session))
         .route("/api/settings", get(api::settings).put(api::save_settings))
         .route("/api/version", get(api::versions))
+        .route("/api/release/source", post(api::release_source))
         .route("/api/notify/test", post(notify::test))
         .route("/api/rates", get(rates::public))
         .route("/api/notify/presets", get(notify::presets))
@@ -1199,7 +1482,7 @@ mod tests {
     }
 
     fn app(site: &str) -> App {
-        App::new(Db::open(":memory:").unwrap(), site.into(), tokio::sync::mpsc::channel(1).0)
+        App::new(Db::open(":memory:").unwrap(), site.into(), String::new(), tokio::sync::mpsc::channel(1).0)
     }
 
     /// The installer, under both of its names, byte for byte.
@@ -1558,23 +1841,155 @@ mod tests {
         drop((stalled, queued));
     }
 
-    /// The proxy is a hub setting rather than an install-command argument, so
-    /// this is the only place the URL is built. A trailing slash in the setting
-    /// must not become a double slash the proxy will not match.
+    /// The source a hub reads releases from: the installer's flag, else the
+    /// panel's setting, else this project's own GitHub page -- in that order, and
+    /// each normalised to a bare base.
     #[test]
-    fn a_github_proxy_prefixes_the_release_url_and_an_empty_one_does_not() {
+    fn the_release_source_is_the_installers_then_the_panels_then_github() {
+        let plain = app("");
+        assert_eq!(release_source(&plain), official_release_base());
+
+        plain.db.set("release_source", "  https://dl.example.com/vps-probe/  ").unwrap();
+        assert_eq!(release_source(&plain), "https://dl.example.com/vps-probe", "trimmed to a bare base");
+        // Cleared in the panel, which stores an empty string rather than removing
+        // the row.
+        plain.db.set("release_source", "").unwrap();
+        assert_eq!(release_source(&plain), official_release_base());
+
+        // The command line wins even over a stored value: the installer wrote it
+        // into the unit file, and the panel refuses to edit the setting there.
+        let mut pinned = app("");
+        pinned.release_base = "https://mirror.internal/probe/".into();
+        pinned.db.set("release_source", "https://dl.example.com/vps-probe").unwrap();
+        assert_eq!(release_source(&pinned), "https://mirror.internal/probe");
+    }
+
+    /// The proxy is a hub setting rather than an install-command argument, and it
+    /// is written for github.com alone: a mirror states its own address, which a
+    /// prefix in front of github.com cannot help with. A trailing slash in the
+    /// setting must not become a double slash the proxy will not match.
+    #[test]
+    fn a_github_proxy_prefixes_the_official_source_and_nothing_else() {
         let app = app("");
-        let direct = release_url(&app, "x86_64");
-        assert!(direct.starts_with("https://github.com/imlilian/vps-probe/releases/"), "{direct}");
+        let direct = version_url(&app);
+        assert_eq!(
+            direct, "https://github.com/imlilian/vps-probe/releases/latest/download/versions.json",
+            "the same URL this built before the source became a setting"
+        );
 
         for set in ["https://ghfast.top", "https://ghfast.top/", "  https://ghfast.top/  "] {
             app.db.set("github_proxy", set).unwrap();
-            assert_eq!(release_url(&app, "x86_64"), format!("https://ghfast.top/{direct}"), "{set:?}");
+            assert_eq!(version_url(&app), format!("https://ghfast.top/{direct}"), "{set:?}");
         }
-        // Cleared in the panel, which stores an empty string rather than removing
-        // the row.
+        // The assets follow the versions URL, so the prefix survives into the
+        // directory the binary is fetched from.
+        let base = asset_base(&version_url(&app), "");
+        assert_eq!(base, "https://ghfast.top/https://github.com/imlilian/vps-probe/releases/latest/download");
+        assert_eq!(
+            release_url(&base, "x86_64"),
+            format!(
+                "https://ghfast.top/{}/probe-agent-x86_64-unknown-linux-musl",
+                direct.strip_suffix("/versions.json").unwrap()
+            ),
+            "the relay keeps fetching what install-hub.sh fetched"
+        );
+
+        // A mirror is never proxied, proxy or no proxy.
+        app.db.set("release_source", "https://dl.example.com/vps-probe").unwrap();
+        assert_eq!(version_url(&app), "https://dl.example.com/vps-probe/versions.json");
+
+        app.db.set("release_source", "").unwrap();
         app.db.set("github_proxy", "").unwrap();
-        assert_eq!(release_url(&app, "x86_64"), direct);
+        assert_eq!(version_url(&app), direct);
+    }
+
+    /// The three shapes a source can have: GitHub's, a mirror publishing under a
+    /// per-release directory it names in `download`, and one that only has the
+    /// file names under the versions file's own directory.
+    #[test]
+    fn the_versions_url_and_asset_directory_follow_the_source() {
+        let app = app("");
+        // A source written as the versions file itself is the same source.
+        assert_eq!(
+            version_url_for(&app, "https://dl.example.com/vps-probe/versions.json"),
+            "https://dl.example.com/vps-probe/versions.json"
+        );
+        assert_eq!(
+            version_url_for(&app, "https://dl.example.com/vps-probe/"),
+            "https://dl.example.com/vps-probe/versions.json"
+        );
+        assert_eq!(
+            asset_base("https://dl.example.com/vps-probe/versions.json", ""),
+            "https://dl.example.com/vps-probe"
+        );
+        // `download` is where this release's files are, and it wins over the
+        // directory the file came from -- the only way a forge that publishes
+        // under /releases/download/<tag>/ can be served at all.
+        assert_eq!(
+            asset_base("https://gitea.internal/probe/versions.json", "https://dl.example.com/probe/v1.1.0/"),
+            "https://dl.example.com/probe/v1.1.0"
+        );
+        assert_eq!(
+            release_url("https://dl.example.com/probe/v1.1.0", "aarch64"),
+            "https://dl.example.com/probe/v1.1.0/probe-agent-aarch64-unknown-linux-musl"
+        );
+    }
+
+    /// What a parsed `versions.json` amounts to, and what a file that does not say
+    /// -- or is not one -- leaves the panel with.
+    #[test]
+    fn a_versions_file_falls_back_to_the_tag_for_what_it_does_not_say() {
+        let read = |body: &str| serde_json::from_str::<ReleaseVersions>(body).ok().map(|v| interpreted(v, 7));
+        let full = read(
+            r#"{"tag":"v1.1.0","hub":"1.2.0","agent":"1.1.0","download":"https://dl.example.com/v1.1.0"}"#,
+        )
+        .unwrap();
+        assert_eq!((full.tag.as_str(), full.hub.as_str(), full.agent.as_str()), ("1.1.0", "1.2.0", "1.1.0"));
+        assert_eq!(full.download, "https://dl.example.com/v1.1.0");
+        assert_eq!(full.read_at, 7);
+
+        // A release cut before the file carried versions, or a mirror that only
+        // labels itself: the tag answers for both, as it did before the file.
+        let labelled = read(r#"{"tag":"v1.1.0"}"#).unwrap();
+        assert_eq!((labelled.hub.as_str(), labelled.agent.as_str()), ("1.1.0", "1.1.0"));
+        // And a file without a tag leaves the two versions alone rather than
+        // inventing one.
+        assert_eq!(read(r#"{"hub":"1.2.0","agent":"1.1.0"}"#).unwrap().tag, "");
+
+        assert_eq!(read("<html>404</html>"), None, "a proxy's error page is not a versions file");
+        assert_eq!(read("null"), None);
+    }
+
+    /// A lookup nobody can refresh must not hide an update all day, a panel left
+    /// open on a screen must not ask the source on every load, and the asset
+    /// directory must not survive a release by hours.
+    #[test]
+    fn a_release_lookup_is_held_for_six_hours_and_a_failed_one_for_ten_minutes() {
+        let now = Utc::now().timestamp();
+        let read = |read_at, hub: &str, agent: &str| Releases {
+            read_at,
+            hub: hub.into(),
+            agent: agent.into(),
+            ..Default::default()
+        };
+        assert!(!fresh_enough(&Releases::default(), now, RELEASES_FRESH), "nothing has been read yet");
+        assert!(fresh_enough(&read(now - 5 * 3600, "1.2.0", "1.1.0"), now, RELEASES_FRESH));
+        assert!(!fresh_enough(&read(now - 7 * 3600, "1.2.0", "1.1.0"), now, RELEASES_FRESH));
+        assert!(fresh_enough(&read(now - 300, "", ""), now, RELEASES_FRESH), "a failure is held briefly");
+        assert!(
+            !fresh_enough(&read(now - 1200, "1.2.0", ""), now, RELEASES_FRESH),
+            "half an answer is a failure"
+        );
+        assert!(
+            !fresh_enough(&read(now + 3600, "1.2.0", "1.1.0"), now, RELEASES_FRESH),
+            "read before the clock was set back"
+        );
+        // The relay's window is minutes, not hours: `download` names one release's
+        // directory, so a stale answer would hand the previous agent to every node.
+        assert!(!fresh_enough(&read(now - 600, "1.2.0", "1.1.0"), now, RELEASE_ASSET_FRESH));
+        assert!(fresh_enough(&read(now - 60, "1.2.0", "1.1.0"), now, RELEASE_ASSET_FRESH));
+        // And a failure is never held longer than the caller wanted.
+        assert!(!fresh_enough(&read(now - 60, "", ""), now, 30));
     }
 
     #[test]
