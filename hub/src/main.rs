@@ -117,6 +117,11 @@ pub struct Releases {
     /// file does not say, which is every release published before the field
     /// existed and every GitHub-shaped source. See [`asset_base`].
     pub download: String,
+    /// The source this answer came from. Kept so that a change of source
+    /// invalidates it even where the panel's write did not get to clear it, and so
+    /// that a read begun under the old source cannot land afterwards and be
+    /// believed for the next six hours.
+    pub source: String,
 }
 
 impl App {
@@ -286,6 +291,12 @@ pub fn release_source(app: &App) -> String {
 /// GitHub proxy is written for. A mirror states its own address, which a proxy
 /// for github.com cannot help with.
 pub fn is_official(source: &str) -> bool {
+    // Both shapes a person types: the directory, or the versions file inside it.
+    // `version_url_for` accepts either, so this must too -- otherwise a source
+    // stored with the file's name stops being recognised as the official one, and
+    // the GitHub proxy it needs is silently not applied.
+    let source = source.trim().trim_end_matches('/');
+    let source = source.strip_suffix("/versions.json").unwrap_or(source);
     source.trim_end_matches('/') == official_release_base()
 }
 
@@ -303,6 +314,12 @@ pub fn version_url(app: &App) -> String {
 /// As [`version_url`], for a source the caller already has: the panel's test
 /// reads a value that is typed but not saved, which the hub has never stored.
 pub fn version_url_for(app: &App, source: &str) -> String {
+    version_url_with(&app.db.get("github_proxy").unwrap_or_default(), source)
+}
+
+/// As [`version_url_for`], with a proxy the caller holds rather than one in the
+/// settings.
+pub fn version_url_with(proxy: &str, source: &str) -> String {
     let source = source.trim().trim_end_matches('/');
     let url = if source.ends_with("/versions.json") {
         source.to_owned()
@@ -310,7 +327,7 @@ pub fn version_url_for(app: &App, source: &str) -> String {
         format!("{source}/versions.json")
     };
     if is_official(source) {
-        proxied(app, url)
+        proxied_by(proxy, url)
     } else {
         url
     }
@@ -358,9 +375,18 @@ fn release_url(asset_base: &str, arch: &str) -> String {
 /// set. Shared by the agent relay and the release lookup: a hub that cannot
 /// reach github.com for one cannot reach it for the other.
 pub fn proxied(app: &App, url: String) -> String {
-    match app.db.get("github_proxy").filter(|v| !v.trim().is_empty()) {
-        Some(proxy) => format!("{}/{url}", proxy.trim().trim_end_matches('/')),
-        None => url,
+    proxied_by(&app.db.get("github_proxy").unwrap_or_default(), url)
+}
+
+/// As [`proxied`], with the proxy named rather than read from the settings: the
+/// panel's test has to ask through the value it has typed but not yet saved, or the
+/// answer describes a configuration nobody is using.
+pub fn proxied_by(proxy: &str, url: String) -> String {
+    let proxy = proxy.trim().trim_end_matches('/');
+    if proxy.is_empty() {
+        url
+    } else {
+        format!("{proxy}/{url}")
     }
 }
 
@@ -435,15 +461,22 @@ pub async fn releases_now(app: &App, max_age: i64) -> Releases {
     // Poisoning is ignored on purpose. The lock holds version numbers kept for
     // display, so a write interrupted by a panic leaves nothing a reader has to
     // trust; refusing to read it would take the panel down with it.
+    let source = release_source(app);
     let cached = app.releases.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if fresh_enough(&cached, now, max_age) {
+    if fresh_enough(&cached, now, max_age, &source) {
         return cached;
     }
     let read = match read_versions(app).await {
-        Some(v) => interpreted(v, now),
-        None => Releases { read_at: now, ..Default::default() },
+        Some(v) => interpreted(v, now, &source),
+        None => Releases { read_at: now, source: source.clone(), ..Default::default() },
     };
-    *app.releases.lock().unwrap_or_else(|e| e.into_inner()) = read.clone();
+    // A read that began before the source changed describes a source this hub no
+    // longer uses; storing it would hand the panel the old versions for another six
+    // hours, which reads as a save that did nothing.
+    let mut held = app.releases.lock().unwrap_or_else(|e| e.into_inner());
+    if release_source(app) == source {
+        *held = read.clone();
+    }
     read
 }
 
@@ -452,11 +485,14 @@ pub async fn releases_now(app: &App, max_age: i64) -> Releases {
 /// A failed read -- one that carried no versions at all -- stands only for
 /// [`RELEASES_RETRY`], so a single unreachable moment does not hide an update for
 /// the rest of the day, and never for longer than the caller asked for.
-pub fn fresh_enough(cached: &Releases, now: i64, max_age: i64) -> bool {
+pub fn fresh_enough(cached: &Releases, now: i64, max_age: i64, source: &str) -> bool {
     let holds =
         if cached.hub.is_empty() || cached.agent.is_empty() { RELEASES_RETRY.min(max_age) } else { max_age };
-    // A negative age is a clock set back since the read, not a fresh answer.
-    cached.read_at != 0 && (0..holds).contains(&(now - cached.read_at))
+    // A negative age is a clock set back since the read, not a fresh answer, and an
+    // answer about another source is not an answer about this one.
+    cached.source == source.trim_end_matches('/')
+        && cached.read_at != 0
+        && (0..holds).contains(&(now - cached.read_at))
 }
 
 /// What a parsed `versions.json` amounts to.
@@ -466,7 +502,7 @@ pub fn fresh_enough(cached: &Releases, now: i64, max_age: i64) -> bool {
 /// published, and it is true. `v1.2.0` and `1.2.0` are the same release -- the
 /// panel prints its own `v` in front of what it shows -- so the leading one is
 /// dropped once, here, rather than by every reader.
-pub fn interpreted(v: ReleaseVersions, now: i64) -> Releases {
+pub fn interpreted(v: ReleaseVersions, now: i64, source: &str) -> Releases {
     let tag = v.tag.trim().trim_start_matches('v').trim().to_owned();
     let pick = |field: &str| {
         let field = field.trim();
@@ -482,6 +518,7 @@ pub fn interpreted(v: ReleaseVersions, now: i64) -> Releases {
         agent: pick(&v.agent),
         tag,
         download: v.download.trim().to_owned(),
+        source: source.trim_end_matches('/').to_owned(),
     }
 }
 
@@ -628,17 +665,19 @@ fn relayable(key: &[u8], binary: &[u8], signature: &[u8], arch: &str) -> bool {
 /// internal one, and nothing a reader can act on lives in its path. The whole URL
 /// and the error behind it go to the log, which is not reachable from outside.
 pub async fn fetch_asset(app: &App, url: &str, what: &str, max: usize) -> Result<Vec<u8>, String> {
-    let who = source_name(url);
-    // The default client timeout is sized for API calls; the caller bounds the
-    // download as a whole.
+    // Named by what failed, never by where: this text is returned to whoever asked,
+    // and on the agent relay that is an anonymous caller. A host name and a status
+    // code out of a document the source controls is what a look around an internal
+    // network looks like. The URL and the error behind it go to the log, which is
+    // not reachable from outside.
     let mut res = app.http.get(url).timeout(RELAY_HEAD).send().await.map_err(|e| {
         warn!("fetching {url} failed: {e:#}");
-        format!("the hub could not reach the release source ({who}); its log has the details")
+        "the hub could not reach the release source; its log has the details".to_owned()
     })?;
     if !res.status().is_success() {
-        return Err(format!("{who} answered {} for the {what}", res.status()));
+        return Err(format!("the release source answered {} for the {what}", res.status()));
     }
-    let too_large = || format!("{who} sent more than {max} bytes for the {what}");
+    let too_large = || format!("the release source sent more than {max} bytes for the {what}");
     let declared = res.content_length().unwrap_or(0);
     if declared > max as u64 {
         return Err(too_large());
@@ -651,7 +690,7 @@ pub async fn fetch_asset(app: &App, url: &str, what: &str, max: usize) -> Result
             Ok(None) => return Ok(body),
             Err(e) => {
                 warn!("reading {url} failed: {e:#}");
-                return Err("the agent download was cut off; try again".to_owned());
+                return Err(format!("the release source cut off the {what}; try again"));
             }
         }
     }
@@ -1903,6 +1942,19 @@ mod tests {
         assert_eq!(version_url(&app), direct);
     }
 
+    /// The official source is recognised in both shapes a person types, so that
+    /// storing the versions file's name does not quietly switch the panel's GitHub
+    /// proxy off.
+    #[test]
+    fn the_official_source_is_recognised_with_or_without_the_versions_file() {
+        let base = official_release_base();
+        assert!(is_official(&base));
+        assert!(is_official(&format!("{base}/")));
+        assert!(is_official(&format!("  {base}/versions.json  ")));
+        assert!(!is_official("https://dl.example.com/vps-probe"));
+        assert!(!is_official(""));
+    }
+
     /// The three shapes a source can have: GitHub's, a mirror publishing under a
     /// per-release directory it names in `download`, and one that only has the
     /// file names under the versions file's own directory.
@@ -1939,7 +1991,11 @@ mod tests {
     /// -- or is not one -- leaves the panel with.
     #[test]
     fn a_versions_file_falls_back_to_the_tag_for_what_it_does_not_say() {
-        let read = |body: &str| serde_json::from_str::<ReleaseVersions>(body).ok().map(|v| interpreted(v, 7));
+        let read = |body: &str| {
+            serde_json::from_str::<ReleaseVersions>(body)
+                .ok()
+                .map(|v| interpreted(v, 7, "https://dl.example.com/p/"))
+        };
         let full = read(
             r#"{"tag":"v1.1.0","hub":"1.2.0","agent":"1.1.0","download":"https://dl.example.com/v1.1.0"}"#,
         )
@@ -1947,6 +2003,7 @@ mod tests {
         assert_eq!((full.tag.as_str(), full.hub.as_str(), full.agent.as_str()), ("1.1.0", "1.2.0", "1.1.0"));
         assert_eq!(full.download, "https://dl.example.com/v1.1.0");
         assert_eq!(full.read_at, 7);
+        assert_eq!(full.source, "https://dl.example.com/p", "the answer remembers which source said it");
 
         // A release cut before the file carried versions, or a mirror that only
         // labels itself: the tag answers for both, as it did before the file.
@@ -1966,30 +2023,39 @@ mod tests {
     #[test]
     fn a_release_lookup_is_held_for_six_hours_and_a_failed_one_for_ten_minutes() {
         let now = Utc::now().timestamp();
+        const SRC: &str = "https://dl.example.com/p";
         let read = |read_at, hub: &str, agent: &str| Releases {
             read_at,
             hub: hub.into(),
             agent: agent.into(),
+            source: SRC.into(),
             ..Default::default()
         };
-        assert!(!fresh_enough(&Releases::default(), now, RELEASES_FRESH), "nothing has been read yet");
-        assert!(fresh_enough(&read(now - 5 * 3600, "1.2.0", "1.1.0"), now, RELEASES_FRESH));
-        assert!(!fresh_enough(&read(now - 7 * 3600, "1.2.0", "1.1.0"), now, RELEASES_FRESH));
-        assert!(fresh_enough(&read(now - 300, "", ""), now, RELEASES_FRESH), "a failure is held briefly");
+        let fresh = |held: &Releases, max_age| fresh_enough(held, now, max_age, SRC);
+        assert!(!fresh(&Releases::default(), RELEASES_FRESH), "nothing has been read yet");
+        assert!(fresh(&read(now - 5 * 3600, "1.2.0", "1.1.0"), RELEASES_FRESH));
+        assert!(!fresh(&read(now - 7 * 3600, "1.2.0", "1.1.0"), RELEASES_FRESH));
+        assert!(fresh(&read(now - 300, "", ""), RELEASES_FRESH), "a failure is held briefly");
+        assert!(!fresh(&read(now - 1200, "1.2.0", ""), RELEASES_FRESH), "half an answer is a failure");
         assert!(
-            !fresh_enough(&read(now - 1200, "1.2.0", ""), now, RELEASES_FRESH),
-            "half an answer is a failure"
-        );
-        assert!(
-            !fresh_enough(&read(now + 3600, "1.2.0", "1.1.0"), now, RELEASES_FRESH),
+            !fresh(&read(now + 3600, "1.2.0", "1.1.0"), RELEASES_FRESH),
             "read before the clock was set back"
         );
         // The relay's window is minutes, not hours: `download` names one release's
         // directory, so a stale answer would hand the previous agent to every node.
-        assert!(!fresh_enough(&read(now - 600, "1.2.0", "1.1.0"), now, RELEASE_ASSET_FRESH));
-        assert!(fresh_enough(&read(now - 60, "1.2.0", "1.1.0"), now, RELEASE_ASSET_FRESH));
+        assert!(!fresh(&read(now - 600, "1.2.0", "1.1.0"), RELEASE_ASSET_FRESH));
+        assert!(fresh(&read(now - 60, "1.2.0", "1.1.0"), RELEASE_ASSET_FRESH));
         // And a failure is never held longer than the caller wanted.
-        assert!(!fresh_enough(&read(now - 60, "", ""), now, 30));
+        assert!(!fresh(&read(now - 60, "", ""), 30));
+        // An answer about a source this hub no longer uses is not an answer at all,
+        // however recent: a save that changes the source must take effect at once.
+        let elsewhere =
+            Releases { source: "https://other.example.com/p".into(), ..read(now, "1.2.0", "1.1.0") };
+        assert!(!fresh_enough(&elsewhere, now, RELEASES_FRESH, SRC), "the answer belongs to another source");
+        assert!(
+            fresh_enough(&read(now, "1.2.0", "1.1.0"), now, RELEASES_FRESH, "https://dl.example.com/p/"),
+            "a trailing slash is the same source"
+        );
     }
 
     #[test]

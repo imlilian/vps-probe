@@ -2081,8 +2081,14 @@ const PROBED_ARCHES: [&str; 2] = ["x86_64", "aarch64"];
 pub async fn release_source(_: Admin, State(app): State<Shared>, body: Bytes) -> Response {
     #[derive(Deserialize, Default)]
     struct Draft {
+        /// Absent means "the source this hub uses"; empty means the official one,
+        /// which is how the panel asks about the half of the card it is showing.
         #[serde(default)]
         release_source: Option<String>,
+        /// The proxy as typed, so testing the official half uses the address in the
+        /// field rather than the one saved last time.
+        #[serde(default)]
+        github_proxy: Option<String>,
     }
     let draft = if body.is_empty() {
         Draft::default()
@@ -2101,25 +2107,41 @@ pub async fn release_source(_: Admin, State(app): State<Shared>, body: Bytes) ->
     let source = if !app.release_base.is_empty() {
         crate::release_source(&app)
     } else {
-        match draft.release_source.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        match draft.release_source.as_deref().map(str::trim) {
+            // The card's 「官方源」 half: what is being asked about is the project's
+            // own page, whatever the stored value happens to be.
+            Some("") => crate::official_release_base(),
             Some(typed) => {
                 if let Some(message) = source_error(typed) {
                     return bad(&message);
                 }
-                let typed = typed.trim_end_matches('/');
+                let typed = source_directory(typed);
                 drafted = typed != stored;
-                typed.to_owned()
+                typed
             }
             None => crate::release_source(&app),
         }
     };
-    let mut answer = match tokio::time::timeout(SOURCE_PROBE, probe_source(&app, &source)).await {
+    // A draft is a value the panel typed. Where the command line owns the source,
+    // the panel's field is inert and what it holds is not a draft.
+    if app.release_base.is_empty() && source != stored {
+        drafted = true;
+    }
+    // What the URLs are built through: the draft's proxy where the panel sent one,
+    // the saved value otherwise.
+    let proxy = draft
+        .github_proxy
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_owned)
+        .unwrap_or_else(|| app.db.get("github_proxy").unwrap_or_default());
+    let mut answer = match tokio::time::timeout(SOURCE_PROBE, probe_source(&app, &source, &proxy)).await {
         Ok(Ok(answer)) => answer,
         Ok(Err(reason)) => json!({"error": reason}),
         Err(_) => json!({"error": format!("源在 {} 秒内没有回应", SOURCE_PROBE.as_secs())}),
     };
     if answer.get("version_url").is_none() {
-        answer["version_url"] = json!(crate::version_url_for(&app, &source));
+        answer["version_url"] = json!(crate::version_url_with(&proxy, &source));
     }
     answer["source"] = json!(source);
     answer["fixed"] = json!(!app.release_base.is_empty());
@@ -2131,8 +2153,8 @@ pub async fn release_source(_: Admin, State(app): State<Shared>, body: Bytes) ->
 }
 
 /// Everything one probe of `source` learns, or why it could not.
-async fn probe_source(app: &App, source: &str) -> Result<Value, String> {
-    let url = crate::version_url_for(app, source);
+async fn probe_source(app: &App, source: &str, proxy: &str) -> Result<Value, String> {
+    let url = crate::version_url_with(proxy, source);
     let versions = crate::read_versions_at(app, &url).await?;
     let tag = versions.tag.trim().trim_start_matches('v').trim().to_owned();
     let pick = |field: &str| {
@@ -2147,7 +2169,7 @@ async fn probe_source(app: &App, source: &str) -> Result<Value, String> {
     let base = if versions.download.trim().is_empty() || !crate::is_official(source) {
         base
     } else {
-        crate::proxied(app, base)
+        crate::proxied_by(proxy, base)
     };
     // Only the signature is fetched: 64 bytes that answer "would an install find
     // this asset", and the one thing a mirror most often forgets to copy.
@@ -2186,23 +2208,43 @@ fn source_error(value: &str) -> Option<String> {
     if value.is_empty() {
         return None;
     }
-    let Some(rest) = value.strip_prefix("https://").or_else(|| value.strip_prefix("http://")) else {
-        return Some("发布源要以 https:// 或 http:// 开头".into());
-    };
     if value.chars().any(char::is_whitespace) {
         return Some("发布源里不能有空格或换行".into());
     }
-    // A query or fragment would be swallowed by the name appended to this
-    // address, and the failure would look like a missing file.
-    if value.contains('?') || value.contains('#') {
-        return Some("发布源不能带 ? 或 #：它是目录，后面会拼上文件名".into());
+    // Parsed rather than matched on a prefix: a source that cannot be a URL is
+    // refused here, where the message can name the field, rather than becoming a
+    // 502 that says only "could not reach the release source".
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return Some("发布源要写成一个地址，例如 https://dl.example.com/vps-probe".into());
+    };
+    if !matches!(url.scheme(), "https" | "http") {
+        return Some("发布源要以 https:// 或 http:// 开头".into());
     }
-    if rest.trim_start_matches('/').is_empty() {
+    // What this address becomes is a `warn!` line every time the fetch fails, and
+    // the journal is not where a password belongs.
+    if !url.username().is_empty() || url.password().is_some() {
+        return Some("发布源里不能带用户名或密码：它是公开地址，失败时会写进日志".into());
+    }
+    if url.host_str().is_none_or(str::is_empty) {
         return Some("发布源要写上主机名，例如 https://dl.example.com/vps-probe".into());
     }
-    // A trailing slash, or the versions file's own name, is accepted: both are
-    // what a browser's address bar produces, and both are normalised on write.
+    // A query or fragment would be swallowed by the name appended to this address,
+    // and the failure would look like a missing file.
+    if url.query().is_some() || url.fragment().is_some() {
+        return Some("发布源不能带 ? 或 #：它是目录，后面会拼上文件名".into());
+    }
+    // A trailing slash, or the versions file's own name, is accepted: both are what
+    // a browser's address bar produces, and both are normalised on write.
     None
+}
+
+/// A release source as it is stored: a bare directory, no trailing slash and no
+/// versions-file name. Both shapes are typed in practice, and `is_official` and
+/// `version_url_for` both accept them -- so what is kept is the one form they
+/// agree on.
+fn source_directory(value: &str) -> String {
+    let value = value.trim().trim_end_matches('/');
+    value.strip_suffix("/versions.json").unwrap_or(value).trim_end_matches('/').to_owned()
 }
 
 /// Every live session, with the caller's own marked.
@@ -2456,7 +2498,7 @@ pub async fn save_settings(
             "oidc_issuer" => app.db.set("oidc_issuer", &issuer_address(value)),
             // Stored as a bare directory: it is joined with `/versions.json` and
             // with asset names, where a doubled slash is a different URL.
-            "release_source" => app.db.set("release_source", value.trim().trim_end_matches('/')),
+            "release_source" => app.db.set("release_source", &source_directory(value)),
             _ => app.db.set(key, value),
         };
         if let Err(e) = saved {
@@ -2466,7 +2508,11 @@ pub async fn save_settings(
     // The answer held is the previous source's, and its six-hour window would
     // otherwise keep showing the old versions after the change -- which reads as a
     // panel that ignored the field. Cleared, so the next read asks the new source.
-    if map.contains_key("release_source") {
+    // Either half can change where releases come from -- the source by naming a
+    // mirror, the proxy by naming a way out to GitHub -- so both drop the answer
+    // held. Without the proxy, saving it leaves the page saying "查不到最新版本"
+    // for the retry window while the test right beside it succeeds.
+    if map.contains_key("release_source") || map.contains_key("github_proxy") {
         *app.releases.lock().unwrap_or_else(|e| e.into_inner()) = crate::Releases::default();
     }
     with_cookies(Json(json!({"ok": true})), [reissued])
@@ -2697,6 +2743,26 @@ mod tests {
         );
         assert_eq!(app.db.get("release_source").as_deref(), Some("https://dl.example.com/vps-probe"));
 
+        // Either shape a person types is stored as the directory the assets sit in,
+        // which is the form `is_official` and `version_url_for` both accept.
+        assert_eq!(
+            put(app.clone(), json!({"release_source": "https://dl.example.com/v/versions.json"}))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(app.db.get("release_source").as_deref(), Some("https://dl.example.com/v"));
+        assert_eq!(
+            put(app.clone(), json!({"release_source": "https://dl.example.com/v/"})).await.status(),
+            StatusCode::OK
+        );
+        assert_eq!(app.db.get("release_source").as_deref(), Some("https://dl.example.com/v"));
+        // A source carrying credentials is refused where the message can name the
+        // field, rather than being stored and then written to the journal by the
+        // first failed fetch.
+        assert!(setting_error("release_source", &json!("https://user:pw@dl.example.com/v")).is_some());
+        assert!(setting_error("release_source", &json!("https://dl.example.com/v?x=1")).is_some());
+
         // The answer held belonged to the previous source, and its six-hour window
         // would keep the old versions on screen after the change -- which reads as
         // a panel that ignored the field.
@@ -2738,7 +2804,10 @@ mod tests {
         assert_eq!(body["source"], "http://127.0.0.1:9/vps-probe");
         assert_eq!(body["version_url"], "http://127.0.0.1:9/vps-probe/versions.json");
         assert_eq!(body["draft"], true, "the hub holds no source, so this one is a draft");
-        assert!(body["error"].as_str().is_some_and(|e| e.contains("127.0.0.1")), "{body}");
+        // The address is in `version_url`, not in the failure: that text goes to
+        // whoever asked, and on the relay that is anyone.
+        assert!(body["error"].as_str().is_some_and(|e| e.contains("could not reach")), "{body}");
+        assert!(!body["error"].as_str().unwrap().contains("127.0.0.1"), "no host in the refusal: {body}");
 
         // The same address, saved, is no longer a draft.
         app.db.set("release_source", "http://127.0.0.1:9/vps-probe").unwrap();
