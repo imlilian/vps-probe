@@ -11,7 +11,7 @@
 set -eu
 
 status=0
-for src in monitor/web-admin/src monitor/web-site/src; do
+for src in hub/web-admin/src hub/web-site/src; do
 	leaks=$(
 		grep -rnE "(from|import|require|export)[[:space:]]*\(?[[:space:]]*['\"][^'\"]*\.(test|spec)\.tsx?['\"]" \
 			"$src" --include='*.ts' --include='*.tsx' \

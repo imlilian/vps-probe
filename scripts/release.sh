@@ -3,7 +3,7 @@
 # and stops there, because pushing and tagging are separate decisions.
 #
 # A tag is only the release's sequence number; it no longer has to equal any
-# component's version. monitor/Cargo.toml and agent/Cargo.toml each move only
+# component's version. hub/Cargo.toml and agent/Cargo.toml each move only
 # when their own code does, and a release whose component stayed put inherits
 # that component's previous binary (release.yml compares against the previous
 # release's versions.json). Missing a bump is not a failure: the next release
@@ -29,23 +29,23 @@ cd "$(dirname "$0")/.."
 
 DRY=no
 FORCE=no
-BUMP_MONITOR=no
+BUMP_HUB=no
 BUMP_AGENT=no
-MONITOR_VER=
+HUB_VER=
 AGENT_VER=
 for arg in "$@"; do
   case $arg in
     --dry-run) DRY=yes ;;
     --force) FORCE=yes ;;
     -h | --help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    HUB=*) BUMP_MONITOR=yes; MONITOR_VER=${arg#HUB=}; MONITOR_VER=${MONITOR_VER#v} ;;
+    HUB=*) BUMP_HUB=yes; HUB_VER=${arg#HUB=}; HUB_VER=${HUB_VER#v} ;;
     AGENT=*) BUMP_AGENT=yes; AGENT_VER=${arg#AGENT=}; AGENT_VER=${AGENT_VER#v} ;;
     -*) echo "unknown option: $arg" >&2; exit 2 ;;
-    *) BUMP_MONITOR=yes; BUMP_AGENT=yes; MONITOR_VER=${arg#v}; AGENT_VER=${arg#v} ;;
+    *) BUMP_HUB=yes; BUMP_AGENT=yes; HUB_VER=${arg#v}; AGENT_VER=${arg#v} ;;
   esac
 done
 
-if [ "$BUMP_MONITOR" = no ] && [ "$BUMP_AGENT" = no ]; then
+if [ "$BUMP_HUB" = no ] && [ "$BUMP_AGENT" = no ]; then
   echo "usage: scripts/release.sh <x.y.z> | HUB=<x.y.z> | AGENT=<x.y.z> [HUB=… AGENT=…] [--dry-run] [--force]" >&2
   exit 2
 fi
@@ -58,7 +58,7 @@ valid() {
   return 0
 }
 
-for pair in "monitor:$BUMP_MONITOR:$MONITOR_VER" "agent:$BUMP_AGENT:$AGENT_VER"; do
+for pair in "hub:$BUMP_HUB:$HUB_VER" "agent:$BUMP_AGENT:$AGENT_VER"; do
   crate=${pair%%:*}; rest=${pair#*:}
   bump=${rest%%:*}; ver=${rest#*:}
   if [ "$bump" = yes ]; then
@@ -66,7 +66,7 @@ for pair in "monitor:$BUMP_MONITOR:$MONITOR_VER" "agent:$BUMP_AGENT:$AGENT_VER";
   fi
 done
 
-monitor_old=$(awk -F'"' '/^version = "/ { print $2; exit }' monitor/Cargo.toml)
+hub_old=$(awk -F'"' '/^version = "/ { print $2; exit }' hub/Cargo.toml)
 agent_old=$(awk -F'"' '/^version = "/ { print $2; exit }' agent/Cargo.toml)
 
 # A v* tag can be neither moved nor deleted, so the number must never be taken
@@ -86,10 +86,10 @@ forward() {
   fi
 }
 
-if [ "$BUMP_MONITOR" = yes ]; then
-  [ "$MONITOR_VER" = "$monitor_old" ] && { echo "monitor is already at $MONITOR_VER: nothing to bump" >&2; exit 1; }
-  tag_exists "$MONITOR_VER" && { echo "tag v$MONITOR_VER already exists; a published tag cannot be moved" >&2; exit 1; }
-  forward "$monitor_old" "$MONITOR_VER" monitor
+if [ "$BUMP_HUB" = yes ]; then
+  [ "$HUB_VER" = "$hub_old" ] && { echo "hub is already at $HUB_VER: nothing to bump" >&2; exit 1; }
+  tag_exists "$HUB_VER" && { echo "tag v$HUB_VER already exists; a published tag cannot be moved" >&2; exit 1; }
+  forward "$hub_old" "$HUB_VER" hub
 fi
 if [ "$BUMP_AGENT" = yes ]; then
   [ "$AGENT_VER" = "$agent_old" ] && { echo "agent is already at $AGENT_VER: nothing to bump" >&2; exit 1; }
@@ -113,15 +113,15 @@ UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) |
 # and nowhere else -- release.yml checks nothing, on purpose.
 LAST_TAG=$(git tag --list 'v*' | sort -V | tail -n1)
 if [ "$FORCE" != yes ] && [ -n "$LAST_TAG" ]; then
-  for crate in monitor agent; do
+  for crate in hub agent; do
     case $crate in
-      monitor) bump=$BUMP_MONITOR ;;
+      hub) bump=$BUMP_HUB ;;
       agent) bump=$BUMP_AGENT ;;
     esac
     if [ "$bump" = no ] && [ -n "$(git diff --name-only "$LAST_TAG"..HEAD -- "$crate/")" ]; then
       echo "warning: $crate/ has changes since $LAST_TAG but its version was not bumped:" >&2
       echo "         this release would publish $crate's previous binary unchanged." >&2
-      if [ "$crate" = monitor ]; then
+      if [ "$crate" = hub ]; then
         echo "         若属遗漏，请中止后改用：scripts/release.sh HUB=<新号> [AGENT=<新号>]" >&2
       else
         echo "         若属遗漏，请中止后改用：scripts/release.sh AGENT=<新号> [HUB=<新号>]" >&2
@@ -145,7 +145,7 @@ bump_crate() {
 
   # The lock names its packages in `[[package]]` blocks: the version to rewrite
   # is the first one after this crate's `name`, not the one after a dependency's.
-  name=$([ "$crate" = monitor ] && echo probe-hub || echo probe-agent)
+  name="probe-$crate"
   awk -v crate="$name" -v v="$ver" '
     $0 == "name = \"" crate "\"" { found = 1; print; next }
     found && /^version = "/ { print "version = \"" v "\""; found = 0; next }
@@ -154,19 +154,19 @@ bump_crate() {
   mv "$crate/Cargo.lock.tmp" "$crate/Cargo.lock"
 }
 
-[ "$BUMP_MONITOR" = yes ] && bump_crate monitor "$MONITOR_VER"
+[ "$BUMP_HUB" = yes ] && bump_crate hub "$HUB_VER"
 [ "$BUMP_AGENT" = yes ] && bump_crate agent "$AGENT_VER"
 
 # Verified rather than assumed: a Cargo.toml that did not move and a lock that
 # still says the old number are exactly what `--locked` fails on, three minutes
 # into a release nobody can retract.
-for crate in monitor agent; do
+for crate in hub agent; do
   case $crate in
-    monitor) bump=$BUMP_MONITOR; want=$MONITOR_VER ;;
+    hub) bump=$BUMP_HUB; want=$HUB_VER ;;
     agent) bump=$BUMP_AGENT; want=$AGENT_VER ;;
   esac
   [ "$bump" = yes ] || continue
-  name=$([ "$crate" = monitor ] && echo probe-hub || echo probe-agent)
+  name="probe-$crate"
   manifest=$(awk -F'"' '/^version = "/ { print $2; exit }' "$crate/Cargo.toml")
   locked=$(awk -v crate="$name" '
     $0 == "name = \"" crate "\"" { found = 1; next }
@@ -178,20 +178,20 @@ for crate in monitor agent; do
   }
 done
 
-echo "hub $monitor_old -> $([ "$BUMP_MONITOR" = yes ] && echo "$MONITOR_VER" || echo 不变) · agent $agent_old -> $([ "$BUMP_AGENT" = yes ] && echo "$AGENT_VER" || echo 不变) on $BRANCH ($UPSTREAM)"
+echo "hub $hub_old -> $([ "$BUMP_HUB" = yes ] && echo "$HUB_VER" || echo 不变) · agent $agent_old -> $([ "$BUMP_AGENT" = yes ] && echo "$AGENT_VER" || echo 不变) on $BRANCH ($UPSTREAM)"
 
 git --no-pager diff --stat
 if [ "$DRY" = yes ]; then
-  echo "dry run: nothing committed. Reverting with: git checkout -- monitor/Cargo.* agent/Cargo.*"
+  echo "dry run: nothing committed. Reverting with: git checkout -- hub/Cargo.* agent/Cargo.*"
   exit 0
 fi
 
-git add monitor/Cargo.toml monitor/Cargo.lock agent/Cargo.toml agent/Cargo.lock
+git add hub/Cargo.toml hub/Cargo.lock agent/Cargo.toml agent/Cargo.lock
 # The trailing `|| true` is not decoration: a `[ ... ] && printf` that does not
 # fire returns non-zero, and as the last command of the substitution it is what
 # the assignment sees -- which `set -e` would take as fatal, before the commit.
 msg=$(printf 'release:'
-  { [ "$BUMP_MONITOR" = yes ] && printf ' hub %s' "$MONITOR_VER"; } || true
+  { [ "$BUMP_HUB" = yes ] && printf ' hub %s' "$HUB_VER"; } || true
   { [ "$BUMP_AGENT" = yes ] && printf ' agent %s' "$AGENT_VER"; } || true)
 git commit -q -m "$msg"
 
@@ -211,7 +211,7 @@ release commit is made. Nothing is pushed and nothing is tagged -- on purpose:
   3. git tag $NEXT_TAG && git push origin $NEXT_TAG
 
 Tag $NEXT_TAG is a sequence number only: it equals neither the hub's
-($([ "$BUMP_MONITOR" = yes ] && echo "$MONITOR_VER" || echo "$monitor_old")) nor
+($([ "$BUMP_HUB" = yes ] && echo "$HUB_VER" || echo "$hub_old")) nor
 the agent's ($([ "$BUMP_AGENT" = yes ] && echo "$AGENT_VER" || echo "$agent_old"))
 version, and must not be edited to match one.
 EOF

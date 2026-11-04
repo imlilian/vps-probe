@@ -1,4 +1,4 @@
-# monitor-web-site
+# hub-web-site
 
 hub 的公开状态页，也是 hub 唯一内置、唯一使用的前端主题。
 
@@ -63,7 +63,7 @@ WebSocket 握手、每 2 秒推一帧——URL 与 JSON 形状都和真 hub 一�
 - `series=metrics|ping` 只取要画的那一半，省掉的那半原本占响应的三分之一到三分之二
 
 匿名访问 `GET /api/nodes` 仅返回 `public=1` 的节点，响应中不含 `ip`、`hostname`、`remark`。字段定义以 hub 的
-`monitor/src/api.rs` 为准。**公开页不渲染地址**，规格表里也没有留给它的格子。
+`hub/src/api.rs` 为准。**公开页不渲染地址**，规格表里也没有留给它的格子。
 
 ## 延迟色块的口径
 

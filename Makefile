@@ -8,8 +8,8 @@
 #
 # npm ci 只在 node_modules 缺失时执行：安装是一次性的，重复构建没有理由再付这份时间。
 
-THEME_DIR := monitor/web-site
-ADMIN_DIR := monitor/web-admin
+THEME_DIR := hub/web-site
+ADMIN_DIR := hub/web-admin
 
 .PHONY: all hub agent theme admin check test clean release
 
@@ -22,7 +22,7 @@ admin:
 	cd $(ADMIN_DIR) && { [ -d node_modules ] || npm ci; } && npm run build
 
 hub: admin
-	cd monitor && cargo build --release
+	cd hub && cargo build --release
 
 agent:
 	cd agent && cargo build --release
@@ -30,19 +30,19 @@ agent:
 # 测试文件就住在 src/ 旁边，靠"没人 import 它"才不进包：第一条把那前提钉住，
 # 任何模块 import 了 *.test.ts 就失败。CI 跑同一个脚本。
 check: admin
-	sh monitor/scripts/no-tests-in-bundle.sh
+	sh hub/scripts/no-tests-in-bundle.sh
 	cd $(THEME_DIR) && { [ -d node_modules ] || npm ci; } && npm run lint
 	cd $(ADMIN_DIR) && npm run lint
-	cd monitor && cargo fmt --check && cargo check
+	cd hub && cargo fmt --check && cargo check
 	cd agent && cargo fmt --check && cargo check
 
 test: admin
 	cd $(THEME_DIR) && { [ -d node_modules ] || npm ci; } && npm test
 	cd $(ADMIN_DIR) && npm test
-	cd monitor && cargo test
+	cd hub && cargo test
 	cd agent && cargo test
 
-# 版本号各自写在 monitor/、agent/ 的 Cargo.toml 和 Cargo.lock 里，`--locked`
+# 版本号各自写在 hub/、agent/ 的 Cargo.toml 和 Cargo.lock 里，`--locked`
 # 要求 lock 先改好。脚本按参数决定 bump 谁（VERSION= 两者同号；HUB=/AGENT=
 # 只动一个），改号、提交就停：push 和 tag 等你看到 CI 绿了再打，tag 号是
 # 纯发行序号，脚本末尾会算好。
@@ -53,4 +53,4 @@ release:
 	@./scripts/release.sh $(if $(VERSION),$(VERSION),$(if $(HUB),HUB=$(HUB))$(if $(AGENT), AGENT=$(AGENT)))
 
 clean:
-	rm -rf $(THEME_DIR)/dist $(ADMIN_DIR)/dist monitor/target agent/target
+	rm -rf $(THEME_DIR)/dist $(ADMIN_DIR)/dist hub/target agent/target

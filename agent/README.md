@@ -73,7 +73,7 @@ probe-agent --server https://your-hub --token <token>
 连接 hub 时逐个尝试解析出的地址，除最后一个外每个限 5 秒。网卡上只有内网 IPv4（NAT）时先连 hub 的
 IPv4：NAT 的公网地址不在网卡上，hub 只有看到一条 IPv4 连接才知道它。
 
-线上协议以 `src/collect.rs` 的 `Facts` / `Metrics` 为准，hub 侧对应 `monitor/src/api.rs` 的公开指标白名单。
+线上协议以 `src/collect.rs` 的 `Facts` / `Metrics` 为准，hub 侧对应 `hub/src/api.rs` 的公开指标白名单。
 
 ## 构建
 

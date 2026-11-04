@@ -59,7 +59,7 @@ jobs:
             PREV_HUB=$(sed -n 's/.*"hub": *"\([^"]*\)".*/\1/p' prev-versions.json)
             PREV_AGENT=$(sed -n 's/.*"agent": *"\([^"]*\)".*/\1/p' prev-versions.json)
           fi
-          HUB=$(sed -n 's/^version = "\(.*\)"/\1/p' monitor/Cargo.toml)
+          HUB=$(sed -n 's/^version = "\(.*\)"/\1/p' hub/Cargo.toml)
           AGENT=$(sed -n 's/^version = "\(.*\)"/\1/p' agent/Cargo.toml)
           HUB_INHERIT= AGENT_INHERIT=
           [ -n "$PREV_HUB" ] && [ "$PREV_HUB" = "$HUB" ] && HUB_INHERIT=1 || true
@@ -80,17 +80,17 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: |
-            monitor/web-admin/package-lock.json
-            monitor/web-site/package-lock.json
+            hub/web-admin/package-lock.json
+            hub/web-site/package-lock.json
 
       # Required before cargo: rust-embed packs both dist/ trees into the hub.
       # Skipped with the hub build itself when the hub is inherited.
       - run: npm ci && npm run build
         if: steps.versions.outputs.HUB_INHERIT != '1'
-        working-directory: monitor/web-admin
+        working-directory: hub/web-admin
       - run: npm ci && npm run build
         if: steps.versions.outputs.HUB_INHERIT != '1'
-        working-directory: monitor/web-site
+        working-directory: hub/web-site
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -103,7 +103,7 @@ jobs:
         if: steps.versions.outputs.HUB_INHERIT != '1' || steps.versions.outputs.AGENT_INHERIT != '1'
       - run: cross build --release --locked --target ${{ matrix.target }}
         if: steps.versions.outputs.HUB_INHERIT != '1'
-        working-directory: monitor
+        working-directory: hub
       - run: cross build --release --locked --target ${{ matrix.target }}
         if: steps.versions.outputs.AGENT_INHERIT != '1'
         working-directory: agent
@@ -112,7 +112,7 @@ jobs:
         if: steps.versions.outputs.HUB_INHERIT != '1'
         run: |
           mkdir -p dist
-          cp "monitor/target/${{ matrix.target }}/release/probe-hub" \
+          cp "hub/target/${{ matrix.target }}/release/probe-hub" \
              "dist/probe-hub-${{ matrix.target }}"
       - name: collect agent
         if: steps.versions.outputs.AGENT_INHERIT != '1'
@@ -208,11 +208,11 @@ jobs:
           # 2) Changed components are in dist/ already, built and signed above.
           # 3) versions.json, from the manifests alone.
           printf '{"hub":"%s","agent":"%s"}\n' \
-            "$(sed -n 's/^version = "\(.*\)"/\1/p' monitor/Cargo.toml)" \
+            "$(sed -n 's/^version = "\(.*\)"/\1/p' hub/Cargo.toml)" \
             "$(sed -n 's/^version = "\(.*\)"/\1/p' agent/Cargo.toml)" > dist/versions.json
           # 4) The sums cover every binary this release ships, inherited ones
           #    included.
-          cp monitor/install-hub.sh dist/
+          cp hub/install-hub.sh dist/
           (cd dist && sha256sum probe-hub-*-musl probe-agent-*-musl install-hub.sh > sha256sums.txt)
           # 5) One create, once every asset is in place.
           gh release create "$GITHUB_REF_NAME" \

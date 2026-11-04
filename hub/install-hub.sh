@@ -272,7 +272,7 @@ install_hub() {
 		# this is, and the download below reports a real failure if there is one.
 		[ -n "$tag" ] || warn "查不到最新发布版的 tag（源不可达，或它不是 GitHub 那种 \"latest\" 布局）；继续按 $BASE 下载"
 		# A tag is only the release's sequence number; versions.json, written by
-		# CI from monitor/Cargo.toml, says which hub the release actually
+		# CI from hub/Cargo.toml, says which hub the release actually
 		# carries. It is a best-effort read: a release without it (older, or the
 		# file failed to download) shows the tag alone, which is still true.
 		ver="$(curl -fsSL --max-time 10 "$BASE/versions.json" 2>/dev/null |

@@ -16,10 +16,10 @@ hub：管理后台、API 与公开页宿主。整个仓库是单仓库（monorep
 
 | 目录 | 说明 |
 |---|---|
-| `monitor/` | hub：后台、API、公开页宿主（Rust + axum + SQLite） |
+| `hub/` | hub：后台、API、公开页宿主（Rust + axum + SQLite） |
 | `agent/` | Linux agent（独立二进制，WebSocket + JSON-RPC 2.0 上报） |
-| `monitor/web-admin/` | 管理后台前端（Vite + React），构建期嵌入 hub |
-| `monitor/web-site/` | 公开状态页主题（Vite + React），构建期嵌入 hub |
+| `hub/web-admin/` | 管理后台前端（Vite + React），构建期嵌入 hub |
+| `hub/web-site/` | 公开状态页主题（Vite + React），构建期嵌入 hub |
 
 ```
 agent (Linux)  ──WebSocket / JSON-RPC 2.0──▶  hub (axum + SQLite)  ──▶  后台 + 状态页
@@ -41,7 +41,7 @@ make test     # cargo test + 前端测试
 ## 与上游的差异（个人 fork）
 
 - **主题市场已整体移除**：没有主题上传、安装、更新、删除、预览，也没有 `/api/themes*` 与
-  `--themes` 参数。公开页固定使用 `monitor/web-site/` 那一份内嵌主题，管理面板不再有「主题」页。
+  `--themes` 参数。公开页固定使用 `hub/web-site/` 那一份内嵌主题，管理面板不再有「主题」页。
 - **构建不联网**：默认主题从本仓库源码构建后嵌入，不再按 `web-theme.pin` 从 GitHub Release 下载。
 - 相应地，`tar`/`flate2` 里的解压链路只保留公开 WebSocket gzip 帧所需的那部分，主题包的 tar.gz
   解压代码及其依赖已删除。

@@ -6,10 +6,10 @@
 
 | 目录 | 说明 |
 |---|---|
-| `monitor/` | hub：后台、API、公开页宿主（Rust + axum + SQLite） |
+| `hub/` | hub：后台、API、公开页宿主（Rust + axum + SQLite） |
 | `agent/` | Linux 采集端（musl 静态二进制，WebSocket + JSON-RPC 2.0 上报） |
-| `monitor/web-admin/` | 管理后台前端（Vite + React），构建期嵌入 hub |
-| `monitor/web-site/` | 公开状态页（Vite + React），构建期嵌入 hub |
+| `hub/web-admin/` | 管理后台前端（Vite + React），构建期嵌入 hub |
+| `hub/web-site/` | 公开状态页（Vite + React），构建期嵌入 hub |
 
 ```
 probe-agent (Linux)  ──WebSocket / JSON-RPC 2.0──▶  probe-hub (axum + SQLite)  ──▶  后台 + 状态页
@@ -137,7 +137,7 @@ make test     # 前端测试 + cargo test
 
 推送 `v*` tag，`.github/workflows/release.yml` 出双架构（x86_64 / aarch64 musl）二进制并
 用 ed25519 签名。**tag 是纯发行序号**（单调递增、永不复用），不等于任何组件的版本号；
-`monitor/Cargo.toml` 与 `agent/Cargo.toml` 各自只随自己的代码改动 bump。每个 release 都
+`hub/Cargo.toml` 与 `agent/Cargo.toml` 各自只随自己的代码改动 bump。每个 release 都
 同时含两个组件的全部资产：本次没改的组件**原样继承**上一版的二进制 + 签名（不重编译、
 不重签），CI 从两个 Cargo.toml 生成 `versions.json` 随 release 发布，面板读它区分
 「hub/agent 是否需要更新」，读不到则回退 tag（旧 hub 的行为不变）。
@@ -162,7 +162,7 @@ make release HUB=0.2.2 AGENT=0.3.0      # 各 bump 各的号
 `--force` 跳过。
 
 签名私钥只存在于仓库的 Actions secret `AGENT_SIGNING_KEY`，任何机器上都没有。公钥有两份副本：
-`monitor/src/main.rs` 的 `AGENT_SIGNING_KEY`（hub 转发 agent 时验签）与 `monitor/install-hub.sh`
+`hub/src/main.rs` 的 `AGENT_SIGNING_KEY`（hub 转发 agent 时验签）与 `hub/install-hub.sh`
 的 `PUBKEY`（安装 hub 时验签）。**轮换密钥要同时改这两处并发版。**
 
 ## 安全取舍
