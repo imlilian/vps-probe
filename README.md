@@ -60,6 +60,20 @@ sudo sh install-hub.sh --uninstall     # 保留数据与系统用户
 sudo sh install-hub.sh --purge         # 数据库和系统用户一起删
 ```
 
+二进制、数据和服务账号：`/opt/probe/probe-hub`、`/opt/probe/data/probe.db`（0700，属主
+`probe-hub`）、账号 `probe-hub`（系统账号，无 home、nologin，跟服务名一致）。数据在，账号
+就得在——`--purge` 把两者一起删，`--uninstall` 保留，重装才能接着用同一个库。
+
+二进制按 ed25519 签名校验，`install-hub.sh` 自己带公钥，所以**换发布源不影响可信度**。
+要从别处装（自建镜像、公司内网、GitHub 不可达）：
+
+```sh
+sudo sh install-hub.sh --release-base https://dl.example.com/vps-probe
+```
+
+那个地址下要有同名文件（`probe-hub-<arch>-unknown-linux-musl` 和它的 `.sig`、`versions.json`）。
+拿不到 tag 只影响屏幕上那行版本，不影响安装。装完 `probe-hub --version` 可以核对实际版本。
+
 ## 安装 agent
 
 在面板添加节点，复制生成的命令到目标机器执行：
@@ -83,6 +97,37 @@ curl -fsSL https://your-hub/install-agent.sh | sh -s -- --upgrade
 # 卸载：删除 unit、二进制、env、日志与系统用户
 curl -fsSL https://your-hub/install-agent.sh | sh -s -- --uninstall
 ```
+
+`install-agent.sh --help` 列全部参数；`probe-agent --version` 看装的是哪一版。
+
+## 登录方式
+
+面板的会话可以来自三种凭据，彼此独立——只开一种、或者全开都行：
+
+| 方式 | 在哪配 | 回调地址 |
+|---|---|---|
+| 密码 | 「安全」页设置 | — |
+| GitHub 登录 | 「安全」页填 Client ID / Secret | `{站点URL}/api/auth/github/callback` |
+| 通用 OIDC | 「安全」页填 Issuer / Client ID / Secret | `{站点URL}/api/auth/oidc/callback` |
+
+面板「安全」页会按当前站点 URL 把两个回调地址直接写出来，照抄进身份系统即可。Client Secret
+只能写、不能读回来，之后只显示「已设置」。
+
+**通用 OIDC** 走标准 discovery：hub 取 `{issuer}/.well-known/openid-configuration`，用其中
+的授权、token、userinfo 三个端点；流程是授权码 + PKCE（S256），scope 是 `openid profile`。
+所以 Keycloak、Authentik、Authelia、Pocket ID、Azure AD 这类实现了 OIDC 发现的都能直接用，
+不需要为某个 provider 写适配。
+
+几个容易踩的地方：
+
+- **Issuer 填 base URL**（例如 `https://id.example.com/realms/monitor`）。填成完整的发现地址
+  也行——hub 会把 `/.well-known/openid-configuration` 后缀摘掉，因为从身份系统界面上复制的
+  通常就是那一条。
+- **必须先有站点 URL**。回调地址要用它拼，而且授权请求和换 token 两次必须逐字相同，hub 不会
+  从请求里猜。没填、或不是 https 时，登录按钮不出现，直接访问那个路由也会被拒。
+- **允许登录的用户列表是必填的，空着谁也登不进去**。这是故意的：留空等于 provider 上的任何
+  账号都能进面板。匹配的是 `preferred_username`，所以 scope 里带了 `profile`。
+- GitHub 登录的允许列表同理，匹配的是 GitHub 用户名；scope 只有 `read:user`。
 
 ## 健康检查（接外部 uptime）
 
@@ -181,6 +226,12 @@ make release HUB=0.2.2 AGENT=0.3.0      # 各 bump 各的号
 - 两个服务都以 `systemd-analyze security` 的 1.8（OK）运行：清空能力集、运行期不建命名空间、
   只放行 `@system-service` 那组系统调用。万一某次改动用到组外的调用，journal 里会写
   `status=31/SYS`，用 `systemctl edit` 补一组即可，不必重装。
+- hub 与 agent 即使同机也跑在两个账号下（`probe-hub` / `probe-agent`），不是一个。数据库
+  目录 0700 属主 `probe-hub`：agent 是同一份发到全网的代码，读不到库，一个节点侧的问题就
+  变不成整支舰队的 token 泄漏。安装器对同名账号先校验再用——已有的同名账号若不是本项目的
+  系统账号（系统 uid + nologin），直接报错，不会静默接管别人的用户。
+- 换发布源不降低可信度：二进制过的是编进安装器和 hub 的公钥签名，源只能影响"取到哪些字节"，
+  影响不了"这些字节是不是本项目签的"。
 
 ## 许可
 
