@@ -33,9 +33,9 @@ use tokio_rustls::TlsConnector;
 /// for the whole message on top.
 const STEP: Duration = Duration::from_secs(10);
 
-/// The most a server may answer with in one reply. A greeting with a long
-/// EHLO list is under 2 KB; this only keeps a server that never ends a line from
-/// growing the buffer without bound.
+/// The most a server may answer with in one reply. A greeting with a long EHLO list
+/// is under 2 KB; this bounds a server that never ends a line, which is what the
+/// read below enforces (`read_line` rather than an unbounded one).
 const MAX_REPLY: usize = 16 * 1024;
 
 /// How the connection is protected. Chosen explicitly rather than negotiated: a
@@ -282,15 +282,17 @@ async fn deliver<S>(conn: &mut Conn<S>, message: &Message) -> Result<(), Failed>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let (code, text) = conn.cmd(&format!("MAIL FROM:<{}>", message.from)).await?;
+    let (code, text) = conn.cmd(&format!("MAIL FROM:<{}>", envelope(&message.from)?)).await?;
     if code != 250 {
         return Err(refused(Step::Mail, code, &text));
     }
-    // Accepted for delivery rather than rejected: 250 and 251 (forwarded) are the
-    // two a relay answers with.
+    // Every 2xx is an acceptance: 250, 251 (will forward) and 252 (cannot verify
+    // the user, will try to deliver) all mean the relay took the recipient, and a
+    // 252 judged a failure would drop an alert that is on its way.
     for to in &message.to {
-        let (code, text) = conn.cmd(&format!("RCPT TO:<{to}>")).await?;
-        if !matches!(code, 250 | 251) {
+        let address = envelope(to)?;
+        let (code, text) = conn.cmd(&format!("RCPT TO:<{address}>")).await?;
+        if code / 100 != 2 {
             return Err(refused(Step::Rcpt, code, &text));
         }
     }
@@ -313,8 +315,8 @@ impl Message {
     /// uniformity.
     fn render(&self) -> String {
         let mut out = String::with_capacity(512 + self.body.len() * 4 / 3);
-        out.push_str(&format!("From: {}\r\n", self.from));
-        out.push_str(&format!("To: {}\r\n", self.to.join(", ")));
+        out.push_str(&format!("From: {}\r\n", header_value(&self.from)));
+        out.push_str(&format!("To: {}\r\n", header_value(&self.to.join(", "))));
         out.push_str(&format!("Subject: {}\r\n", encode_header(&self.subject)));
         out.push_str(&format!("Date: {}\r\n", chrono::Utc::now().to_rfc2822()));
         out.push_str(&format!("Message-ID: {}\r\n", message_id(&self.from)));
@@ -327,11 +329,56 @@ impl Message {
             out.push_str(std::str::from_utf8(line).unwrap_or_default());
             out.push_str("\r\n");
         }
+        // One CRLF, and the caller writes it: the payload is a series of lines, so
+        // leaving the last one open is what makes `DATA` + payload + `.` land as
+        // exactly the lines the encoder produced.
+        if out.ends_with("\r\n") {
+            out.truncate(out.len() - 2);
+        }
         out
     }
 }
 
-/// A header value that may hold anything: ASCII goes through as it is, and
+/// A header value with its line breaks taken out. Nothing that reaches here is
+/// meant to hold one, and a header is exactly where one would become a second
+/// header -- so the invariant is kept where it is cheap, not only where the value
+/// was validated.
+fn header_value(value: &str) -> String {
+    // A CRLF becomes one space rather than two, so a folded value reads as one.
+    value.replace("\r\n", " ").replace(['\r', '\n'], " ").trim().to_owned()
+}
+
+/// A mailbox as the envelope takes it: the bare address out of `name@host` or
+/// `Display Name <name@host>`, refused if it could break the command it goes into.
+///
+/// The command is one line of SMTP, so a newline, a space or an angle bracket in
+/// the address would end the argument and start another -- the same reason a header
+/// value is stripped above, one protocol layer down.
+fn envelope(value: &str) -> Result<String, Failed> {
+    let address = bare(value);
+    let usable = !address.is_empty()
+        && address.len() <= 320
+        && !address.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '<' | '>' | ','));
+    if !usable {
+        return Err(Failed::fixed(
+            format!("收件人或发件人不是一个可以放进信封的地址：{address}"),
+            format!("unusable envelope address: {address:?}"),
+        ));
+    }
+    Ok(address.to_owned())
+}
+
+/// The address out of `name@host` or `Display Name <name@host>`: the envelope takes
+/// the address, while the header keeps whatever the operator wrote.
+fn bare(value: &str) -> &str {
+    let value = value.trim();
+    match (value.rfind('<'), value.rfind('>')) {
+        (Some(open), Some(close)) if close > open => value[open + 1..close].trim(),
+        _ => value,
+    }
+}
+
+/// A subject that may hold anything: ASCII goes through as it is, and
 /// non-ASCII is encoded as RFC 2047 words, split on character boundaries so that
 /// each word holds at most 45 bytes -- 60 base64 characters, inside the 75 a
 /// header line may carry. Several words in one header are folded with a space,
@@ -360,7 +407,7 @@ fn encode_header(value: &str) -> String {
 /// only required to be globally unique, and putting the sending domain in it is
 /// what keeps the field meaningful to the receiving side.
 fn message_id(from: &str) -> String {
-    let domain = from.rsplit('<').next().unwrap_or(from).split('@').nth(1).unwrap_or_default();
+    let domain = bare(from).split('@').nth(1).unwrap_or_default();
     let domain = domain.trim_end_matches('>').trim_end_matches('.').trim();
     let domain = if domain.is_empty() { "probe-hub.local" } else { domain };
     format!("<{}.{:016x}@{}>", chrono::Utc::now().timestamp(), rand::random::<u64>(), domain)
@@ -423,26 +470,7 @@ where
         let mut text = String::new();
         let mut code = 0;
         loop {
-            let mut line = String::new();
-            let read = tokio::time::timeout(STEP, self.io.read_line(&mut line)).await;
-            match read {
-                Ok(Ok(0)) => {
-                    return Err(Failed::new(true, "对方断开了连接，没有回复", "the connection closed"));
-                }
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => {
-                    return Err(Failed::new(true, "读不到服务器回复", format!("{e}")));
-                }
-                Err(_) => {
-                    return Err(Failed::new(true, "邮件服务器没有在 10 秒内回复", "reply timed out"));
-                }
-            }
-            if text.len() + line.len() > MAX_REPLY {
-                return Err(Failed::fixed(
-                    "服务器的回复过长，可能不是邮件服务",
-                    format!("reply longer than {MAX_REPLY} bytes"),
-                ));
-            }
+            let line = self.read_line(text.len()).await?;
             let line = line.trim_end_matches(['\r', '\n']);
             // `250-text` continues, `250 text` ends. Anything that is not three
             // digits is not a reply at all: a port that answers TLS or HTTP gives
@@ -475,6 +503,48 @@ where
                 return Ok((code, text));
             }
         }
+    }
+
+    /// One line of a reply, refused past [`MAX_REPLY`] for the whole reply.
+    ///
+    /// Read through `fill_buf` rather than `read_line`, which grows its buffer until
+    /// it finds a newline: a server that sends one very long line would have the hub
+    /// hold it all, and the greeting on a STARTTLS connection arrives before anything
+    /// is authenticated. `already` is what this reply has said so far, so the cap
+    /// covers the reply and not just the line.
+    async fn read_line(&mut self, already: usize) -> Result<String, Failed> {
+        let mut bytes: Vec<u8> = Vec::new();
+        loop {
+            let filled = tokio::time::timeout(STEP, self.io.fill_buf()).await;
+            let buf = match filled {
+                Ok(Ok(buf)) => buf,
+                Ok(Err(e)) => return Err(Failed::new(true, "读不到服务器回复", format!("{e}"))),
+                Err(_) => {
+                    return Err(Failed::new(true, "邮件服务器没有在 10 秒内回复", "reply timed out"));
+                }
+            };
+            if buf.is_empty() {
+                // End of stream: a reply that was cut off is not a reply.
+                if bytes.is_empty() {
+                    return Err(Failed::new(true, "对方断开了连接，没有回复", "the connection closed"));
+                }
+                break;
+            }
+            let take = buf.iter().position(|b| *b == b'\n').map_or(buf.len(), |at| at + 1);
+            if already + bytes.len() + take > MAX_REPLY {
+                return Err(Failed::fixed(
+                    "服务器的回复过长，可能不是邮件服务",
+                    format!("reply longer than {MAX_REPLY} bytes"),
+                ));
+            }
+            let done = buf[take - 1] == b'\n';
+            bytes.extend_from_slice(&buf[..take]);
+            self.io.consume(take);
+            if done {
+                break;
+            }
+        }
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// One command and its reply.
@@ -548,9 +618,10 @@ where
 /// will not accept, a recipient it does not know.
 fn refused(step: Step, code: u16, text: &str) -> Failed {
     let shown = match (step, code) {
-        // A greeting that arrives and is a 4xx is a relay that is up and unwilling
-        // right now -- the one case worth another attempt within the minute.
-        (Step::Greeting, 450..=459) => "邮件服务暂时不可用，稍后再试",
+        // A greeting or EHLO answered with any 4xx is a relay that is up and
+        // unwilling right now -- `421 Too many connections` is the common one, and it
+        // is worth another attempt within the minute, not a hunt for the wrong port.
+        (Step::Greeting | Step::Ehlo, _) if code / 100 == 4 => "邮件服务暂时不可用，稍后再试",
         (Step::Greeting, _) | (Step::Ehlo, _) => {
             "对方不是邮件服务：检查端口与加密方式是否对应（465 用 tls，587 用 starttls）"
         }
@@ -716,6 +787,9 @@ mod tests {
         assert!(payload.contains("Message-ID: <"), "{payload}");
         assert!(payload.contains("Content-Transfer-Encoding: base64\r\n\r\n"), "{payload}");
         assert!(!payload.contains("\n\n"), "no bare LF anywhere in the payload");
+        // The last line is the body's own, not a blank one: `DATA` + payload + `.`
+        // has to land as exactly the lines the encoder produced.
+        assert!(!payload.ends_with("\r\n\r\n"), "no empty line before the dot: {payload:?}");
         let body = payload.split("\r\n\r\n").nth(1).unwrap().replace("\r\n", "");
         let decoded = base64::engine::general_purpose::STANDARD.decode(body).unwrap();
         assert_eq!(String::from_utf8(decoded).unwrap(), message().body);
@@ -885,6 +959,106 @@ mod tests {
         begin_starttls(&mut conn).await.expect("asked and accepted");
         let lines = peer.await.unwrap();
         assert_eq!(lines, vec!["EHLO ".to_owned() + &helo_name(), "STARTTLS".to_owned()]);
+    }
+
+    /// `252` means the relay cannot verify the recipient and will try anyway: an
+    /// acceptance, not the rejection it used to be read as.
+    #[tokio::test]
+    async fn a_recipient_the_relay_cannot_verify_is_still_accepted() {
+        let (client, peer) = tokio::io::duplex(64 * 1024);
+        let peer = relay(
+            vec![
+                "220 mail.example.com ESMTP\r\n",
+                "250 mail.example.com\r\n",
+                "250 Ok\r\n",
+                "252 2.1.5 Cannot VRFY user, but will accept message\r\n",
+                "354 go\r\n",
+                "250 queued\r\n",
+                "221 Bye\r\n",
+            ],
+            peer,
+        );
+        session(client, &server(), &message(), false).await.expect("delivered");
+        let lines = peer.await.unwrap();
+        assert_eq!(lines[2], "RCPT TO:<ops@example.com>");
+        assert_eq!(lines[3], "DATA", "the conversation went on past the 252");
+    }
+
+    /// A message the relay refuses after the body is permanent, and the answer says
+    /// so instead of blaming the recipient.
+    #[tokio::test]
+    async fn a_refusal_after_the_body_is_permanent_and_named_as_the_message() {
+        let (client, peer) = tokio::io::duplex(64 * 1024);
+        let peer = relay(
+            vec![
+                "220 mail.example.com ESMTP\r\n",
+                "250 mail.example.com\r\n",
+                "250 Ok\r\n",
+                "250 Ok\r\n",
+                "354 go\r\n",
+                "554 5.7.1 Message rejected as spam\r\n",
+            ],
+            peer,
+        );
+        let failed = session(client, &server(), &message(), false).await.expect_err("refused");
+        assert!(!failed.retry, "5xx is permanent");
+        assert!(failed.shown.contains("拒收"), "{}", failed.shown);
+        let _ = peer.await;
+    }
+
+    /// A server that talks past the reply it was asked for is refused rather than
+    /// upgraded: carrying those bytes into the encrypted session is how a downgrade
+    /// works.
+    #[tokio::test]
+    async fn an_upgrade_is_refused_when_the_server_said_more_than_it_was_asked() {
+        let (client, peer) = tokio::io::duplex(64 * 1024);
+        let peer = tokio::spawn(async move {
+            let (read, mut write) = tokio::io::split(peer);
+            let mut reader = BufReader::new(read);
+            write.write_all(b"220 mail.example.com ESMTP\r\n").await.unwrap();
+            assert_eq!(read_one(&mut reader).await, "EHLO ".to_owned() + &helo_name());
+            write.write_all(b"250-mail.example.com\r\n250-STARTTLS\r\n250 AUTH PLAIN\r\n").await.unwrap();
+            assert_eq!(read_one(&mut reader).await, "STARTTLS");
+            // Accepted, and then a line nobody asked for, in the same write.
+            write.write_all(b"220 2.0.0 Ready to start TLS\r\n250-Injected\r\n").await.unwrap();
+        });
+        let mut conn = Conn::new(client);
+        begin_starttls(&mut conn).await.expect("granted");
+        let failed = conn.into_inner().expect_err("bytes left over");
+        assert!(failed.shown.contains("加密握手前"), "{}", failed.shown);
+        let _ = peer.await;
+    }
+
+    /// A reply that never ends is cut off at the cap rather than grown without
+    /// bound. The greeting on a STARTTLS connection arrives before anything is
+    /// authenticated, so this is a line an on-path attacker can also write.
+    #[tokio::test]
+    async fn a_reply_that_never_ends_is_cut_off() {
+        let (client, peer) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let (_, mut write) = tokio::io::split(peer);
+            // No newline, ever: the line this client reads has no end.
+            let _ = write.write_all(&vec![b'A'; 4 * MAX_REPLY]).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let mut conn = Conn::new(client);
+        let failed = expect(&mut conn, Step::Greeting, &[220]).await.expect_err("refused");
+        assert!(failed.shown.contains("回复过长"), "{}", failed.shown);
+    }
+
+    /// The envelope and the headers are two places a line break must not survive:
+    /// one ends a command, the other starts a header.
+    #[test]
+    fn a_line_break_cannot_reach_a_header_or_a_command() {
+        assert_eq!(header_value("Probe\r\nBcc: victim@example.com"), "Probe Bcc: victim@example.com");
+        assert_eq!(header_value("Probe <probe@example.com>"), "Probe <probe@example.com>");
+        assert_eq!(envelope("Probe <probe@example.com>").unwrap(), "probe@example.com");
+        assert_eq!(envelope("probe@example.com").unwrap(), "probe@example.com");
+        // `<a@b>` is the same address as `a@b` once the brackets are taken off, so it
+        // is accepted; a bracket that is not a wrapper, or a space, is not.
+        for bad in ["probe@example.com\r\nDATA", "a@b c@d", "", "a>b@c", "a@b,c@d"] {
+            assert!(envelope(bad).is_err(), "{bad:?}");
+        }
     }
 
     /// A subject is encoded so that a Chinese one survives the header, and split so
