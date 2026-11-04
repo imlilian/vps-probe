@@ -215,6 +215,18 @@ if [ -n "$UPGRADE" ]; then
 		{ echo "--upgrade takes no --token or --register; it reuses what this machine holds" >&2; exit 2; }
 	TOKEN=$(sed -n 's/^PROBE_TOKEN=//p' "$ENV_FILE" 2>/dev/null | tail -n 1)
 	[ -n "$SERVER" ] || SERVER=$(sed -n 's/^PROBE_SERVER=//p' "$ENV_FILE" 2>/dev/null | tail -n 1)
+	# The scheme already installed is the record of --insecure: an env file naming
+	# http:// could only have been written by a run that said so, and this command --
+	# the one a whole fleet upgrades with -- carries no flags at all. Without this,
+	# the check below refuses the upgrade of every node that had to accept plaintext.
+	case "$SERVER" in
+	http://*)
+		if [ -z "$INSECURE" ]; then
+			INSECURE=1
+			echo "keeping --insecure: $SERVER is plain http" >&2
+		fi
+		;;
+	esac
 	[ -n "$TOKEN" ] && [ -n "$SERVER" ] || {
 		echo "no agent is installed here: $ENV_FILE holds no token and hub address." >&2
 		echo "install it with the command from the panel instead" >&2

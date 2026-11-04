@@ -278,18 +278,19 @@ install_hub() {
 
 	ensure_user "$USER_NAME"
 	install -d -m 0755 "$ROOT"
-	# 0700 owned by the service user, so its group is irrelevant and nothing here
-	# depends on useradd having created one.
-	install -d -m 0700 -o "$USER_NAME" "$DATA"
 
 	# Only a missing database makes this a first install, which sets the
 	# password. Checked before anything is installed.
 	first=""
 	[ -f "$DATA/probe.db" ] || first=1
 
-	# Everything under data/ has to belong to the account the service runs as, and
-	# `install -d` above owns only the directory -- not the database inside it. A
-	# half-finished migration leaves the two on different uids, which surfaces as
+	# Everything under data/ has to belong to the account the service runs as. This is
+	# judged *before* the directory is created or touched, because `install -d` below
+	# applies its owner to a directory that already exists: sampled after it, the
+	# directory would always read as this installer's own account and the refusal at
+	# the end of this block could never fire -- another account's database, holding
+	# every node token in the fleet, would simply be adopted. A half-finished
+	# migration leaves the two on different uids, which surfaces as
 	# "unable to open database file" from a process that can walk the directory
 	# and not read the 0600 file within it: an error naming neither the account
 	# nor the permission, followed by a rollback that fails the same way.
@@ -319,6 +320,10 @@ install_hub() {
      要么这份 install-hub.sh 比机器上装的那份旧——用它只会把旧名字装回来。"
 		fi
 	fi
+
+	# 0700 owned by the service user, so its group is irrelevant and nothing here
+	# depends on useradd having created one.
+	install -d -m 0700 -o "$USER_NAME" "$DATA"
 
 	# The download happens before anything is stopped, so a host that cannot fetch
 	# the binary keeps the hub it is running.
@@ -415,7 +420,11 @@ install_hub() {
 	# What the unit said before is kept: a rollback that restores an older binary
 	# under a newer unit would hand it an argument it does not know, and the hub
 	# would refuse to start -- the one failure this rollback exists to prevent.
-	if [ -f "$UNIT" ]; then
+	# Never over an existing backup, for the reason the binary's backup gives: a run
+	# that died before the health check left this pair unproven, and copying it over
+	# the good one would make the rollback restore the same broken pair while
+	# reporting success.
+	if [ -f "$UNIT" ] && [ ! -f "$UNIT.old" ]; then
 		cp -f "$UNIT" "$UNIT.old" || die "无法备份 $UNIT"
 	fi
 	cat >"$UNIT" <<UNIT
@@ -783,6 +792,12 @@ if [ -n "$SITE" ]; then
 	*/*) die "--site 后面不能带路径，只要 https://域名[:端口]：$SITE" ;;
 	*@*) die "--site 里不能带用户名：$SITE" ;;
 	"["*) die "--site 必须是域名，不能是 IP 地址：$SITE" ;;
+	esac
+	# The same guard `--release-base` has, for the same reason: this value is
+	# pasted into the unit's ExecStart line, which is split on whitespace, and a
+	# newline in it would end that line and start another directive.
+	case "$SITE" in
+	*[[:space:]]*) die "--site 里不能有空格或换行：$SITE" ;;
 	esac
 	# A port is permitted; what precedes it must be a name rather than an
 	# address.

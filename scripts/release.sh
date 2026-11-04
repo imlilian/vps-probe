@@ -69,9 +69,11 @@ done
 hub_old=$(awk -F'"' '/^version = "/ { print $2; exit }' hub/Cargo.toml)
 agent_old=$(awk -F'"' '/^version = "/ { print $2; exit }' agent/Cargo.toml)
 
-# A v* tag can be neither moved nor deleted, so the number must never be taken
-# twice. The check stays even though tag and version are decoupled: a component
-# version is still what the panel and the changelog compare against.
+# A v* tag can be neither moved nor deleted, so a tag number must never be taken
+# twice. That is a statement about tags, not about component versions: since the
+# two were decoupled, a version is free to equal the number of some past tag, and
+# checking it there refused perfectly good bumps (hub 1.2.0 published as v1.2.0
+# blocked `AGENT=1.2.0` next time round).
 tag_exists() {
   git rev-parse -q --verify "refs/tags/v$1" >/dev/null 2>&1 && return 0
   [ -n "$(git ls-remote --tags --refs origin "refs/tags/v$1" 2>/dev/null)" ]
@@ -88,12 +90,10 @@ forward() {
 
 if [ "$BUMP_HUB" = yes ]; then
   [ "$HUB_VER" = "$hub_old" ] && { echo "hub is already at $HUB_VER: nothing to bump" >&2; exit 1; }
-  tag_exists "$HUB_VER" && { echo "tag v$HUB_VER already exists; a published tag cannot be moved" >&2; exit 1; }
   forward "$hub_old" "$HUB_VER" hub
 fi
 if [ "$BUMP_AGENT" = yes ]; then
   [ "$AGENT_VER" = "$agent_old" ] && { echo "agent is already at $AGENT_VER: nothing to bump" >&2; exit 1; }
-  tag_exists "$AGENT_VER" && { echo "tag v$AGENT_VER already exists; a published tag cannot be moved" >&2; exit 1; }
   forward "$agent_old" "$AGENT_VER" agent
 fi
 
@@ -112,6 +112,16 @@ UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) |
 # code that changed without a bump would ship as the old binary. Warned here
 # and nowhere else -- release.yml checks nothing, on purpose.
 LAST_TAG=$(git tag --list 'v*' | sort -V | tail -n1)
+
+# This release's tag: the largest tag's patch, plus one, and skipping any number
+# that is already taken. Nothing to do with either component's version.
+NEXT_TAG=v0.0.1
+if [ -n "$LAST_TAG" ]; then
+  NEXT_TAG=$(printf '%s' "$LAST_TAG" | awk -F. '{ print $1 "." $2 "." ($3 + 1) }')
+fi
+while tag_exists "${NEXT_TAG#v}"; do
+  NEXT_TAG=$(printf '%s' "$NEXT_TAG" | awk -F. '{ print $1 "." $2 "." ($3 + 1) }')
+done
 if [ "$FORCE" != yes ] && [ -n "$LAST_TAG" ]; then
   for crate in hub agent; do
     case $crate in
@@ -194,13 +204,6 @@ msg=$(printf 'release:'
   { [ "$BUMP_HUB" = yes ] && printf ' hub %s' "$HUB_VER"; } || true
   { [ "$BUMP_AGENT" = yes ] && printf ' agent %s' "$AGENT_VER"; } || true)
 git commit -q -m "$msg"
-
-# The tag is this release's sequence number: the largest tag's patch, plus one.
-# It deliberately has nothing to do with either component's version.
-NEXT_TAG=v0.0.1
-if [ -n "$LAST_TAG" ]; then
-  NEXT_TAG=$(printf '%s' "$LAST_TAG" | awk -F. '{ print $1 "." $2 "." ($3 + 1) }')
-fi
 
 cat <<EOF
 

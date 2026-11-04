@@ -92,14 +92,28 @@ case "$PUBLIC_BASE" in
   "" | https://?* | http://?*) ;;
   *) die "--public-base 要以 https:// 或 http:// 开头：$PUBLIC_BASE" ;;
 esac
+# It is printed into versions.json as a JSON string, so a space or a quote in it
+# would produce a file whose download field is not the address it names.
+case "$PUBLIC_BASE" in
+  *[[:space:]]*) die "--public-base 里不能有空格或换行：$PUBLIC_BASE" ;;
+  *\"* | *\'* | *\\*) die "--public-base 里不能有引号或反斜杠：$PUBLIC_BASE" ;;
+esac
 
 # One file from the source. A directory is copied rather than fetched: a previous
 # mirror and a build host are the two most useful sources, and both are local.
+#
+# Two places are tried: the source's own root, and -- once `SUB` is known -- the
+# directory its versions.json names in `download`. The second is what lets this
+# script consume a mirror it produced earlier: that layout keeps the assets under
+# <tag>/ and only the versions file at the root, so reading the root alone would
+# find the metadata and then die on the first asset.
 fetch() { # <name> <output>
   if [ -d "$SOURCE" ]; then
-    cp "$SOURCE/$1" "$2" 2>/dev/null
+    cp "$SOURCE/$1" "$2" 2>/dev/null && return 0
+    [ -z "$SUB" ] || cp "$SOURCE/$SUB/$1" "$2" 2>/dev/null
   else
-    curl -fsSL --max-time 300 "$SOURCE/$1" -o "$2" 2>/dev/null
+    curl -fsSL --max-time 300 "$SOURCE/$1" -o "$2" 2>/dev/null && return 0
+    [ -z "$SUB" ] || curl -fsSL --max-time 300 "$SOURCE/$SUB/$1" -o "$2" 2>/dev/null
   fi
 }
 
@@ -113,10 +127,19 @@ field() { sed -n "s/.*\"$1\": *\"\\([^\"]*\\)\".*/\\1/p" "$tmp/versions.json" | 
 HUB="$(field hub)"
 AGENT="$(field agent)"
 [ -n "$TAG" ] || die "源上的 versions.json 没有 tag：用 --tag 指定这次发布的名字"
-# A tag may be a readable label rather than vN; the only thing that would break is
-# a character a URL cannot carry.
+# A tag may be a readable label rather than vN; the only character classes that
+# break something are a path separator and the two names that mean "the directory
+# above" -- a tag of `..` would publish a versions.json pointing outside the mirror
+# with no assets beside it.
 case "$TAG" in
+  . | .. | .*) die "tag 不能以点开头：$TAG" ;;
   *[!A-Za-z0-9._-]*) die "tag 只能用字母、数字、点、下划线和横线：$TAG" ;;
+esac
+# Where the source keeps its assets, when it says: the last path segment of its
+# `download`. Empty for a source that keeps them beside the versions file.
+SUB=$(field download | sed 's#/*$##; s#.*/##')
+case "$SUB" in
+  . | ..) SUB="" ;;
 esac
 say "tag     $TAG"
 [ -z "$HUB$AGENT" ] || say "版本    hub ${HUB:-?} · agent ${AGENT:-?}"
@@ -138,11 +161,20 @@ fetch install-hub.sh "$tmp/assets/install-hub.sh" ||
 
 if [ "$VERIFY" = yes ]; then
   if command -v openssl >/dev/null 2>&1; then
-    # The key is the installer's own copy: one statement of it, and the copy that
-    # matters is the one every node already trusts.
-    sed -n '/^PUBKEY="-----BEGIN/,/^-----END PUBLIC KEY-----$/p' hub/install-hub.sh |
+    # The key comes out of the installer being published, not out of this checkout:
+    # two copies that disagree would make the line printed below a lie, and the
+    # binary would be rejected on every node that installer touches. The end of the
+    # range is the PEM line itself -- the shell assignment closes with a quote on
+    # that same line, which a `$`-anchored pattern never matches, and sed would then
+    # run to the end of the file.
+    sed -n '/^PUBKEY="-----BEGIN/,/^-----END PUBLIC KEY-----/p' "$tmp/assets/install-hub.sh" |
       sed 's/^PUBKEY="//; s/"$//' >"$tmp/pub.pem"
     [ -s "$tmp/pub.pem" ] || die "没能从 install-hub.sh 里取出公钥"
+    sed -n '/^PUBKEY="-----BEGIN/,/^-----END PUBLIC KEY-----/p' hub/install-hub.sh |
+      sed 's/^PUBKEY="//; s/"$//' >"$tmp/pub.local.pem" 2>/dev/null || true
+    if [ -s "$tmp/pub.local.pem" ] && ! cmp -s "$tmp/pub.local.pem" "$tmp/pub.pem"; then
+      die "被镜像的 install-hub.sh 与这份检出里的公钥不同：先确认哪一份是对的，再镜像"
+    fi
     for sig in "$tmp/assets/"*.sig; do
       openssl pkeyutl -verify -pubin -inkey "$tmp/pub.pem" -rawin \
         -in "${sig%.sig}" -sigfile "$sig" >/dev/null 2>&1 ||
@@ -181,13 +213,31 @@ else
 fi
 
 mkdir -p "$DEST"
+# Assets first, versions.json last and by rename. A reader that fetches the versions
+# file must never be sent to files that are not there yet, and a versions file caught
+# half-written is a 404 for every hub that asks. Where nothing is renamed, `cp -R` in
+# readdir order gives neither guarantee -- which is the whole reason this script
+# exists rather than a runbook.
 if command -v rsync >/dev/null 2>&1; then
-  # No --delete: a release already published stays, because a node that is
-  # mid-upgrade is still asking for the files it started with.
-  rsync -a "$tmp/stage/." "$DEST/"
+  if [ "$FLAT" = yes ]; then
+    # No --delete: a release already published stays, because a node that is
+    # mid-upgrade is still asking for the files it started with.
+    rsync -a --exclude versions.json "$tmp/stage/." "$DEST/"
+  else
+    rsync -a "$tmp/stage/$TAG" "$DEST/"
+  fi
 else
-  cp -R "$tmp/stage/." "$DEST/"
+  if [ "$FLAT" = yes ]; then
+    for file in "$tmp/stage"/*; do
+      [ "$(basename "$file")" = versions.json ] || cp -R "$file" "$DEST/"
+    done
+  else
+    cp -R "$tmp/stage/$TAG" "$DEST/"
+  fi
 fi
+cp "$tmp/stage/versions.json" "$DEST/versions.json.new" &&
+  mv -f "$DEST/versions.json.new" "$DEST/versions.json" ||
+  die "versions.json 没能落到 $DEST"
 say "目标    $DEST"
 
 echo
