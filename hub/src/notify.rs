@@ -307,6 +307,9 @@ pub fn setting_error(key: &str, value: &str) -> Option<String> {
             }
             None
         }
+        // The account name and the password in any shape: the relay is the only
+        // judge, and this end has nothing to check them against.
+        "notify_smtp_user" | "notify_smtp_password" => None,
         "notify_smtp_subject" | "notify_smtp_text" => None,
         // Plain http is accepted: a relay on the hub's own host or network is a
         // common target, and only an admin can set this.
@@ -1205,6 +1208,17 @@ mod tests {
         assert_eq!(setting_error("notify_smtp_security", "none"), None);
         assert_eq!(setting_error("notify_smtp_security", ""), None, "empty means the default");
         assert!(setting_error("notify_smtp_security", "ssl").is_some(), "465 is called tls here");
+
+        // An account and its password are the relay's business: no shape is refused.
+        assert_eq!(setting_error("notify_smtp_user", "probe"), None);
+        assert_eq!(setting_error("notify_smtp_user", "probe@example.com"), None);
+        assert_eq!(setting_error("notify_smtp_user", ""), None);
+        assert_eq!(
+            setting_error("notify_smtp_password", "abcd efgh ijkl"),
+            None,
+            "authorization codes have spaces"
+        );
+        assert_eq!(setting_error("notify_smtp_password", ""), None);
 
         assert_eq!(setting_error("notify_smtp_from", "probe@example.com"), None);
         assert_eq!(setting_error("notify_smtp_from", "探针 <probe@example.com>"), None);

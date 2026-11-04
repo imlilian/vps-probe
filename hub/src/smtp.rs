@@ -176,21 +176,37 @@ pub async fn send(server: &Server, message: &Message) -> Result<(), Failed> {
             // the upgrade is EHLO, and the server resets its state at STARTTLS, so
             // the session below starts with EHLO again and no greeting.
             let mut conn = Conn::new(stream);
-            expect(&mut conn, Step::Greeting, &[220]).await?;
-            let caps = ehlo(&mut conn, Step::Ehlo).await?;
-            if !caps.iter().any(|line| first_word(line).eq_ignore_ascii_case("STARTTLS")) {
-                return Err(Failed::fixed(
-                    "服务器没有提供 STARTTLS。要明文发送就改选「不加密」，或者把加密方式换成 465 的 tls",
-                    "STARTTLS was not offered",
-                ));
-            }
-            expect(&mut conn, Step::StartTls, &[220]).await?;
+            begin_starttls(&mut conn).await?;
             let stream = conn.into_inner()?;
             let tls = upgrade(stream, &server.host).await?;
             session(tls, server, message, true).await
         }
         Security::Plain => session(stream, server, message, false).await,
     }
+}
+
+/// Greets a relay and asks it to upgrade, leaving the stream ready for the TLS
+/// handshake.
+///
+/// Its own function because these are the steps easiest to get wrong in a
+/// hand-written client -- a reply awaited without its command, an upgrade taken
+/// from a server that never offered one -- and because the greeting is the only
+/// thing on this side of the upgrade that arrives unasked. The server must
+/// advertise STARTTLS: one that does not would otherwise be talked to in the
+/// clear, with the password in the first thing that crosses it.
+async fn begin_starttls<S>(conn: &mut Conn<S>) -> Result<(), Failed>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    expect(conn, Step::Greeting, &[220]).await?;
+    let caps = ehlo(conn, Step::Ehlo).await?;
+    if !caps.iter().any(|line| first_word(line).eq_ignore_ascii_case("STARTTLS")) {
+        return Err(Failed::fixed(
+            "服务器没有提供 STARTTLS。要明文发送就改选「不加密」，或者把加密方式换成 465 的 tls",
+            "STARTTLS was not offered",
+        ));
+    }
+    command(conn, Step::StartTls, &[220], "STARTTLS").await
 }
 
 /// Everything from EHLO to QUIT, on a stream that is already as protected as it
@@ -846,10 +862,29 @@ mod tests {
         let peer =
             relay(vec!["220 mail.example.com ESMTP\r\n", "250-mail.example.com\r\n250 AUTH PLAIN\r\n"], peer);
         let mut conn = Conn::new(client);
-        expect(&mut conn, Step::Greeting, &[220]).await.unwrap();
-        let caps = ehlo(&mut conn, Step::Ehlo).await.unwrap();
-        assert!(!caps.iter().any(|l| first_word(l).eq_ignore_ascii_case("STARTTLS")));
+        let failed = begin_starttls(&mut conn).await.err().expect("refused");
+        assert!(failed.shown.contains("没有提供 STARTTLS"), "{}", failed.shown);
         let _ = peer.await;
+    }
+
+    /// And where it is offered, the command goes out before its reply is awaited: a
+    /// client that waits first hangs until the step's timeout, which is what this
+    /// one was caught doing against a real relay.
+    #[tokio::test]
+    async fn starttls_is_asked_for_before_its_reply_is_awaited() {
+        let (client, peer) = tokio::io::duplex(64 * 1024);
+        let peer = relay(
+            vec![
+                "220 mail.example.com ESMTP\r\n",
+                "250-mail.example.com\r\n250-STARTTLS\r\n250 AUTH PLAIN\r\n",
+                "220 2.0.0 Ready to start TLS\r\n",
+            ],
+            peer,
+        );
+        let mut conn = Conn::new(client);
+        begin_starttls(&mut conn).await.expect("asked and accepted");
+        let lines = peer.await.unwrap();
+        assert_eq!(lines, vec!["EHLO ".to_owned() + &helo_name(), "STARTTLS".to_owned()]);
     }
 
     /// A subject is encoded so that a Chinese one survives the header, and split so
