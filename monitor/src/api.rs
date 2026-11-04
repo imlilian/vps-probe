@@ -1245,20 +1245,20 @@ const REGISTER_WINDOW: i64 = 3600;
 /// hundred is well beyond a plausible batch and well short of a problem.
 const REGISTER_LIMIT: i64 = 100;
 
-/// The header in which `install.sh` sends the token the machine already holds.
+/// The header in which `install-agent.sh` sends the token the machine already holds.
 const HELD_TOKEN: &str = "x-node-token";
 
 /// Exchanges a registration key for a node token, so a batch of machines can be
 /// installed with one command rather than one panel visit each.
 ///
-/// No session stands behind this route: the caller is `install.sh` on a machine
+/// No session stands behind this route: the caller is `install-agent.sh` on a machine
 /// that has never contacted the hub. A key issued by the panel, valid only within
 /// [`REGISTER_WINDOW`], serves in place of a session.
 ///
 /// `provisioning_allowed` does not guard it, because a shell script sends no
 /// `Origin` and the proxy headers that remain cannot state what address the
 /// caller used. Which addresses may be registered against is enforced in
-/// `install.sh`, where that address is known: it refuses plaintext to anything
+/// `install-agent.sh`, where that address is known: it refuses plaintext to anything
 /// but loopback unless `--insecure` is given, the same switch under which the
 /// binary it is about to run as root was already fetched in the clear. The
 /// window this key belongs to is still opened from an https domain entry alone.
@@ -1277,9 +1277,9 @@ pub async fn agent_register(
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
     // Plain text in, plain text out. The caller is a shell script, as with this
-    // route's neighbours: `/install.sh` and `/agent/{arch}` return a script and a
-    // binary. A bare token is one `$(curl ...)` away, requiring no JSON parser in
-    // a POSIX `sh`.
+    // route's neighbours: `/install-agent.sh` and `/probe/{arch}` return a script
+    // and a binary. A bare token is one `$(curl ...)` away, requiring no JSON
+    // parser in a POSIX `sh`.
     name: String,
 ) -> Response {
     let ip = client_ip(&app, &headers, peer.ip());
@@ -1355,7 +1355,7 @@ pub async fn agent_register(
     }
 }
 
-/// [`fail`] for `install.sh`, whose own output is English and which prints the
+/// [`fail`] for `install-agent.sh`, whose own output is English and which prints the
 /// reply in one line after its own.
 fn script_fail(e: impl Into<anyhow::Error>) -> Response {
     warn!("registration failed: {:#}", e.into());
@@ -2250,7 +2250,7 @@ fn setting_error(key: &str, value: &Value) -> Option<String> {
         // setting responsible.
         //
         // https only. What returns from this host is the agent binary, which
-        // `install.sh` writes to /opt/probe and starts on every node provisioned
+        // `install-agent.sh` writes to /opt/probe and starts on every node provisioned
         // here; over http:// anyone on the path between the hub and the mirror
         // chooses that binary, while the node still sees a valid TLS connection to
         // the hub.
@@ -4008,7 +4008,7 @@ mod tests {
 
     /// The name comes from an unvouched machine: markup characters are dropped,
     /// and what that leaves is trimmed. None at all, the machine's hostname
-    /// withheld by `install.sh`, names the node after its id.
+    /// withheld by `install-agent.sh`, names the node after its id.
     #[tokio::test]
     async fn a_registered_name_loses_markup_and_is_never_blank() {
         let app = std::sync::Arc::new(app());

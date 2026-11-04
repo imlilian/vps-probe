@@ -15,10 +15,11 @@ set -eu
 PATH="$PATH:/usr/sbin:/sbin"
 
 REPO="imlilian/vps-probe"
-# Where the binary, its signature and the checksum file are published. One line,
-# so pointing this at a mirror keeps everything else working: the mirror has to
-# serve the same file names under <base>/. Re-running this script is the upgrade,
-# so a released copy staying put is correct -- the binary is what moves.
+# Where the binary and its signature are published. One line, and `--release-base`
+# moves it: a mirror only has to serve the same file names under <base>/, which is
+# what a relocated repository or a company-internal copy amounts to. Re-running
+# this script is the upgrade, so a released copy staying put is correct -- the
+# binary is what moves.
 BASE="https://github.com/$REPO/releases/latest/download"
 SERVICE="probe-hub"
 UNIT="/etc/systemd/system/probe-hub.service"
@@ -31,7 +32,12 @@ BIN="$ROOT/probe-hub"
 DATA="$ROOT/data"
 # A fixed data directory requires a fixed owner: DynamicUser= selects its uid at
 # start, and a recycled one would leave the database unreadable.
-USER_NAME="probe"
+#
+# The account carries the service name, so `ps`, `journalctl` and /etc/passwd all
+# read alike, and the name is distinctive: a bare `probe` is what any number of
+# other packages would call their own user, and a clash is not detectable from
+# here -- see ours().
+USER_NAME="$SERVICE"
 PORT="28080"
 PORT_SET=""
 SITE=""
@@ -113,6 +119,51 @@ check_port() {
 	[ "$1" -ge 1 ] && [ "$1" -le 65535 ] || die "端口必须是 1-65535 的整数：$1"
 }
 
+# `uid shell` of a local account, empty when the name is not in /etc/passwd.
+# Read from the file rather than through getent, which a slim install need not
+# have; NSS-backed accounts are not what a system service user ever is.
+account() {
+	sed -n "s/^$1:[^:]*:\([0-9]*\):[0-9]*:[^:]*:[^:]*:\([^:]*\)$/\1 \2/p" /etc/passwd | head -n 1
+}
+
+# Whether an account of this name is this project's. A system uid with a nologin
+# shell is the shape both installers create; any other account of the same name
+# belongs to some other package, and taking it over would hand that package's
+# owner the database -- or delete their user on --purge. A heuristic, but the
+# alternative is trusting `id -u` alone, which adopts a name clash silently.
+#
+# The two temporaries are globals rather than `local`, which is not POSIX: this
+# runs under whatever /bin/sh the host has. The underscore keeps them clear of
+# the flags, which are the only other globals that matter.
+ours() {
+	_ours_acct="$(account "$1")"
+	case "$_ours_acct" in
+	'') return 1 ;;
+	*' '*) ;;
+	*) return 1 ;;
+	esac
+	_ours_uid="${_ours_acct% *}"
+	case "$_ours_uid" in *[!0-9]*) return 1 ;; esac
+	[ "$_ours_uid" -ge 100 ] && [ "$_ours_uid" -le 999 ] || return 1
+	case "${_ours_acct#* }" in *nologin | */false) return 0 ;; esac
+	return 1
+}
+
+# Creates the account when the name is free, adopts it when it is this project's,
+# and refuses when it is somebody else's. `id -u` rather than account() for the
+# existence test, so a name resolved through NSS is caught here rather than by
+# useradd's own refusal, which reads as a failure to create rather than as a name
+# already spoken for.
+ensure_user() {
+	if id -u "$1" >/dev/null 2>&1; then
+		ours "$1" ||
+			die "这台机器上已经有 $1 这个账号，但不是本项目建的（不是系统 uid，或 shell 不是 nologin）。先手动处理这个账号，或换一台机器安装"
+		return 0
+	fi
+	useradd --system --no-create-home --shell /usr/sbin/nologin "$1" ||
+		die "无法创建系统用户 $1"
+}
+
 # The `--listen ...` tail of the installed unit's ExecStart, empty when nothing
 # is installed. An upgrade rewrites the unit, so anything not supplied on the
 # command line must be recovered from the old one, or re-running to upgrade
@@ -168,9 +219,7 @@ install_hub() {
 		fi
 	fi
 
-	id -u "$USER_NAME" >/dev/null 2>&1 ||
-		useradd --system --no-create-home --shell /usr/sbin/nologin "$USER_NAME" ||
-		die "无法创建系统用户 $USER_NAME"
+	ensure_user "$USER_NAME"
 	install -d -m 0755 "$ROOT"
 	# 0700 owned by the service user, so its group is irrelevant and nothing here
 	# depends on useradd having created one.
@@ -180,6 +229,20 @@ install_hub() {
 	# password. Checked before anything is installed.
 	first=""
 	[ -f "$DATA/probe.db" ] || first=1
+
+	# A database that is already here belongs to whichever account the last
+	# install created, and `install -d` above only re-owns the directory, not what
+	# is inside it. After the account was renamed -- or if the file was restored
+	# by root -- the hub starts as a uid that cannot open its own database: it
+	# exits, the rollback puts the previous binary back, and that binary fails the
+	# same way, with nothing on screen naming the owner as the cause.
+	if [ -z "$first" ]; then
+		owner="$(stat -c %U "$DATA/probe.db" 2>/dev/null || true)"
+		if [ -n "$owner" ] && [ "$owner" != "$USER_NAME" ]; then
+			die "$DATA/probe.db 的属主是 $owner，不是 $USER_NAME：这台机器上的 hub 是另一个账号装的。
+     改名或换账号之后先跑 sudo chown -R $USER_NAME $DATA，再重跑本脚本"
+		fi
+	fi
 
 	# The download happens before anything is stopped, so a host that cannot fetch
 	# the binary keeps the hub it is running.
@@ -202,14 +265,22 @@ install_hub() {
 		# that was never published.
 		tag="$(curl -fsSI -o /dev/null -w '%{redirect_url}' "$BASE/$asset" 2>/dev/null |
 			sed -n 's#.*/download/\([^/]*\)/.*#\1#p')" || true
-		[ -n "$tag" ] || die "查不到最新发布版；GitHub 不可达，或还没有任何发布"
+		# Not fatal: the tag is a label on screen, and the file that matters is
+		# fetched below and verified by signature. A source that does not answer
+		# GitHub's "latest" redirect -- a mirror serving plain files, or a forge
+		# without that route -- can still install; it just cannot say which release
+		# this is, and the download below reports a real failure if there is one.
+		[ -n "$tag" ] || warn "查不到最新发布版的 tag（源不可达，或它不是 GitHub 那种 \"latest\" 布局）；继续按 $BASE 下载"
 		# A tag is only the release's sequence number; versions.json, written by
 		# CI from monitor/Cargo.toml, says which hub the release actually
 		# carries. It is a best-effort read: a release without it (older, or the
 		# file failed to download) shows the tag alone, which is still true.
 		ver="$(curl -fsSL --max-time 10 "$BASE/versions.json" 2>/dev/null |
 			sed -n 's/.*"hub": *"\([^"]*\)".*/\1/p' | head -1)" || ver=""
-		[ -n "$ver" ] && ok "版本" "发行 $tag（hub $ver）" || ok "版本" "$tag"
+		# Whatever is known, and nothing said when neither is: a source with no tag
+		# and no versions.json still installs, and "版本  " with a blank would read
+		# as a bug rather than as an unlabelled release.
+		[ -z "$tag$ver" ] || ok "版本" "${tag:-（未标注的发行）}${ver:+（hub $ver）}"
 
 		curl -fsSL --max-time 300 "$BASE/$asset" -o "$tmp/$asset" || die "二进制下载失败：$BASE/$asset"
 		curl -fsSL --max-time 30 "$BASE/$asset.sig" -o "$tmp/$asset.sig" ||
@@ -421,6 +492,22 @@ reset_password() {
 }
 
 # ---- uninstall ----
+# The account exists for the database: the fixed data directory is the only
+# reason this service needs a fixed owner, so the two go together. Deleting the
+# account while keeping the data would leave a database whose owner no longer
+# exists -- the next install would create a new uid and the hub could not open
+# it, which is the one thing --uninstall promises not to do. Only this project's
+# own system account is removed; see ours().
+purge_user() {
+	if [ -z "$(account "$USER_NAME")" ]; then return 0; fi
+	if ours "$USER_NAME"; then
+		userdel "$USER_NAME" 2>/dev/null || true
+		ok "用户" "已删除 $USER_NAME"
+	else
+		warn "$USER_NAME 不是本项目的系统账号，保留不动"
+	fi
+}
+
 uninstall_hub() {
 	if [ ! -f "$BIN" ] && [ ! -f "$UNIT" ]; then
 		# The data outlives the unit, so --purge still has work to do.
@@ -429,6 +516,7 @@ uninstall_hub() {
 			rm -rf "$DATA"
 			rmdir "$ROOT" 2>/dev/null || true
 			ok "数据" "已删除"
+			purge_user
 			return 0
 		fi
 		[ ! -e "$DATA" ] || die "服务已经卸载了，数据还留在 $DATA；要一并删掉就加 --purge"
@@ -448,8 +536,10 @@ uninstall_hub() {
 		# Only when the agent is not installed alongside it.
 		rmdir "$ROOT" 2>/dev/null || true
 		ok "数据" "已删除"
+		purge_user
 	else
 		field "数据" "保留在 $DATA，重新安装会直接接着用"
+		field "用户" "保留 $USER_NAME（数据要它，--purge 才删）"
 	fi
 }
 
@@ -497,8 +587,8 @@ probe hub 安装器
   sudo ./install-hub.sh --upgrade      升级到最新发布版，配置沿用上次
   sudo ./install-hub.sh --port 8443    指定端口安装
   sudo ./install-hub.sh --from FILE    用本地二进制安装，不是从 GitHub 取
-  sudo ./install-hub.sh --uninstall    卸载，保留数据
-  sudo ./install-hub.sh --purge        卸载并删除数据库
+  sudo ./install-hub.sh --uninstall    卸载，保留数据和系统用户
+  sudo ./install-hub.sh --purge        卸载，数据库和系统用户一起删
   sudo ./install-hub.sh --reset-password
                                        重置面板密码，登出所有会话
 
@@ -512,6 +602,12 @@ probe hub 安装器
                  节点连不上它）；反代不发 X-Forwarded-Proto（那时会话 cookie
                  拿不到 Secure 标志）
   --from <file>  不从发布源取，改用本地文件；同名 .sig 要放在它旁边
+  --release-base <url>
+                 换发布源：自建 Gitea、公司内网镜像、或者别的托管。它要和
+                 GitHub 的 latest/download 一样，在 <url>/ 下直接给出
+                 probe-hub-<arch>-unknown-linux-musl、同名 .sig 和 versions.json。
+                 二进制仍按签名校验，所以 http 的镜像也是安全的（少了保密，
+                 没有少验证）。拿不到 tag 只影响屏幕上那一行版本，不影响安装
   --yes, -y      跳过确认
   --help, -h     显示这段
 
@@ -522,7 +618,9 @@ hub 只监听 127.0.0.1，公网访问不到，需要自己配 nginx / caddy / C
 二进制按 ed25519 签名校验：签名私钥只在发布流水线里，任何机器上都没有，
 所以发布源被换掉也装不进来。校验不过直接拒绝，不落盘。
 重跑一次就是升级，起不来会自动回滚到上一版；没写的参数沿用上次的，升级
-不会把端口和 --site 冲掉。二进制和数据都在 $ROOT 下，卸载默认保留数据。
+不会把端口和 --site 冲掉。二进制和数据都在 $ROOT 下，服务账号是 $USER_NAME。
+卸载默认保留数据和账号；--purge 把两者一起删掉（数据没了就没有理由再留一个
+固定属主，留下的账号会让重装拿到新 uid、认不出旧数据库）。
 TXT
 }
 
@@ -534,6 +632,7 @@ while [ $# -gt 0 ]; do
 	--port) [ $# -ge 2 ] || die "--port 后面要跟端口号"; PORT="$2"; PORT_SET=1; shift 2 ;;
 	--site) [ $# -ge 2 ] || die "--site 后面要跟地址"; SITE="$2"; SITE_SET=1; shift 2 ;;
 	--from) [ $# -ge 2 ] || die "--from 后面要跟文件路径"; SOURCE="$2"; shift 2 ;;
+	--release-base) [ $# -ge 2 ] || die "--release-base 后面要跟地址"; BASE="${2%/}"; shift 2 ;;
 	# Named for what it does, though it is also what a bare run does: the
 	# distinction users care about is install versus the other actions.
 	--upgrade) ACTION=install; shift ;;
@@ -571,6 +670,17 @@ if [ -n "$SITE" ]; then
 	*) die "--site 必须是域名而不是 IP 地址：$SITE" ;;
 	esac
 fi
+case "$BASE" in
+https://?*) ;;
+http://?*)
+	# The signature is what makes a mirror trustworthy, not the channel: a
+	# substituted binary fails verification and is thrown away uninstalled. What
+	# plain HTTP costs is that someone on the path learns which release is being
+	# fetched.
+	warn "发布源走明文 http：$BASE。二进制仍然按签名校验，改动会被拒绝"
+	;;
+*) die "--release-base 要以 https:// 或 http:// 开头：$BASE" ;;
+esac
 [ "$(id -u)" = 0 ] || die "需要 root：sudo sh $0"
 # A local file needs no network, and uninstalling needs neither network nor
 # openssl: checked here so a host without them can still be cleaned up.

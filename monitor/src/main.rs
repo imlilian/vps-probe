@@ -227,9 +227,12 @@ fn forwarded_proto(headers: &HeaderMap) -> Option<&str> {
 /// anyway.
 pub const REPO: &str = "imlilian/vps-probe";
 
-/// The one-line installer pasted onto a new VPS.
+/// The one-line installer pasted onto a new VPS. Served under two paths: the
+/// current name, and `/install.sh`, which commands pasted before the rename
+/// still carry. Both return the same bytes, so neither is a redirect that a
+/// `curl -fsSL` without -L would silently skip.
 async fn install_script() -> Response {
-    ([(header::CONTENT_TYPE, "text/x-shellscript")], include_str!("../install.sh")).into_response()
+    ([(header::CONTENT_TYPE, "text/x-shellscript")], include_str!("../install-agent.sh")).into_response()
 }
 
 /// Where the hub fetches an agent release, behind the panel's GitHub proxy when
@@ -281,7 +284,7 @@ static RELAY_GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(RE
 
 /// Longest a request waits for a relay slot before the 503. Below the 60 s nginx
 /// and the 100 s Cloudflare allow for a response head, so the refusal is the
-/// hub's own and says why; `install.sh` retries it. At about a second per
+/// hub's own and says why; `install-agent.sh` retries it. At about a second per
 /// transfer, four slots drain some 120 queued machines within it.
 const RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -358,14 +361,14 @@ fn signed(key: &[u8], binary: &[u8], signature: &[u8]) -> bool {
 
 /// Whether `binary` is an ELF executable for `arch`. A signature covers the
 /// bytes alone, so a mirror could answer one architecture's request with the
-/// other's signed binary, and `install.sh` would replace a running agent with
+/// other's signed binary, and `install-agent.sh` would replace a running agent with
 /// one that cannot start.
 fn built_for(binary: &[u8], arch: &str) -> bool {
     let machine: u16 = if arch == "aarch64" { 183 } else { 62 };
     binary.get(18..20).is_some_and(|m| u16::from_le_bytes([m[0], m[1]]) == machine)
 }
 
-/// Whether the hub may hand `binary` to `install.sh` on an `arch` machine.
+/// Whether the hub may hand `binary` to `install-agent.sh` on an `arch` machine.
 fn relayable(key: &[u8], binary: &[u8], signature: &[u8], arch: &str) -> bool {
     signed(key, binary, signature) && built_for(binary, arch)
 }
@@ -422,7 +425,7 @@ impl futures_core::Stream for Once {
 /// can install without reaching GitHub: IPv6-only machines cannot resolve
 /// github.com, and neither can blocked networks.
 ///
-/// `install.sh` executes these bytes as root on every node, and through the
+/// `install-agent.sh` executes these bytes as root on every node, and through the
 /// panel's `github_proxy` they come from a mirror the operator does not run. So
 /// the binary is held whole and relayed only under the release job's signature,
 /// fetched from the same place: a mirror can withhold or replace either, but
@@ -438,7 +441,7 @@ async fn agent_binary(State(app): State<Shared>, Path(arch): Path<String>) -> Re
     };
     let url = release_url(&app, &arch);
     let sig = format!("{url}.sig");
-    // English, as `install.sh` prints it after its own English line.
+    // English, as `install-agent.sh` prints it after its own English line.
     let fetched = async {
         let (binary, signature) = tokio::try_join!(
             fetch_asset(&app, &url, "agent binary", MAX_AGENT_BINARY),
@@ -511,6 +514,10 @@ fn parse_args() -> Result<Args> {
             "--db" => database = value(),
             "--site" => site = value(),
             "--reset-password" => reset_password = true,
+            "-V" | "--version" => {
+                println!("probe-hub {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "-h" | "--help" => {
                 println!(
                     "probe-hub {}\n\n\
@@ -676,7 +683,37 @@ async fn main() -> Result<()> {
     tokio::spawn(notify::deliver(app.clone(), inbox));
     tokio::spawn(notify::watch(app.clone()));
 
-    let router = Router::new()
+    let router = router(app.clone());
+
+    let listener = match tokio::net::TcpListener::bind(args.listen).await {
+        Ok(listener) => listener,
+        // A host that refuses the dual-stack wildcard must still start, and on
+        // such a host IPv4 is all there is to serve.
+        Err(e) if args.listen_defaulted && args.listen.is_ipv6() => {
+            let v4 = SocketAddr::from(([0, 0, 0, 0], args.listen.port()));
+            warn!("could not bind {} ({e}); falling back to {v4}", args.listen);
+            tokio::net::TcpListener::bind(v4).await?
+        }
+        Err(e) => return Err(e.into()),
+    };
+    info!("listening on {} ({url})", listener.local_addr()?);
+    serve(listener, router).await;
+    // The readings held back from the traffic rows. Unbooked, they cost nothing
+    // to a node that reports again under the same boot, but a node rebooting
+    // while the hub is down would take them with it.
+    agent_ws::book_held(&held, None);
+    Ok(())
+}
+
+/// Every route the hub serves, in one value.
+///
+/// Apart, because the wiring is the part that cannot be checked by reading it:
+/// a route that is mounted under the wrong layer, or a second path to the same
+/// handler that a later edit drops, only shows up in a request. The tests drive
+/// this value with `tower` directly; `serve` below adds the accept loop and
+/// nothing else.
+fn router(app: Shared) -> Router {
+    Router::new()
         // Read paths; the public page reaches these unauthenticated.
         .route("/api/me", get(api::me))
         .route("/api/nodes", get(api::nodes))
@@ -732,39 +769,21 @@ async fn main() -> Result<()> {
         )
         .layer(axum::middleware::from_fn(api::same_origin_writes))
         .layer(axum::middleware::map_response(api::plain_errors))
-        // Agents, merged after those layers: `install.sh` and the agent print these
+        // Agents, merged after those layers: `install-agent.sh` and the agent print these
         // replies beside their own English output, so they are left as written.
         .merge(
             Router::new()
                 .route("/api/agent/ws", get(agent_ws::handler))
                 .route("/api/agent/echo", get(agent_ws::echo))
                 .route("/api/agent/register", post(api::agent_register))
+                .route("/install-agent.sh", get(install_script))
                 .route("/install.sh", get(install_script))
                 .route("/probe/{arch}", get(agent_binary))
                 .layer(tower_http::limit::RequestBodyLimitLayer::new(64 * 1024))
                 .with_state(app.clone()),
         )
         .layer(tower_http::compression::CompressionLayer::new().compress_when(compressible()))
-        .with_state(app);
-
-    let listener = match tokio::net::TcpListener::bind(args.listen).await {
-        Ok(listener) => listener,
-        // A host that refuses the dual-stack wildcard must still start, and on
-        // such a host IPv4 is all there is to serve.
-        Err(e) if args.listen_defaulted && args.listen.is_ipv6() => {
-            let v4 = SocketAddr::from(([0, 0, 0, 0], args.listen.port()));
-            warn!("could not bind {} ({e}); falling back to {v4}", args.listen);
-            tokio::net::TcpListener::bind(v4).await?
-        }
-        Err(e) => return Err(e.into()),
-    };
-    info!("listening on {} ({url})", listener.local_addr()?);
-    serve(listener, router).await;
-    // The readings held back from the traffic rows. Unbooked, they cost nothing
-    // to a node that reports again under the same boot, but a node rebooting
-    // while the hub is down would take them with it.
-    agent_ws::book_held(&held, None);
-    Ok(())
+        .with_state(app)
 }
 
 /// Serves HTTP/1 until a stop signal, then lets in-flight requests finish.
@@ -1181,6 +1200,34 @@ mod tests {
 
     fn app(site: &str) -> App {
         App::new(Db::open(":memory:").unwrap(), site.into(), tokio::sync::mpsc::channel(1).0)
+    }
+
+    /// The installer, under both of its names, byte for byte.
+    ///
+    /// `/install.sh` is the name the panel generated before the rename, and
+    /// install commands live in shell histories, runbooks and issue threads long
+    /// after the panel stops producing them. Dropping the path would break those
+    /// on a machine nobody is watching, so the alias is served from the same
+    /// handler rather than redirected -- a `curl` that does not follow redirects
+    /// would still get an empty file.
+    #[tokio::test]
+    async fn the_installer_answers_under_its_old_name_too() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let script = include_str!("../install-agent.sh");
+        assert!(script.contains("PROBE_TOKEN"), "the embedded file is the installer");
+        let serve = |path: &'static str| {
+            router(Arc::new(app("")))
+                .oneshot(axum::http::Request::builder().uri(path).body(Body::empty()).unwrap())
+        };
+        for path in ["/install-agent.sh", "/install.sh"] {
+            let res = serve(path).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            assert_eq!(res.headers()[header::CONTENT_TYPE], "text/x-shellscript", "{path}");
+            let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+            assert_eq!(body.as_ref(), script.as_bytes(), "{path}");
+        }
     }
 
     /// A request as a reverse proxy would forward it, or as it arrives with none

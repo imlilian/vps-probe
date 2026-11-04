@@ -1,9 +1,13 @@
 #!/bin/sh
 # Installs probe-agent as a systemd or OpenRC service.
-#   curl -fsSL https://hub.example.com/install.sh | sh -s -- --server URL --token TOKEN [options]
-#   curl -fsSL https://hub.example.com/install.sh | sh -s -- --server URL --register KEY [options]
-#   curl -fsSL https://hub.example.com/install.sh | sh -s -- --upgrade
-#   curl -fsSL https://hub.example.com/install.sh | sh -s -- --uninstall
+#   curl -fsSL https://hub.example.com/install-agent.sh | sh -s -- --server URL --token TOKEN [options]
+#   curl -fsSL https://hub.example.com/install-agent.sh | sh -s -- --server URL --register KEY [options]
+#   curl -fsSL https://hub.example.com/install-agent.sh | sh -s -- --upgrade
+#   curl -fsSL https://hub.example.com/install-agent.sh | sh -s -- --uninstall
+#
+# Named after what it installs, matching install-hub.sh. The hub serves this file
+# and also keeps the older /install.sh path alive, so a command pasted before the
+# rename still installs.
 set -eu
 # useradd and rc-update reside in sbin, which a root shell entered through `su`
 # without `-` lacks on Debian: su keeps the caller's PATH unless ALWAYS_SET_PATH
@@ -13,11 +17,18 @@ PATH="$PATH:/usr/sbin:/sbin"
 # Binary and token in one directory, the same one the hub uses, giving a node a
 # single path to inspect and a single path to remove.
 ROOT="/opt/probe"
-BIN="$ROOT/probe-agent"
+# The service, the account and every file named after them carry one name, so
+# `ps`, `journalctl` and /etc/passwd read alike and renaming is one line. Not the
+# bare `probe` the hub's account once used: that is a name other packages pick
+# for their own user, and a clash is adopted silently rather than reported -- see
+# ours(). SVC rather than NAME because --name already means the node's name.
+SVC="probe-agent"
+USER_NAME="$SVC"
+BIN="$ROOT/$SVC"
 ENV_FILE="$ROOT/agent.env"
-UNIT_FILE="/etc/systemd/system/probe-agent.service"
-RC_FILE="/etc/init.d/probe-agent"
-LOG_FILE="/var/log/probe-agent.log"
+UNIT_FILE="/etc/systemd/system/$SVC.service"
+RC_FILE="/etc/init.d/$SVC"
+LOG_FILE="/var/log/$SVC.log"
 SERVER=""
 TOKEN=""
 REGISTER=""
@@ -28,6 +39,38 @@ INTERVAL=""
 INSECURE=""
 UNINSTALL=""
 UPGRADE=""
+
+# One text for both the wrong-argument path and --help, which the hub script has
+# had all along: a script a fleet pastes blind is the one that most needs a way to
+# ask what it takes.
+usage() {
+	cat <<TXT
+installs probe-agent from the hub that served this script.
+
+  install-agent.sh --server URL (--token TOKEN | --register KEY) [options]
+  install-agent.sh --upgrade [--iface LIST] [--interval SECONDS]
+  install-agent.sh --uninstall
+
+  --server <url>       Hub base URL, e.g. https://hub.example.com
+  --token <token>      Node token from the hub panel
+  --register <key>     Registration key from the panel; exchanges it for this
+                       node's own token, which is what a batch install uses
+  --name <name>        Names the node --register creates, which is otherwise
+                       named after its id. < > " ' are dropped from it; the
+                       panel renames a node freely
+  --iface <list>       Count traffic on these interfaces alone, e.g.
+                       eth1,pppoe-wan. A leading - removes one. Kept on rerun.
+  --interval <secs>    Report interval, 1-3600. Kept on rerun.
+  --insecure           Plain HTTP to a hub with no TLS in front: the token and
+                       the binary travel in the clear
+  --upgrade            Reinstall from this machine's own token and hub address
+  --uninstall          Remove the service, binary, env file and log
+  --help, -h           Show this
+
+The token lives in $ENV_FILE (0600 root); the agent runs as $USER_NAME with no
+capabilities. Everything is installed under $ROOT.
+TXT
+}
 
 while [ $# -gt 0 ]; do
 	# A flag with no argument: under set -u, `$2` aborts with the shell's own
@@ -46,27 +89,118 @@ while [ $# -gt 0 ]; do
 	--insecure) INSECURE=1; shift ;;
 	--uninstall) UNINSTALL=1; shift ;;
 	--upgrade) UPGRADE=1; shift ;;
+	-h | --help) usage; exit 0 ;;
 	*) echo "unknown option: $1" >&2; exit 2 ;;
 	esac
 done
 
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 
+# `uid shell` of a local account, empty when the name is not in /etc/passwd.
+# Read from the file rather than through getent, which a slim install need not
+# have; NSS-backed accounts are not what a system service user ever is.
+account() {
+	sed -n "s/^$1:[^:]*:\([0-9]*\):[0-9]*:[^:]*:[^:]*:\([^:]*\)$/\1 \2/p" /etc/passwd | head -n 1
+}
+
+# Whether an account of this name is this project's. A system uid with a nologin
+# shell is the shape both installers create; any other account of the same name
+# belongs to some other package, and taking it over would hand that package's
+# owner this node's token -- or delete their user on --uninstall. A heuristic,
+# but the alternative is trusting `id -u` alone, which adopts a name clash
+# silently. Same test as install-hub.sh: the two must agree, since both accounts
+# live on the same hosts.
+#
+# The two temporaries are globals rather than `local`, which is not POSIX: this
+# runs under whatever /bin/sh the host has. The underscore keeps them clear of
+# the flags, which are the only other globals that matter.
+ours() {
+	_ours_acct="$(account "$1")"
+	case "$_ours_acct" in
+	'') return 1 ;;
+	*' '*) ;;
+	*) return 1 ;;
+	esac
+	_ours_uid="${_ours_acct% *}"
+	case "$_ours_uid" in *[!0-9]*) return 1 ;; esac
+	[ "$_ours_uid" -ge 100 ] && [ "$_ours_uid" -le 999 ] || return 1
+	case "${_ours_acct#* }" in *nologin | */false) return 0 ;; esac
+	return 1
+}
+
+# Alpine ships BusyBox adduser rather than useradd: -S system, -D no password,
+# -H no home.
+add_user() {
+	if command -v useradd >/dev/null; then
+		useradd --system --no-create-home --shell /usr/sbin/nologin "$USER_NAME"
+	else
+		adduser -S -D -H -s /sbin/nologin "$USER_NAME"
+	fi
+}
+
+# Which of three things the name in /etc/passwd is: ours to adopt, free to
+# create, or somebody else's.
+#
+# The fourth case is not an error and is why this returns a word rather than a
+# yes/no: a name that resolves but is not in the passwd file is the transient
+# user an agent installed under the old DynamicUser= is still running as. That
+# one is this project's, and it goes away with the unit, which is why the caller
+# asks again after stopping it -- see the stop further down.
+user_state() {
+	if [ -n "$(account "$1")" ]; then
+		if ours "$1"; then echo ours; else echo foreign; fi
+	elif id -u "$1" >/dev/null 2>&1; then
+		echo transient
+	else
+		echo free
+	fi
+}
+
+# Creates the account when the name is free, adopts it when it is this project's,
+# and refuses when it is somebody else's.
+ensure_user() {
+	case "$(user_state "$USER_NAME")" in
+	ours | transient) return 0 ;;
+	free)
+		add_user || { echo "cannot create the system user $USER_NAME" >&2; return 1; }
+		;;
+	*)
+		echo "$USER_NAME is already an account on this machine that this project did not create." >&2
+		echo "deal with it by hand, or install under another name, rather than sharing it." >&2
+		return 1
+		;;
+	esac
+}
+
 # Removes exactly what an install writes and nothing else, for both init
 # systems: the one present now need not be the one the install found, and
 # systemctl fails outright where systemd is not PID 1 (WSL, containers) although
 # the install left its files there. Each step therefore tolerates failure. The
 # hub may be installed in $ROOT as well, so the directory is removed only once
-# empty.
+# empty. The account goes too -- unlike the hub's, it owns no state, so nothing
+# is lost by deleting it -- but only when it is this project's own; see ours().
 if [ -n "$UNINSTALL" ]; then
-	rc-service probe-agent stop 2>/dev/null || true
-	rc-update del probe-agent default >/dev/null 2>&1 || true
-	systemctl disable --now probe-agent 2>/dev/null || true
+	# Asked where somebody is watching, skipped where the command came from a
+	# broadcast: `curl | sh` leaves stdin holding the script itself, so there is no
+	# terminal to answer on and a fleet-wide uninstall must not wait for one.
+	if [ -t 0 ]; then
+		printf 'remove %s, %s and the token in %s? [y/N] ' "$SVC" "$BIN" "$ENV_FILE"
+		read -r reply || reply=""
+		case "$reply" in
+		y | Y | yes) ;;
+		*) echo "cancelled"; exit 0 ;;
+		esac
+	fi
+	rc-service "$SVC" stop 2>/dev/null || true
+	rc-update del "$SVC" default >/dev/null 2>&1 || true
+	systemctl disable --now "$SVC" 2>/dev/null || true
 	rm -f "$UNIT_FILE" "$RC_FILE" "$LOG_FILE" "$BIN" "$BIN.old" "$ENV_FILE"
 	systemctl daemon-reload 2>/dev/null || true
-	userdel probe-agent 2>/dev/null || deluser probe-agent 2>/dev/null || true
+	if ours "$USER_NAME"; then
+		userdel "$USER_NAME" 2>/dev/null || deluser "$USER_NAME" 2>/dev/null || true
+	fi
 	rmdir "$ROOT" 2>/dev/null || true
-	echo "probe-agent uninstalled"
+	echo "$SVC uninstalled"
 	exit 0
 fi
 
@@ -89,10 +223,7 @@ if [ -n "$UPGRADE" ]; then
 fi
 
 [ -n "$SERVER" ] && { [ -n "$TOKEN" ] || [ -n "$REGISTER" ]; } || {
-	echo "usage: install.sh --server URL (--token TOKEN | --register KEY) [--interval SECONDS] [--iface LIST] [--insecure]" >&2
-	echo "       install.sh --upgrade [--iface LIST] [--interval SECONDS]" >&2
-	echo "       install.sh --uninstall" >&2
-	echo "--name NAME names the node --register creates, which is otherwise named after its id. < > \" ' are dropped from it; the panel renames a node freely" >&2
+	usage >&2
 	exit 2
 }
 # Names the node a registration creates. A token belongs to a node that already
@@ -221,22 +352,11 @@ else
 	exit 1
 fi
 
-# Alpine ships BusyBox adduser rather than useradd: -S system, -D no password,
-# -H no home.
-add_user() {
-	if command -v useradd >/dev/null; then
-		useradd --system --no-create-home --shell /usr/sbin/nologin probe-agent
-	else
-		adduser -S -D -H -s /sbin/nologin probe-agent
-	fi
-}
-
 # The service user the agent runs as under either init system, created before
 # the download and the registration, so a host where this fails keeps the agent
 # it already runs and spends no registration key. One case passes this check
 # without a user and is settled after the old agent stops; see there.
-id -u probe-agent >/dev/null 2>&1 || add_user ||
-	{ echo "cannot create the system user probe-agent" >&2; exit 1; }
+ensure_user || exit 1
 
 case "$(uname -m)" in
 x86_64 | amd64) ARCH=x86_64 ;;
@@ -252,17 +372,20 @@ URL="${SERVER%/}/probe/$ARCH"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 
-echo "downloading probe-agent ($ARCH)"
-# The hub relays four downloads at once and queues the rest for 30 seconds. A
-# batch run on more machines than drain in that time is turned away with 503,
-# which is retried here rather than failing the machine. Any other refusal is
-# final and shown with the hub's own reason, which --fail would discard.
+echo "downloading $SVC ($ARCH)"
+# The hub relays four downloads at once and queues the rest for up to 30 seconds
+# (RELAY_WAIT), then turns the request away with 503, which is retried here rather
+# than failing the machine. The budget has to outlast that queue, or the machines
+# that queued longest -- the ones a batch install needs most -- are the ones that
+# give up: eight waits of five seconds reach 40 s, past the queue with margin.
+# Any other refusal is final and shown with the hub's own reason, which --fail
+# would discard.
 TRIES=0
 while :; do
 	CODE=$(curl -sSL --max-time 300 -w '%{http_code}' "$URL" -o "$TMP") || exit 1
-	[ "$CODE" = 503 ] && [ "$TRIES" -lt 5 ] || break
+	[ "$CODE" = 503 ] && [ "$TRIES" -lt 8 ] || break
 	TRIES=$((TRIES + 1))
-	echo "the hub is busy relaying to other machines; retrying in 5 seconds"
+	echo "the hub is busy relaying to other machines; retrying in 5 seconds ($TRIES/8)"
 	sleep 5
 done
 [ "$CODE" = 200 ] ||
@@ -336,17 +459,17 @@ fi
 # unlinking rather than failing with ETXTBSY. Placed after the download, so a
 # node that cannot fetch the binary keeps running.
 if [ "$INIT" = openrc ]; then
-	rc-service probe-agent stop 2>/dev/null || true
+	rc-service "$SVC" stop 2>/dev/null || true
 else
-	systemctl stop probe-agent 2>/dev/null || true
+	systemctl stop "$SVC" 2>/dev/null || true
 	# An agent installed before the fixed user ran under DynamicUser=, and while
 	# it runs nss-systemd resolves its transient user of the same name: the check
-	# above passes, and useradd refuses the name as taken. Stopping the unit
-	# releases that user, so the fixed one is created here. Should that fail, the
-	# old binary and unit are still in place and are started again.
-	id -u probe-agent >/dev/null 2>&1 || add_user || {
-		systemctl start probe-agent 2>/dev/null || true
-		echo "cannot create the system user probe-agent" >&2
+	# above reads that as this project's and creates nothing, and useradd would
+	# refuse the name as taken. Stopping the unit releases that user, so asking
+	# again here creates the fixed one. Should that fail, the old binary and unit
+	# are still in place and are started again.
+	ensure_user || {
+		systemctl start "$SVC" 2>/dev/null || true
 		exit 1
 	}
 fi
@@ -376,15 +499,15 @@ ENV
 # and env file just written suit that binary as well, since an upgrade keeps the
 # token and the settings. A first install has nothing to put back.
 not_started() {
-	echo "probe-agent did not start; see: $1" >&2
+	echo "$SVC did not start; see: $1" >&2
 	[ -f "$BIN.old" ] || exit 1
 	mv -f "$BIN.old" "$BIN"
 	if [ "$INIT" = openrc ]; then
-		rc-service probe-agent restart >/dev/null 2>&1 || true
+		rc-service "$SVC" restart >/dev/null 2>&1 || true
 	else
-		systemctl restart probe-agent || true
+		systemctl restart "$SVC" || true
 	fi
-	echo "the previous probe-agent binary is back in place and was restarted" >&2
+	echo "the previous $SVC binary is back in place and was restarted" >&2
 	exit 1
 }
 
@@ -395,7 +518,7 @@ description="probe agent"
 command="$BIN"
 command_args="--interval $INTERVAL${INSECURE:+ --insecure}"
 supervisor="supervise-daemon"
-command_user="probe-agent"
+command_user="$USER_NAME"
 respawn_delay=5
 output_log="$LOG_FILE"
 error_log="$LOG_FILE"
@@ -409,23 +532,23 @@ depend() {
 # opens the log only after dropping to command_user, so the file must be the
 # agent's, including one an earlier install left to root.
 start_pre() {
-	checkpath --file --owner probe-agent --mode 0600 $LOG_FILE
+	checkpath --file --owner $USER_NAME --mode 0600 $LOG_FILE
 	set -a
 	. $ENV_FILE
 	set +a
 }
 RC
 	chmod 0755 "$RC_FILE"
-	rc-update add probe-agent default >/dev/null
-	rc-service probe-agent restart
+	rc-update add "$SVC" default >/dev/null
+	rc-service "$SVC" restart
 	# supervise-daemon reports the service started while it respawns an agent
 	# that exits at once, so the process itself is what is looked for, inside
 	# the respawn delay. pidof rather than pgrep -x, which BusyBox matches
 	# against the full path.
 	sleep 3
-	pidof probe-agent >/dev/null || not_started "$LOG_FILE"
+	pidof "$SVC" >/dev/null || not_started "$LOG_FILE"
 	rm -f "$BIN.old"
-	echo "probe-agent installed; follow it with: tail -f $LOG_FILE"
+	echo "$SVC installed; follow it with: tail -f $LOG_FILE"
 	exit 0
 fi
 
@@ -446,7 +569,7 @@ RestartSec=5
 # and the other mount sandboxing for a unit with a static User=, but refuses to
 # start one with DynamicUser= and exits 226/NAMESPACE. DynamicUser= also implied
 # RestrictSUIDSGID=, which is therefore stated below.
-User=probe-agent
+User=$USER_NAME
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 ProtectSystem=strict
@@ -482,17 +605,17 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable probe-agent >/dev/null
+systemctl enable "$SVC" >/dev/null
 # restart rather than `enable --now`: --now leaves an already-running service
 # untouched, so reinstalling over a live agent would keep the old binary
 # running.
-systemctl restart probe-agent
+systemctl restart "$SVC"
 # Type=simple counts the service started once it is forked, so `restart` above
 # succeeds also for one that fails at once -- a user it cannot resolve
 # (217/USER), a binary that exits -- and is then restarted every RestartSec.
 # Checked inside that window, so a batch run shows the failure on the machine
 # where it happened rather than a line reading "installed".
 sleep 3
-systemctl is-active --quiet probe-agent || not_started "journalctl -u probe-agent -n 20"
+systemctl is-active --quiet "$SVC" || not_started "journalctl -u $SVC -n 20"
 rm -f "$BIN.old"
-echo "probe-agent installed; follow it with: journalctl -u probe-agent -f"
+echo "$SVC installed; follow it with: journalctl -u $SVC -f"

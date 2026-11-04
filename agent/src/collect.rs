@@ -176,7 +176,7 @@ impl Ifaces {
                 None => (&mut ifaces.only, entry),
             };
             // Rejected rather than left to match nothing or everything: each
-            // would silently change the totals. install.sh and the panel refuse
+            // would silently change the totals. install-agent.sh and the panel refuse
             // these too, and admit only letters, digits, `.`, `_` and `-`.
             if name.is_empty() || name.starts_with('-') || name.contains(char::is_whitespace) {
                 return Err(format!(
@@ -710,7 +710,7 @@ fn real_mounts(text: &str) -> Vec<(String, String)> {
 /// count, so `statvfs` answers for the layer on top and the one below is absent
 /// from the totals.
 ///
-/// The `install.sh` unit sets `ProtectHome=yes`, which mounts a tmpfs over
+/// The `install-agent.sh` unit sets `ProtectHome=yes`, which mounts a tmpfs over
 /// /home. Where /home is its own filesystem, `df` on the host and the panel then
 /// disagree by its entire size. Reported at startup in place of
 /// [`hidden_mounts`] where PID 1's table cannot be read.
@@ -743,7 +743,7 @@ pub fn hidden_mounts(host: &str, own: &str) -> Vec<String> {
 
 /// Mount points in this namespace that `statvfs` refuses, with the reason,
 /// which [`disk_usage`] skips while `df` as root counts them: under the
-/// `install.sh` unit the agent runs as its own user, so a disk mounted below a
+/// `install-agent.sh` unit the agent runs as its own user, so a disk mounted below a
 /// directory closed to other users is one of these.
 pub fn unreadable_mounts(text: &str) -> Vec<(String, rustix::io::Errno)> {
     parse_mounts(text)
@@ -1594,7 +1594,7 @@ mod tests {
         assert_eq!(mounts, vec!["/", "/data", "/tank"]);
     }
 
-    /// `install.sh` runs this agent with `ProtectHome=yes`, which systemd
+    /// `install-agent.sh` runs this agent with `ProtectHome=yes`, which systemd
     /// implements by mounting a tmpfs over /home. Both rows remain in the table,
     /// but a path resolves to the upper one, so counting the row underneath
     /// would book the tmpfs's size -- half of RAM by default -- as that of a

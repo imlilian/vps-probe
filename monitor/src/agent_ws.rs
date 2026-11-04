@@ -147,7 +147,7 @@ impl Agent {
 /// The interval an agent states in a report, where it states one. Bounded to
 /// what `--interval` itself admits, so a mangled figure leaves the panel with
 /// the spacing estimate rather than offering a reinstall at a value both the
-/// agent and `install.sh` would refuse.
+/// agent and `install-agent.sh` would refuse.
 fn stated_interval(metrics: &serde_json::Value) -> Option<u64> {
     metrics.get("interval").and_then(serde_json::Value::as_u64).filter(|n| (1..=3600).contains(n))
 }
@@ -1432,7 +1432,7 @@ mod tests {
         assert_eq!(interval(&app), Some(3));
 
         // Outside what --interval admits, a figure is no statement at all: it
-        // would tell the panel to reinstall at something install.sh refuses.
+        // would tell the panel to reinstall at something install-agent.sh refuses.
         dispatch(&app, id, "ip", &stating(json!(0)), &mut session, at_ms(10_000)).unwrap();
         assert_eq!(interval(&app), Some(3), "zero is refused, the last good statement stands");
     }

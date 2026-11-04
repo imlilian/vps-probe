@@ -82,7 +82,16 @@ jobs:
       # warning level is SC2015 on `[ a ] && [ b ] || die`, which is meant to
       # die when either test fails.
       - name: installer lint
-        run: shellcheck -S warning install.sh install-hub.sh scripts/*.sh
+        run: shellcheck -S warning install-agent.sh install-hub.sh scripts/*.sh
+        working-directory: monitor
+
+      # The two installers share /opt/probe and, on a hub that reports for
+      # itself, run side by side with nothing able to source the other. What they
+      # have to agree on -- the directory, that their accounts differ, and their
+      # two copies of the account test -- is checked here rather than trusted to
+      # a comment. See the script for why each one matters.
+      - name: installer agreement
+        run: sh scripts/check-installers.sh
         working-directory: monitor
 
       # This commit's hub against this commit's agent. Before the split into one

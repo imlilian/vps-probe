@@ -61,6 +61,10 @@ fn parse_args() -> Result<Args> {
             "--iface" => iface = Some(value()),
             "--insecure" => insecure = true,
             "-h" | "--help" => usage(),
+            "-V" | "--version" => {
+                println!("probe-agent {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             other => bail!("unknown argument: {other}"),
         }
     }
@@ -197,7 +201,7 @@ fn remaining(last_frame: Instant) -> Duration {
 async fn main() -> Result<()> {
     let args = parse_args()?;
     let url = ws_url(&args.server, args.insecure)?;
-    // Reported once at startup. install.sh hardens this unit with
+    // Reported once at startup. install-agent.sh hardens this unit with
     // ProtectHome=yes and a user of its own, which keep some disks out of the
     // totals. The unit file owns that decision, but the discrepancy must not go
     // unreported. PID 1's table names every disk the sandbox hides; where /proc

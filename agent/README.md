@@ -17,11 +17,13 @@
 在 hub 的面板添加节点，复制生成的命令在目标主机执行：
 
 ```bash
-curl -fsSL https://your-hub/install.sh | sh -s -- --server https://your-hub --token <token>
+curl -fsSL https://your-hub/install-agent.sh | sh -s -- --server https://your-hub --token <token>
 ```
 
 安装脚本识别 systemd 与 OpenRC，二进制装到 `/opt/probe/probe-agent`，token 写入
-`/opt/probe/agent.env`（0600）——和 hub 同一个目录，那台机器上只有这一处要看。
+`/opt/probe/agent.env`（0600）——和 hub 同一个目录，那台机器上只有这一处要看。服务账号是
+`probe-agent`（系统账号，无 home、nologin），跟服务名一致；hub 那台机器上是 `probe-hub` 和
+`probe-agent` 两个账号，agent 读不到 hub 的数据库。
 
 ## 运行
 

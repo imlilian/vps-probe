@@ -56,8 +56,8 @@ OIDC 登录必须有这个地址：授权请求和换 token 都要原样带上�
 
 ```sh
 sudo sh install-hub.sh --upgrade
-sudo sh install-hub.sh --uninstall     # 保留数据
-sudo sh install-hub.sh --purge         # 连数据库一起删
+sudo sh install-hub.sh --uninstall     # 保留数据与系统用户
+sudo sh install-hub.sh --purge         # 数据库和系统用户一起删
 ```
 
 ## 安装 agent
@@ -65,18 +65,23 @@ sudo sh install-hub.sh --purge         # 连数据库一起删
 在面板添加节点，复制生成的命令到目标机器执行：
 
 ```sh
-curl -fsSL https://your-hub/install.sh | sh -s -- --server https://your-hub --token <token>
+curl -fsSL https://your-hub/install-agent.sh | sh -s -- --server https://your-hub --token <token>
 ```
 
 节点只需要能访问 hub，**不需要访问 GitHub**：hub 代为下载并验签后转发。二进制装到
 `/opt/probe/probe-agent`，token 在 `/opt/probe/agent.env`（0600）。
 
+服务账号是 `probe-hub` 与 `probe-agent`（都是无 home、nologin 的系统账号），名字跟服务名
+一致。hub 那台机器上同时装 agent 时是两个账号，不是一个：`/opt/probe/data` 是 0700 属主
+`probe-hub`，agent 要读不到数据库才能挡住「一个节点上的问题变成整支舰队的 token 泄漏」。
+旧地址 `/install.sh` 仍然可用，以前复制出去的命令不会失效。
+
 ```sh
 # 升级：从 hub 拉最新版，复用本机 token，不重新注册、不消耗注册密钥
-curl -fsSL https://your-hub/install.sh | sh -s -- --upgrade
+curl -fsSL https://your-hub/install-agent.sh | sh -s -- --upgrade
 
 # 卸载：删除 unit、二进制、env、日志与系统用户
-curl -fsSL https://your-hub/install.sh | sh -s -- --uninstall
+curl -fsSL https://your-hub/install-agent.sh | sh -s -- --uninstall
 ```
 
 ## 健康检查（接外部 uptime）

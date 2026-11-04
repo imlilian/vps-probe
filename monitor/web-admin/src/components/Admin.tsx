@@ -1321,12 +1321,12 @@ function BillingForm({ node, onClose, onSaved }: {
   )
 }
 
-// Each command runs the hub's own install.sh and is offered only on an https
+// Each command runs the hub's own install-agent.sh and is offered only on an https
 // domain entry. `args` receives that entry, which the agent is also given as
 // --server.
 function scriptCommand(site: string, args: (site: string) => string[]) {
   site = provisioningSite(site)
-  return site && `curl -fsSL ${site}/install.sh | sh -s -- ${args(site).join(" ")}`
+  return site && `curl -fsSL ${site}/install-agent.sh | sh -s -- ${args(site).join(" ")}`
 }
 
 // Built here rather than fetched: the install dialog reads the token on its own,
@@ -1342,7 +1342,7 @@ function intervalArg(seconds: number | undefined) {
   return seconds === undefined ? [] : [`--interval ${seconds}`]
 }
 
-// '' is how install.sh is told to clear a value it would otherwise keep; a
+// '' is how install-agent.sh is told to clear a value it would otherwise keep; a
 // name needs no quoting, as ifaceSpec admits no shell metacharacter.
 function ifaceArg(iface: string | undefined) {
   return iface === undefined ? [] : [`--iface ${iface || "''"}`]
@@ -1362,7 +1362,7 @@ function uninstallCommand(site: string) {
   return scriptCommand(site, () => ["--uninstall"])
 }
 
-// Also the same for every node: install.sh reads the token and the hub address
+// Also the same for every node: install-agent.sh reads the token and the hub address
 // from the machine's own env file.
 function upgradeCommand(site: string) {
   return scriptCommand(site, () => ["--upgrade"])
@@ -1519,7 +1519,7 @@ function RegisterDialog({ site, reg, onClose }: {
 // An agent released before it stated its interval leaves this unknown, and the
 // field opens empty with the default as its placeholder rather than filled with
 // a figure the machine may not hold. `flag` is then undefined, the command
-// carries no `--interval`, and install.sh keeps whatever the machine has.
+// carries no `--interval`, and install-agent.sh keeps whatever the machine has.
 function useIntervalOption(current?: number | null) {
   const [typed, setTyped] = useState<string>()
   const text = typed ?? (current ? String(current) : "")
@@ -1558,7 +1558,7 @@ function IntervalOption({ option, batch = false }: { option: ReturnType<typeof u
 }
 
 // The `--iface` part of an install command. Off leaves the flag out, and
-// install.sh then keeps whatever the machine already has; on with both lists
+// install-agent.sh then keeps whatever the machine already has; on with both lists
 // empty passes '' and restores the default rules. It opens on for a node whose
 // agent reports a list, so reinstalling from here repeats that list rather than
 // relying on the machine to remember it.
