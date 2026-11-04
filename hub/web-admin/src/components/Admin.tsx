@@ -1399,12 +1399,14 @@ export type SourceProbe = {
   error: string | null
 }
 
-/** One probe of the release source, of `draft` when the field holds an unsaved one. */
-const probeSource = (draft?: string) =>
-  api<SourceProbe>("/release/source", {
-    method: "POST",
-    body: JSON.stringify(draft ? { release_source: draft } : {}),
-  })
+/**
+ * One probe of the release source. The body is the card's own draft, so the answer
+ * describes what is on screen rather than what was saved: `release_source: ""` asks
+ * about the official source, an absent field about whichever the hub uses, and
+ * `github_proxy` is the proxy as typed.
+ */
+const probeSource = (draft?: { release_source?: string; github_proxy?: string }) =>
+  api<SourceProbe>("/release/source", { method: "POST", body: JSON.stringify(draft ?? {}) })
 
 /** One line of the source's own answer. */
 function Answer({ label, value, mono = true }: { label: string; value: React.ReactNode; mono?: boolean }) {
@@ -1432,8 +1434,13 @@ function Answer({ label, value, mono = true }: { label: string; value: React.Rea
 function ReleaseSource({ versions, reload }: { versions: Versions; reload: () => void }) {
   const { s, saved, set, save } = useSettings()
   const [probe, setProbe] = useState<SourceProbe | null>(null)
+  const [probing, setProbing] = useState(true)
   const [testing, setTesting] = useState(false)
   const [saving, setSaving] = useState(false)
+  // Advanced by every probe, so an answer that arrives after a newer one was asked
+  // for is dropped rather than shown: the read on opening can take ten seconds, and
+  // a save or a test in between is the answer the operator is waiting for.
+  const epoch = useRef(0)
   // Which of the two the card is showing. The stored value answers it on open;
   // picked here it stays a draft until saved, so switching back and forth costs
   // nothing.
@@ -1441,15 +1448,14 @@ function ReleaseSource({ versions, reload }: { versions: Versions; reload: () =>
 
   // Read once on opening, so the card shows what the source says now rather than
   // what it said when the panel started. It is a small file, and a mirror that is
-  // down answers with the reason within ten seconds.
+  // down answers with the reason within ten seconds -- which is why the block below
+  // has a loading and a failure state and not just an answer.
   useEffect(() => {
-    let live = true
+    const at = ++epoch.current
     probeSource()
-      .then((answer) => live && setProbe(answer))
-      .catch(() => {})
-    return () => {
-      live = false
-    }
+      .then((answer) => at === epoch.current && setProbe(answer))
+      .catch((e: Error) => at === epoch.current && setProbe({ error: e.message } as SourceProbe))
+      .finally(() => at === epoch.current && setProbing(false))
   }, [])
 
   if (!s) return null
@@ -1463,23 +1469,36 @@ function ReleaseSource({ versions, reload }: { versions: Versions; reload: () =>
   const typed = fixed ? versions.source : String(s.release_source ?? "")
 
   async function test() {
+    const at = ++epoch.current
     setTesting(true)
+    setProbing(true)
     try {
-      setProbe(await probeSource(kind === "mirror" && typed !== stored ? typed : undefined))
+      // The half on screen, as typed: the source for a mirror, and the proxy for the
+      // official page, which the hub applies only there.
+      const answer = await probeSource(
+        kind === "mirror" ? { release_source: typed } : { release_source: "", github_proxy: proxy },
+      )
+      if (at === epoch.current) setProbe(answer)
     } catch (e) {
       toast.error((e as Error).message)
+      if (at === epoch.current) setProbe({ error: (e as Error).message } as SourceProbe)
     } finally {
-      setTesting(false)
+      if (at === epoch.current) {
+        setTesting(false)
+        setProbing(false)
+      }
     }
   }
 
-  // One button for whichever half is on screen: the card asks a single question,
-  // so it has a single answer to store.
+  // One button for whichever half is on screen: the card asks a single question, so
+  // it has a single answer to store. Choosing the official source clears a stored
+  // mirror in the same write -- otherwise the card says "official" and the hub keeps
+  // fetching from the mirror, with the success message confirming it.
   async function commit() {
     setSaving(true)
-    const done = kind === "mirror" ? "发布源已保存" : "GitHub 代理已保存"
+    const done = kind === "mirror" ? "发布源已保存" : "已改用官方源"
     const patch: Record<string, string> =
-      kind === "mirror" ? { release_source: typed } : { github_proxy: proxy }
+      kind === "mirror" ? { release_source: typed } : { release_source: "", github_proxy: proxy }
     if (await save(patch, done)) {
       reload()
       await test()
@@ -1519,6 +1538,9 @@ function ReleaseSource({ versions, reload }: { versions: Versions; reload: () =>
             key={value}
             size="sm"
             variant={kind === value ? "default" : "outline"}
+            // The two are one choice, not two actions: a screen reader has to be
+            // told which one is in force.
+            aria-pressed={kind === value}
             disabled={fixed || saving}
             onClick={() => setPicked(value)}
           >
@@ -1567,10 +1589,17 @@ function ReleaseSource({ versions, reload }: { versions: Versions; reload: () =>
       {/* What the source actually says, which is the part a wrong address hides:
           a 404 page parses as neither, and a mirror without .sig parses fine and
           fails only on a node. */}
-      {shown && (
+      {probing && !shown ? (
+        <p className="text-xs text-muted-foreground">正在向发布源要 versions.json…（最多 10 秒）</p>
+      ) : shown ? (
         <div className="space-y-1 rounded-lg border bg-muted/30 p-3 text-xs">
           {shown.error ? (
-            <p className="text-destructive">取不到：{shown.error}</p>
+            <p className="text-destructive">
+              取不到：{shown.error}
+              <span className="mt-1 block text-muted-foreground">
+                地址与对端的应答在 hub 的 journal 里（journalctl -u probe-hub）。
+              </span>
+            </p>
           ) : (
             <>
               <Answer label="versions" value={shown.version_url} />
@@ -1601,6 +1630,8 @@ function ReleaseSource({ versions, reload }: { versions: Versions; reload: () =>
           )}
           {shown.draft && <p className="text-warn">这是上面还没保存的地址</p>}
         </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">还没有读到发布源的回答。</p>
       )}
     </Card>
   )
