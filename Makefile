@@ -29,12 +29,16 @@ agent:
 
 # 测试文件就住在 src/ 旁边，靠"没人 import 它"才不进包：第一条把那前提钉住，
 # 任何模块 import 了 *.test.ts 就失败。CI 跑同一个脚本。
+#
+# clippy 与 `cargo check` 是两件事，且 CI 只信前者（`--all-targets -- -D warnings`，
+# 测试代码也算）：`cargo check` 不跑 lint，一个 `.err().expect()` 或手写的范围模式
+# 能一路绿到这里、推送后才红。这条命令与 CI 逐字相同，改一处要改两处。
 check: admin
 	sh hub/scripts/no-tests-in-bundle.sh
 	cd $(THEME_DIR) && { [ -d node_modules ] || npm ci; } && npm run lint
 	cd $(ADMIN_DIR) && npm run lint
-	cd hub && cargo fmt --check && cargo check
-	cd agent && cargo fmt --check && cargo check
+	cd hub && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings
+	cd agent && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings
 
 test: admin
 	cd $(THEME_DIR) && { [ -d node_modules ] || npm ci; } && npm test
