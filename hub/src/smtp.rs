@@ -802,6 +802,7 @@ mod tests {
         let failed = session(client, &server(), &message(), false).await.err().expect("refused");
         assert!(!failed.retry);
         assert!(failed.shown.starts_with("收件人被拒绝"), "{}", failed.shown);
+        let _ = peer.await;
     }
 
     /// A relay that is merely busy answers 4xx, which is worth another attempt:
