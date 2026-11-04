@@ -85,6 +85,14 @@ jobs:
         run: shellcheck -S warning install-agent.sh install-hub.sh scripts/*.sh
         working-directory: hub
 
+      # The scripts in the repository root run on an operator's machine as well --
+      # a mirror pushed to their own server, a release commit -- and the step above
+      # cannot see them: its working directory is hub/. Same severity: SC2015 is
+      # below warning here too, so what is left is the class of mistake that costs
+      # someone a mirror.
+      - name: script lint
+        run: shellcheck -S warning scripts/*.sh
+
       # The two installers share /opt/probe and, on a hub that reports for
       # itself, run side by side with nothing able to source the other. What they
       # have to agree on -- the directory, that their accounts differ, and their

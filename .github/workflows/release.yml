@@ -52,6 +52,18 @@ jobs:
           PREV_TAG=$({ git ls-remote --tags --refs origin 'v*' \
                        | grep -v "refs/tags/$GITHUB_REF_NAME\$" || true; } \
                      | awk '{ print $2 }' | sed 's|refs/tags/||' | sort -V | tail -n1)
+          # That is the newest tag, not necessarily this one's predecessor, and the
+          # difference matters: re-running an older tag, or pushing a batch of tags
+          # at once, would otherwise inherit a binary from a release that comes
+          # *after* it -- a release whose files and whose versions.json then disagree
+          # with the commit it points at. A tag cannot be moved, so such a release
+          # cannot be repaired. The defence is to inherit nothing: a full build of
+          # both components is always correct, only slower.
+          if [ -n "$PREV_TAG" ] &&
+             [ "$(printf '%s\n%s\n' "$GITHUB_REF_NAME" "$PREV_TAG" | sort -V | tail -n1)" = "$PREV_TAG" ]; then
+            echo "::warning::$PREV_TAG is newer than $GITHUB_REF_NAME: building both components instead of inheriting"
+            PREV_TAG=
+          fi
           PREV_HUB= PREV_AGENT=
           # A release without versions.json predates this scheme: both
           # components build, which is always safe.
