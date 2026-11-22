@@ -18,6 +18,12 @@ fn main() {
     println!("cargo:rerun-if-changed=web-site");
     println!("cargo:rerun-if-changed=target/theme/.pin");
     println!("cargo:rerun-if-changed=scripts/theme.sh");
+    // The admin bundle is embedded at compile time too, and rust-embed's
+    // include_bytes! list is fixed at that point: rebuilding `web-admin/dist`
+    // renames every asset, so the old paths mere mtime-tracking knows about
+    // never change. Without this line `make hub` rebuilt only the bundle and
+    // kept serving the previous panel.
+    println!("cargo:rerun-if-changed=web-admin/dist");
 
     match Command::new("sh").arg("scripts/theme.sh").status() {
         Ok(status) if status.success() => {}

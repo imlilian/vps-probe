@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -597,6 +598,61 @@ function Help({ children, width = "max-w-64" }: { children: React.ReactNode; wid
         {children}
       </TooltipContent>
     </Tooltip>
+  )
+}
+
+// A card's title, with the one line that says what the card is for and the
+// question mark that holds the reasoning behind it. The same two registers as
+// `Field`: the line an operator needs every time on the page, the paragraph that
+// explains why behind the icon.
+function CardHead({ title, hint, help, helpWidth, extra }: {
+  title: string
+  hint?: React.ReactNode
+  help?: React.ReactNode
+  helpWidth?: string
+  extra?: React.ReactNode
+}) {
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-2">
+      <div>
+        <div className="flex items-center gap-1.5">
+          <h3 className="text-sm font-medium">{title}</h3>
+          {help && <Help width={helpWidth}>{help}</Help>}
+        </div>
+        {hint && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{hint}</p>}
+      </div>
+      {extra}
+    </div>
+  )
+}
+
+// What a page draws while its own reads are on their way, and what it draws when
+// they failed. `null` used to be both answers: a blank page that then dropped a
+// finished form in, and -- when the read failed -- a blank page that stayed
+// blank, which reads as a panel with nothing in it rather than as an error.
+function PageState({ error, retry, cards = 2 }: { error: string; retry: () => void; cards?: number }) {
+  if (error) {
+    return (
+      <Card className="gap-3 p-5">
+        <p className="text-sm text-destructive">读不到数据：{error}</p>
+        <div>
+          <Button size="sm" variant="outline" onClick={retry}>
+            重试
+          </Button>
+        </div>
+      </Card>
+    )
+  }
+  return (
+    <div className="space-y-4">
+      {Array.from({ length: cards }, (_, i) => (
+        <Card key={i} className="gap-4 p-5">
+          <Skeleton className="h-5 w-28" />
+          <Skeleton className="h-9 w-full" />
+          <Skeleton className="h-9 w-2/3" />
+        </Card>
+      ))}
+    </div>
   )
 }
 
@@ -1431,8 +1487,8 @@ function Answer({ label, value, mono = true }: { label: string; value: React.Rea
  * a source address that is only read when the official one is not in play would
  * be a field that does nothing -- worse than one that is not there.
  */
-function ReleaseSource({ versions, reload }: { versions: Versions; reload: () => void }) {
-  const { s, saved, set, save } = useSettings()
+function ReleaseSource({ versions, reload }: { versions: Versions | null; reload: () => void }) {
+  const { s, saved, error, reload: reloadSettings, set, save } = useSettings()
   const [probe, setProbe] = useState<SourceProbe | null>(null)
   const [probing, setProbing] = useState(true)
   const [testing, setTesting] = useState(false)
@@ -1458,15 +1514,19 @@ function ReleaseSource({ versions, reload }: { versions: Versions; reload: () =>
       .finally(() => at === epoch.current && setProbing(false))
   }, [])
 
-  if (!s) return null
+  // Rendered while the settings are on their way, rather than left out: the card
+  // sits above the two version cards, and one that mounts after them shoves them
+  // down the page by its whole height. Its rows are the same height either way,
+  // and the answer block below reserves the room its answer will take.
+  const loading = !s
   const stored = String(saved?.release_source ?? "")
-  const proxy = String(s.github_proxy ?? "")
-  const fixed = versions.source_fixed
+  const proxy = String(s?.github_proxy ?? "")
+  const fixed = versions?.source_fixed ?? false
   // A fixed source is not in the panel's setting -- it is on the command line --
   // so the card opens on the mirror half and shows the address the hub reported,
   // which is the only place it is written down outside the unit file.
   const kind = picked ?? (fixed || stored ? "mirror" : "official")
-  const typed = fixed ? versions.source : String(s.release_source ?? "")
+  const typed = fixed && versions ? versions.source : String(s?.release_source ?? "")
 
   async function test() {
     const at = ++epoch.current
@@ -1514,20 +1574,19 @@ function ReleaseSource({ versions, reload }: { versions: Versions; reload: () =>
 
   return (
     <Card className="gap-4 p-5">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <h3 className="text-sm font-medium">发布源</h3>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            「有没有新版本」和给节点装 agent 的二进制都从这里取。官方源是 GitHub 的发布页，可以再套一层代理；自建源是你自己的镜像——Gitee、Gitea、内网目录都行。
-            <Help width="max-w-72 min-[448px]:max-w-96">
-              <p>源可换，<span className="whitespace-nowrap">信任锚是签名不是源</span>：versions.json 本身没有签名，换源最多让面板显示错版本、让 hub 去别的地址取文件。agent 二进制要过编译进 hub 的 ed25519 公钥，装不进来。</p>
-              <p>hub 自身永不自我更新：升级 hub 永远走 install-hub.sh。</p>
-              <p>自建源目录里要有 versions.json 和 probe-hub-/probe-agent-&lt;arch&gt;-unknown-linux-musl 及各自的 .sig；资产不放在同一目录时，由 versions.json 的 download 字段指过去。仓库里的 scripts/mirror.sh 就是照这个形状做镜像的。</p>
-            </Help>
-          </p>
-        </div>
-        {fixed && <Badge variant="secondary">安装器固定</Badge>}
-      </div>
+      <CardHead
+        title="发布源"
+        hint="面板查新版本、节点装 agent，都从这里取。官方源是 GitHub 发布页，可以套一层代理；自建源是你自己的镜像，Gitee、Gitea、内网目录都行。"
+        helpWidth="max-w-72 min-[448px]:max-w-96"
+        help={
+          <>
+            <p>源可换，<span className="whitespace-nowrap">信任锚是签名不是源</span>：versions.json 本身没有签名，换源最多让面板显示错版本、让 hub 去别的地址取文件。agent 二进制要过编译进 hub 的 ed25519 公钥，装不进来。</p>
+            <p>hub 自身永不自我更新：升级 hub 永远走 install-hub.sh。</p>
+            <p>自建源目录里要有 versions.json 和 probe-hub-/probe-agent-&lt;arch&gt;-unknown-linux-musl 及各自的 .sig；资产不放在同一目录时，由 versions.json 的 download 字段指过去。仓库里的 scripts/mirror.sh 就是照这个形状做镜像的。</p>
+          </>
+        }
+        extra={fixed && <Badge variant="secondary">安装器固定</Badge>}
+      />
 
       {/* A fixed source is the unit file's answer: shown, not editable, since a
           stored value would be ignored and the panel would be lying about what
@@ -1541,7 +1600,7 @@ function ReleaseSource({ versions, reload }: { versions: Versions; reload: () =>
             // The two are one choice, not two actions: a screen reader has to be
             // told which one is in force.
             aria-pressed={kind === value}
-            disabled={fixed || saving}
+            disabled={fixed || saving || loading}
             onClick={() => setPicked(value)}
           >
             {label}
@@ -1549,7 +1608,26 @@ function ReleaseSource({ versions, reload }: { versions: Versions; reload: () =>
         ))}
       </div>
 
-      {kind === "official" ? (
+      {/* One field either way, so the card is the same height before and after
+          the settings arrive. Which of the two it is only shows once they have.
+          The bar heights are the label, the input and the hint they stand in
+          for, so the swap costs no pixels. */}
+      {loading ? (
+        error ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-xs text-destructive">读不到设置：{error}</p>
+            <Button size="sm" variant="ghost" onClick={reloadSettings}>
+              重试
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <Skeleton className="h-5 w-20" />
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-5 w-2/3" />
+          </div>
+        )
+      ) : kind === "official" ? (
         <Field
           label="GitHub 代理"
           hint={fixed ? "这一项对安装器固定的自建源没有作用" : "留空直连；只在 hub 拉不到 GitHub 的发布物时填"}
@@ -1577,10 +1655,10 @@ function ReleaseSource({ versions, reload }: { versions: Versions; reload: () =>
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" onClick={commit} disabled={fixed || saving || testing}>
+        <Button size="sm" onClick={commit} disabled={fixed || saving || testing || loading}>
           {saving ? "保存中…" : "保存"}
         </Button>
-        <Button size="sm" variant="secondary" onClick={test} disabled={testing}>
+        <Button size="sm" variant="secondary" onClick={test} disabled={testing || loading}>
           <Send /> {testing ? "测试中…" : "测试"}
         </Button>
         {dirty && <span className="text-2xs text-warn">有未保存的改动</span>}
@@ -1588,51 +1666,63 @@ function ReleaseSource({ versions, reload }: { versions: Versions; reload: () =>
 
       {/* What the source actually says, which is the part a wrong address hides:
           a 404 page parses as neither, and a mirror without .sig parses fine and
-          fails only on a node. */}
-      {probing && !shown ? (
-        <p className="text-xs text-muted-foreground">正在向发布源要 versions.json…（最多 10 秒）</p>
-      ) : shown ? (
-        <div className="space-y-1 rounded-lg border bg-muted/30 p-3 text-xs">
-          {shown.error ? (
-            <p className="text-destructive">
-              取不到：{shown.error}
-              <span className="mt-1 block text-muted-foreground">
-                地址与对端的应答在 hub 的 journal 里（journalctl -u probe-hub）。
-              </span>
-            </p>
-          ) : (
-            <>
-              <Answer label="versions" value={shown.version_url} />
-              <Answer
-                label="发布"
-                value={[shown.tag && `v${shown.tag}`, shown.hub && `hub ${shown.hub}`, shown.agent && `agent ${shown.agent}`]
-                  .filter(Boolean)
-                  .join(" · ") || "源上没有说版本"}
-              />
-              <Answer label="资产目录" value={shown.asset_base} />
-              {shown.assets?.map((asset) => (
+          fails only on a node. The box is drawn at the height its answer takes
+          while that answer is still on its way -- same row count, same label
+          column -- so the cards below it do not move when it lands. */}
+      <div className="min-h-32 space-y-1 rounded-lg border bg-muted/30 p-3 text-xs" aria-busy={probing && !shown}>
+        {probing && !shown ? (
+          <>
+            <p className="sr-only">正在读取发布源的 versions.json</p>
+            {Array.from({ length: 5 }, (_, i) => (
+              <div key={i} className="flex gap-3">
+                <Skeleton className="h-4 w-17 shrink-0" />
+                <Skeleton className="h-4 flex-1" />
+              </div>
+            ))}
+          </>
+        ) : shown ? (
+          <>
+            {shown.error ? (
+              <p className="text-destructive">
+                取不到：{shown.error}
+                <span className="mt-1 block text-muted-foreground">
+                  地址与对端的应答在 hub 的 journal 里（journalctl -u probe-hub）。
+                </span>
+              </p>
+            ) : (
+              <>
+                <Answer label="versions" value={shown.version_url} />
                 <Answer
-                  key={asset.arch}
-                  label={asset.arch}
-                  mono={false}
-                  value={
-                    asset.error ? (
-                      <span className="text-destructive" title={asset.url}>
-                        {asset.error}
-                      </span>
-                    ) : (
-                      <span title={asset.url}>签名文件在</span>
-                    )
-                  }
+                  label="发布"
+                  value={[shown.tag && `v${shown.tag}`, shown.hub && `hub ${shown.hub}`, shown.agent && `agent ${shown.agent}`]
+                    .filter(Boolean)
+                    .join(" · ") || "源上没有说版本"}
                 />
-              ))}
-            </>
-          )}
-          {shown.draft && <p className="text-warn">这是上面还没保存的地址</p>}
-        </div>
-      ) : (
-        <p className="text-xs text-muted-foreground">还没有读到发布源的回答。</p>
-      )}
+                <Answer label="资产目录" value={shown.asset_base} />
+                {shown.assets?.map((asset) => (
+                  <Answer
+                    key={asset.arch}
+                    label={asset.arch}
+                    mono={false}
+                    value={
+                      asset.error ? (
+                        <span className="text-destructive" title={asset.url}>
+                          {asset.error}
+                        </span>
+                      ) : (
+                        <span title={asset.url}>签名文件在</span>
+                      )
+                    }
+                  />
+                ))}
+              </>
+            )}
+            {shown.draft && <p className="text-warn">这是上面还没保存的地址</p>}
+          </>
+        ) : (
+          <p className="text-muted-foreground">还没有读到发布源的回答。</p>
+        )}
+      </div>
     </Card>
   )
 }
@@ -2629,17 +2719,27 @@ type Settings = Record<string, string | boolean | number>
 function useSettings() {
   const [s, setS] = useState<Settings | null>(null)
   const [saved, setSaved] = useState<Settings | null>(null)
-  useEffect(() => {
+  // The pages that use this draw nothing until it answers, so a failed read has
+  // to be told apart from a pending one: reported, it becomes a retry button
+  // instead of a page that stays blank.
+  const [error, setError] = useState("")
+  const load = useCallback(() => {
     api<Settings>("/settings")
       .then((next) => {
         setS(next)
         setSaved(next)
+        setError("")
       })
-      .catch(() => {})
+      .catch((e: Error) => setError(e.message))
   }, [])
+  useEffect(() => {
+    load()
+  }, [load])
   return {
     saved,
     s,
+    error,
+    reload: load,
     set: (k: string, v: string) => setS((old) => ({ ...(old ?? {}), [k]: v })),
     // Resolves to whether the hub took the patch; a failure is already toasted.
     save: async (patch: Record<string, string>, done = "已保存") => {
@@ -2758,15 +2858,29 @@ function SiteAddressField({
   current: string
   /** Given by `--site`, so the field shows it and offers no edit. */
   fixed: boolean
-  onSave: (next: string) => void
+  /** Resolves to whether the hub took the value; a failure is already toasted. */
+  onSave: (next: string) => Promise<boolean>
 }) {
   // The reader's own domain, which is usually the one they want.
   const offered = addressFromOrigin(location.origin)
+  // The hub refuses this one write from a request that did not arrive over
+  // https, because the cookies issued afterwards are `Secure` and the browser
+  // drops them on the page the operator is reading. Said here rather than left
+  // to the refusal: the button then opens an editor whose save cannot succeed.
+  const secure = location.protocol === "https:"
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState("")
+  const [saving, setSaving] = useState(false)
   const edit = () => {
     setDraft(value ? value.replace(/^https:\/\//, "").replace(/\/$/, "") : offered)
     setEditing(true)
+  }
+  // Stays open when the hub refuses: the value just typed is the thing to
+  // correct, and closing the editor throws it away along with the field's focus.
+  async function commit() {
+    setSaving(true)
+    if (await onSave(draft)) setEditing(false)
+    setSaving(false)
   }
   return (
     <div className="space-y-2">
@@ -2780,7 +2894,7 @@ function SiteAddressField({
             {current || "跟随浏览器地址"}
           </p>
           {!fixed && (
-            <Button size="sm" variant="outline" onClick={edit}>
+            <Button size="sm" variant="outline" disabled={!secure} onClick={edit}>
               <Pencil aria-hidden /> {value ? "修改" : "设置"}
             </Button>
           )}
@@ -2800,20 +2914,18 @@ function SiteAddressField({
               className="rounded-none border-0 focus-visible:ring-0"
               value={draft}
               placeholder="hub.example.com"
+              disabled={saving}
               onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && draft.trim()) commit()
+                if (e.key === "Escape") setEditing(false)
+              }}
             />
           </div>
-          <Button
-            size="sm"
-            disabled={!draft.trim()}
-            onClick={() => {
-              onSave(draft)
-              setEditing(false)
-            }}
-          >
-            保存
+          <Button size="sm" disabled={!draft.trim() || saving} onClick={commit}>
+            {saving ? "保存中…" : "保存"}
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+          <Button size="sm" variant="ghost" disabled={saving} onClick={() => setEditing(false)}>
             取消
           </Button>
         </div>
@@ -2821,9 +2933,9 @@ function SiteAddressField({
       <p className="text-xs leading-relaxed text-muted-foreground break-keep wrap-anywhere">
         {fixed
           ? "由启动参数 --site 固定，面板里改不了：要改它得编辑 systemd 的 ExecStart 再重启。"
-          : editing && !offered
-            ? "当前不是 https 连接，所以没法自动填入。只填域名（可以带端口），别填路径。"
-            : "安装命令、OIDC 与 GitHub 的回调地址都用它。只填域名（可以带端口）；留空则跟随浏览器地址栏。"}
+          : !secure
+            ? "面板现在是 http 连接，hub 会拒绝保存站点 URL：之后的会话 cookie 带 Secure，浏览器在 http 页面上会把它丢掉。用 https 域名打开面板再设置，或启动时加 --site https://你的域名。"
+            : "安装命令与两个登录回调都用它。只填域名（可以带端口），别填路径；留空则跟随浏览器地址栏。"}
       </p>
     </div>
   )
@@ -2831,36 +2943,60 @@ function SiteAddressField({
 
 // `onSaved` refreshes what the header shows, the site name among it.
 function SettingsTab({ onSaved, hubSite, siteFixed }: { onSaved: () => void; hubSite: string; siteFixed: boolean }) {
-  const { s, set, save } = useSettings()
+  const { s, saved, error, reload, set, save } = useSettings()
   const iconPicker = useRef<HTMLInputElement>(null)
-  if (!s) return null
+  if (!s) return <PageState error={error} retry={reload} cards={1} />
   const cdnOnly = s.origin_cdn_only === "on"
   // Applied on its own, as soon as a file is picked: a picked file is already a
   // decision, and the form's save button below is easy to miss for it.
   const saveIcons = (icons: { favicon: string; touch_icon: string }, done: string) =>
     save(icons, done).then((ok) => {
-      // The tab's icon is cached under its fixed URL; a new query fetches the
-      // one just saved.
-      const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
-      if (ok && link) link.href = `/admin/favicon.svg?${Date.now()}`
+      // The shell declares four of these (three sizes of `icon` plus the
+      // `apple-touch-icon`), and each carries its own path: rewriting only the
+      // first match -- the .ico -- leaves the others cached under the URL the
+      // browser actually prefers. Each keeps its path and gains the query.
+      if (!ok) return
+      for (const link of document.querySelectorAll<HTMLLinkElement>('link[rel="icon"], link[rel="apple-touch-icon"]')) {
+        const href = link.getAttribute("href") ?? ""
+        link.href = `${href.split("?")[0]}?${Date.now()}`
+      }
     })
+
+  // The form is saved whole, so anything that differs from what the hub holds is
+  // a draft -- the two switches included, whose position is easy to read as
+  // already applied.
+  const dirty =
+    String(s.site_name ?? "") !== String(saved?.site_name ?? "")
+    || String(s.retention_days ?? "") !== String(saved?.retention_days ?? "")
+    || cdnOnly !== (saved?.origin_cdn_only === "on")
+    || (s.public_page === "on") !== (saved?.public_page === "on")
 
   return (
     <div className="space-y-4">
       <Card className="gap-4 p-5">
+        <CardHead
+          title="站点"
+          hint="面板的地址、名字和图标，以及状态页对谁可见。"
+          help={<p>地址与名字也用在别人看到的那一面：安装命令、两个登录回调、浏览器标签和公开状态页。</p>}
+        />
         <SiteAddressField
           value={String(s.site_url ?? "")}
           current={hubSite}
           fixed={siteFixed}
-          onSave={(next) => save({ site_url: next }).then((ok) => ok && onSaved())}
+          onSave={(next) =>
+            save({ site_url: next }).then((ok) => {
+              if (ok) onSaved()
+              return ok
+            })
+          }
         />
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="站点名称">
+          <Field label="站点名称" hint="顶栏和公开页上显示的名字，留空就是 Monitor">
             <Input value={String(s.site_name ?? "")} onChange={(e) => set("site_name", e.target.value)} placeholder="Monitor" />
           </Field>
           <Field
             label="历史数据保留天数"
-            hint="1–365 天，超出的自动清理，累计流量不受影响"
+            hint="1–365 天，超出这个窗口的自动清理；累计流量不受影响"
             helpWidth="max-w-66 min-[408px]:max-w-94"
             help={
               <>
@@ -2879,6 +3015,8 @@ function SettingsTab({ onSaved, hubSite, siteFixed }: { onSaved: () => void; hub
           >
             <Input
               type="number"
+              min={1}
+              max={365}
               value={String(s.retention_days ?? "")}
               onChange={(e) => set("retention_days", e.target.value)}
               placeholder="30"
@@ -2923,7 +3061,7 @@ function SettingsTab({ onSaved, hubSite, siteFixed }: { onSaved: () => void; hub
         <div className="space-y-4">
           <SwitchRow
             label="开放公开状态页"
-            hint="关闭后所有页面需登录"
+            hint="关闭后状态页也要登录，陌生人看不到节点"
             // "on" is the only value that opens it -- the hub closes the page on
             // anything else, including a key it never wrote.
             checked={s.public_page === "on"}
@@ -2931,7 +3069,7 @@ function SettingsTab({ onSaved, hubSite, siteFixed }: { onSaved: () => void; hub
           />
           <SwitchRow
             label="我确认源站只对 Cloudflare 或隧道开放"
-            hint="登录通知和限流取访客的真实地址"
+            hint="打开后按 CF-Connecting-IP 认访客，登录通知和限流都按它算"
             extra={
               <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                 <span>保存后核对，当前认出你的地址</span>
@@ -2956,7 +3094,7 @@ function SettingsTab({ onSaved, hubSite, siteFixed }: { onSaved: () => void; hub
             onChange={(v) => set("origin_cdn_only", v ? "on" : "off")}
           />
         </div>
-        <div>
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
             onClick={() =>
@@ -2974,6 +3112,7 @@ function SettingsTab({ onSaved, hubSite, siteFixed }: { onSaved: () => void; hub
           >
             保存站点设置
           </Button>
+          {dirty && <span className="text-2xs text-warn">有未保存的改动</span>}
         </div>
       </Card>
     </div>
@@ -3024,22 +3163,26 @@ function TemplatePreview({ template, site, json = false }: { template: string; s
   }
   return (
     <div className="space-y-1">
-      <div className="text-xs text-muted-foreground">预览（以一条离线通知为例）</div>
+      <div className="text-xs text-muted-foreground">预览（离线通知示例）</div>
       <pre className="overflow-x-auto rounded-md bg-muted/50 px-3 py-2 font-mono text-xs whitespace-pre-wrap break-all">{out}</pre>
     </div>
   )
 }
 
-// A channel's form, collapsed until needed. The summary carries whether the
-// channel is configured, so the closed card still answers the common question.
-function ChannelCard({ title, configured, children }: { title: string; configured: boolean; children: React.ReactNode }) {
+// A channel's form, collapsed until needed. The summary carries what the channel
+// is for and whether it is configured, so the closed card still answers the two
+// questions a reader has before opening it.
+function ChannelCard({ title, hint, configured, children }: { title: string; hint: string; configured: boolean; children: React.ReactNode }) {
   return (
     <Card className="p-5">
       <details className="group">
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
-          <span className="flex items-center gap-2 text-sm font-medium">
-            <ChevronRight className="size-4 text-muted-foreground transition-transform group-open:rotate-90" />
-            {title}
+        <summary className="flex cursor-pointer list-none items-start justify-between gap-3 rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
+          <span className="flex min-w-0 items-start gap-2">
+            <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+            <span className="min-w-0 text-sm font-medium">
+              {title}
+              <span className="mt-0.5 block text-xs font-normal text-muted-foreground">{hint}</span>
+            </span>
           </span>
           <Badge variant={configured ? "secondary" : "outline"}>{configured ? "已配置" : "未配置"}</Badge>
         </summary>
@@ -3098,7 +3241,7 @@ function OfflineNodes({ nodes, refresh }: { nodes: Node[]; refresh: () => void }
       <div>
         <h3 className="text-sm font-medium">离线通知</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          按节点打开，默认关。已打开 {nodes.filter((n) => n.notify).length} / {nodes.length} 台
+          按节点开启，默认关闭。已开启 {nodes.filter((n) => n.notify).length} / {nodes.length} 台
           {pending.length > 0 && <span className="text-foreground">，待保存：{pending.join("、")}</span>}
         </p>
       </div>
@@ -3112,7 +3255,7 @@ function OfflineNodes({ nodes, refresh }: { nodes: Node[]; refresh: () => void }
 }
 
 function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
-  const { s, saved, set, save } = useSettings()
+  const { s, saved, error, reload, set, save } = useSettings()
   // The channel being tested: one button per card, and the busy label belongs to
   // the card that was clicked.
   const [testing, setTesting] = useState<string | null>(null)
@@ -3120,7 +3263,7 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
   useEffect(() => {
     api<Preset[]>("/notify/presets").then(setPresets).catch(() => {})
   }, [])
-  if (!s) return null
+  if (!s) return <PageState error={error} retry={reload} cards={2} />
   const text = (k: string) => String(s[k] ?? "")
   // A credential is sent only when something was typed: the field starts empty
   // because the hub never returns the stored value.
@@ -3152,15 +3295,29 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
   })
 
   // What a channel needs before a test means anything: Telegram a bot token and a
-  // chat, Webhook a URL. The token and the URL are blank in the form when one is
-  // already stored -- the hub never sends a secret back -- so `_set` counts.
+  // chat, Webhook a URL, SMTP a server and a recipient. The token and the URL are
+  // blank in the form when one is already stored -- the hub never sends a secret
+  // back -- so `_set` counts.
   const filled = (key: string, stored: string) => text(key).trim() !== "" || !!s[stored]
-  const ready = {
-    telegram: filled("notify_telegram_token", "notify_telegram_token_set") && text("notify_telegram_chat").trim() !== "",
-    webhook: filled("notify_webhook_url", "notify_webhook_url_set"),
+  // Named rather than restated as a rule: the line under a disabled test button
+  // says what is still empty, which is the only thing the reader can act on.
+  const missing = {
+    telegram: [
+      filled("notify_telegram_token", "notify_telegram_token_set") ? "" : "Bot Token",
+      text("notify_telegram_chat").trim() ? "" : "Chat ID",
+    ].filter(Boolean),
+    webhook: [filled("notify_webhook_url", "notify_webhook_url_set") ? "" : "URL"].filter(Boolean),
     // The same two fields the hub needs to consider the channel configured; a
     // password is not one of them, since a relay nearby takes none.
-    smtp: text("notify_smtp_host").trim() !== "" && text("notify_smtp_to").trim() !== "",
+    smtp: [
+      text("notify_smtp_host").trim() ? "" : "服务器",
+      text("notify_smtp_to").trim() ? "" : "收件人",
+    ].filter(Boolean),
+  }
+  const ready = {
+    telegram: missing.telegram.length === 0,
+    webhook: missing.webhook.length === 0,
+    smtp: missing.smtp.length === 0,
   }
 
   // Whether this card is only a draft. A secret cannot be compared -- the hub never
@@ -3204,14 +3361,26 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
           button here that tested "everything" was the same action without a
           subject: it had to skip the empty channel, and what it tested was
           whichever channels happened to be configured a moment ago. */}
-      <Card className="gap-1 p-5">
-        <h3 className="text-sm font-medium">通知渠道</h3>
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          Telegram、Webhook 和 SMTP 邮件配了哪个就发哪个，也可以同时用。每个渠道下面的「发送测试」按该栏当前的内容发一条，不需要先保存，也不会把没填完的配置写进去。离线通知在下方按节点打开；流量和到期提醒对填了额度、到期日的节点生效。
-        </p>
-      </Card>
+      {/* The page's own title rather than a card: it holds no control, and a box
+          around one line of text reads as a form nobody can fill in. */}
+      <div className="px-1">
+        <CardHead
+          title="通知渠道"
+          hint="配了哪个就发哪个，可以同时启用。每个渠道都能先发一条测试，不必保存。"
+          help={
+            <>
+              <p>测试按卡片里当前填写的内容发送，不写入设置。保存之后才会用于真正的提醒。</p>
+              <p>离线通知在下方按节点开启，默认关闭；流量与到期提醒只对填了额度、到期日的节点生效。</p>
+            </>
+          }
+        />
+      </div>
 
-      <ChannelCard title="Telegram" configured={!!s.notify_telegram_token_set && text("notify_telegram_chat") !== ""}>
+      <ChannelCard
+        title="Telegram"
+        hint="手机实时推送，一个机器人 Token 就能用。"
+        configured={!!s.notify_telegram_token_set && text("notify_telegram_chat") !== ""}
+      >
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Bot Token" hint={secretHint("notify_telegram_token")}>
             <Input
@@ -3222,11 +3391,11 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
               onChange={(e) => set("notify_telegram_token", e.target.value)}
             />
           </Field>
-          <Field label="Chat ID" hint="数字 ID，群组是负数；公开频道可填 @频道名">
+          <Field label="Chat ID" hint="数字 ID；群组为负数，公开频道填 @频道名">
             <Input value={text("notify_telegram_chat")} onChange={(e) => set("notify_telegram_chat", e.target.value)} placeholder="-1001234567890" />
           </Field>
         </div>
-        <Field label="消息模板" hint={`纯文本。占位符 ${PLACEHOLDERS}`}>
+        <Field label="消息模板" hint={`纯文本，占位符 ${PLACEHOLDERS}`}>
           <textarea rows={3} className={TEXTAREA} value={text("notify_telegram_text")} onChange={(e) => set("notify_telegram_text", e.target.value)} />
         </Field>
         <TemplatePreview template={text("notify_telegram_text")} site={text("site_name") || "Monitor"} />
@@ -3242,14 +3411,16 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
             size="sm"
             variant="secondary"
             disabled={!!testing || !ready.telegram}
-            title={ready.telegram ? "按这一栏当前的内容发一条测试，不保存设置" : "填好 Bot Token 和 Chat ID 才能测试"}
+            title="按当前填写的内容发送一条测试，不保存设置"
             onClick={() => test("telegram", telegramPatch(), unsaved.telegram)}
           >
             <Send /> {testing === "telegram" ? "发送中…" : "发送测试"}
           </Button>
           {/* The disabled button cannot be hovered on a touch screen and is skipped
-              by Tab, so the reason it is off is written where the button is. */}
-          {!ready.telegram && <span className="text-2xs text-muted-foreground">填好上面的两项才能测试</span>}
+              by Tab, so what is still empty is written where the button is. */}
+          {!ready.telegram && (
+            <span className="text-2xs text-muted-foreground">还差 {missing.telegram.join("、")}</span>
+          )}
           {s.notify_telegram_token_set && (
             <Button size="sm" variant="ghost" onClick={() => save({ notify_telegram_token: "", notify_telegram_chat: "" }, "已清除 Telegram")}>
               清除
@@ -3258,7 +3429,7 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
         </div>
       </ChannelCard>
 
-      <ChannelCard title="Webhook" configured={!!s.notify_webhook_url_set}>
+      <ChannelCard title="Webhook" hint="接到飞书、钉钉、企业微信、Slack 这类机器人。" configured={!!s.notify_webhook_url_set}>
         <Field label="URL" hint={secretHint("notify_webhook_url")}>
           <Input
             type="password"
@@ -3268,7 +3439,7 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
             onChange={(e) => set("notify_webhook_url", e.target.value)}
           />
         </Field>
-        <Field label="请求头" hint={`可选，一行一个。${s.notify_webhook_headers_set ? "已设置，留空不变" : ""}`}>
+        <Field label="请求头" hint={`可选，每行一个${s.notify_webhook_headers_set ? "；已设置，留空不变" : ""}`}>
           <textarea
             rows={2}
             className={TEXTAREA}
@@ -3278,7 +3449,7 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
           />
         </Field>
         {presets.length > 0 && (
-          <Field label="预设模板" hint="选一个填进下面的请求体；填进去只是改这一栏，按需再改，点保存才生效">
+          <Field label="预设模板" hint="选中即填入请求体，改完点保存生效">
             <Select
               value={presets.find((p) => p.body === text("notify_webhook_body"))?.name}
               onValueChange={(name) => {
@@ -3306,7 +3477,7 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
             </Select>
           </Field>
         )}
-        <Field label="请求体" hint={`以 POST 发送，Content-Type 为 application/json。占位符 ${PLACEHOLDERS}，须写在引号内`}>
+        <Field label="请求体" hint={`POST，JSON；占位符 ${PLACEHOLDERS} 须写在引号内`}>
           <textarea rows={4} className={TEXTAREA} value={text("notify_webhook_body")} onChange={(e) => set("notify_webhook_body", e.target.value)} />
         </Field>
         <TemplatePreview template={text("notify_webhook_body")} site={text("site_name") || "Monitor"} json />
@@ -3319,12 +3490,12 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
             size="sm"
             variant="secondary"
             disabled={!!testing || !ready.webhook}
-            title={ready.webhook ? "按这一栏当前的内容发一条测试，不保存设置" : "填好 URL 才能测试"}
+            title="按当前填写的内容发送一条测试，不保存设置"
             onClick={() => test("webhook", webhookPatch(), unsaved.webhook)}
           >
             <Send /> {testing === "webhook" ? "发送中…" : "发送测试"}
           </Button>
-          {!ready.webhook && <span className="text-2xs text-muted-foreground">填好上面的 URL 才能测试</span>}
+          {!ready.webhook && <span className="text-2xs text-muted-foreground">还差 {missing.webhook.join("、")}</span>}
           {s.notify_webhook_headers_set && (
             <Button size="sm" variant="ghost" onClick={() => save({ notify_webhook_headers: "" }, "已清除请求头")}>
               清除请求头
@@ -3338,9 +3509,23 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
         </div>
       </ChannelCard>
 
-      <ChannelCard title="SMTP 邮件" configured={!!text("notify_smtp_host").trim() && !!text("notify_smtp_to").trim()}>
+      <ChannelCard
+        title="SMTP 邮件"
+        hint="发到邮箱，适合多人接收或留档。"
+        configured={!!text("notify_smtp_host").trim() && !!text("notify_smtp_to").trim()}
+      >
         <div className="grid gap-4 sm:grid-cols-3">
-          <Field label="服务器" hint="主机名或 IP，不带端口">
+          <Field
+            label="服务器"
+            hint="主机名或 IP，不带端口"
+            helpWidth="max-w-68 min-[416px]:max-w-96"
+            help={
+              <>
+                <p>常见填法：QQ <span className="whitespace-nowrap">smtp.qq.com:465</span>、163 <span className="whitespace-nowrap">smtp.163.com:465</span>、Gmail <span className="whitespace-nowrap">smtp.gmail.com:465</span>（应用专用密码）、企业微信 <span className="whitespace-nowrap">smtp.exmail.qq.com:465</span>。</p>
+                <p>只发纯文本，不带附件，不支持 OAuth。</p>
+              </>
+            }
+          >
             <Input
               value={text("notify_smtp_host")}
               onChange={(e) => set("notify_smtp_host", e.target.value)}
@@ -3348,7 +3533,7 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
               autoComplete="off"
             />
           </Field>
-          <Field label="端口" hint="465 / 587 / 25">
+          <Field label="端口" hint="随加密方式切换，也可手填">
             <Input
               type="number"
               min={1}
@@ -3360,13 +3545,12 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
           </Field>
           <Field
             label="加密"
-            hint="必须和端口对上：465 是 tls，587 是 starttls"
+            hint="必须与端口匹配"
             helpWidth="max-w-62 min-[392px]:max-w-90"
             help={
               <>
-                <p>tls：连上就是加密的，一般是 465。starttls：先明文连上、握手后加密，一般是 587。不加密：本机或内网中继，通常是 25。</p>
-                <p>服务器没有提供 STARTTLS 时不会退化成明文——那等于把授权码发出去，所以直接报错。</p>
-                <p>证书按二进制里编译的根证书校验，自签证书的服务器只能走「不加密」，或者给它一张正经证书。</p>
+                <p>tls：连上即加密，通常 465。starttls：明文握手后加密，通常 587。不加密：本机或内网中继，通常 25。</p>
+                <p>服务器不支持 STARTTLS 时直接报错，不会退化成明文——那等于把授权码发出去。证书按二进制里的根证书校验，自签证书只能走「不加密」或换一张正经证书。</p>
               </>
             }
           >
@@ -3395,7 +3579,7 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
           </Field>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="用户名" hint="不填就不登录，本机中继通常不用">
+          <Field label="用户名" hint="留空则不认证，本机中继通常如此">
             <Input
               value={text("notify_smtp_user")}
               onChange={(e) => set("notify_smtp_user", e.target.value)}
@@ -3407,19 +3591,19 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
             <Input
               type="password"
               autoComplete="off"
-              placeholder={s.notify_smtp_password_set ? "••••••••" : "邮箱的 SMTP 授权码，不是登录密码"}
+              placeholder={s.notify_smtp_password_set ? "••••••••" : "SMTP 授权码，不是登录密码"}
               value={text("notify_smtp_password")}
               onChange={(e) => set("notify_smtp_password", e.target.value)}
             />
           </Field>
-          <Field label="发件人" hint="留空就用上面的用户名；很多服务要求它等于登录账号">
+          <Field label="发件人" hint="留空用用户名；多数服务要求与账号一致">
             <Input
               value={text("notify_smtp_from")}
               onChange={(e) => set("notify_smtp_from", e.target.value)}
               placeholder="Probe <probe@example.com>"
             />
           </Field>
-          <Field label="收件人" hint="多个用逗号隔开，最多 10 个">
+          <Field label="收件人" hint="逗号分隔，最多 10 个">
             <Input
               value={text("notify_smtp_to")}
               onChange={(e) => set("notify_smtp_to", e.target.value)}
@@ -3430,15 +3614,10 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
         <Field label="主题" hint={`占位符 ${PLACEHOLDERS}`}>
           <Input value={text("notify_smtp_subject")} onChange={(e) => set("notify_smtp_subject", e.target.value)} placeholder="{{title}}" />
         </Field>
-        <Field label="正文" hint={`纯文本。占位符 ${PLACEHOLDERS}`}>
+        <Field label="正文" hint={`纯文本，占位符 ${PLACEHOLDERS}`}>
           <textarea rows={4} className={TEXTAREA} value={text("notify_smtp_text")} onChange={(e) => set("notify_smtp_text", e.target.value)} />
         </Field>
         <TemplatePreview template={text("notify_smtp_text")} site={text("site_name") || "Monitor"} />
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          常见填法：QQ 邮箱 <span className="whitespace-nowrap">smtp.qq.com 465 tls</span>、163 <span className="whitespace-nowrap">smtp.163.com 465</span>、
-          Gmail <span className="whitespace-nowrap">smtp.gmail.com 465</span>（要应用专用密码）、企业微信 <span className="whitespace-nowrap">smtp.exmail.qq.com 465</span>。
-          面板只发纯文本，不带附件，也不支持 OAuth 认证。
-        </p>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" onClick={() => save(smtpPatch())}>
             保存 SMTP
@@ -3448,12 +3627,12 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
             size="sm"
             variant="secondary"
             disabled={!!testing || !ready.smtp}
-            title={ready.smtp ? "按这一栏当前的内容发一封测试信，不保存设置" : "填好服务器和收件人才能测试"}
+            title="按当前填写的内容发一封测试信，不保存设置"
             onClick={() => test("smtp", smtpPatch(), unsaved.smtp)}
           >
             <Send /> {testing === "smtp" ? "发送中…" : "发送测试"}
           </Button>
-          {!ready.smtp && <span className="text-2xs text-muted-foreground">填好服务器和收件人才能测试</span>}
+          {!ready.smtp && <span className="text-2xs text-muted-foreground">还差 {missing.smtp.join("、")}</span>}
           {s.notify_smtp_password_set && (
             <Button size="sm" variant="ghost" onClick={() => save({ notify_smtp_password: "" }, "已清除 SMTP 密码")}>
               清除密码
@@ -3476,15 +3655,15 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
       <OfflineNodes nodes={nodes} refresh={refresh} />
 
       <Card className="gap-4 p-5">
-        <h3 className="text-sm font-medium">事件</h3>
+        <CardHead title="提醒规则" hint="离线、流量、到期各按什么判定。" />
         <div className="grid gap-4 sm:grid-cols-3">
-          <Field label="离线宽限期（分钟）" hint="断开超过这么久才算离线，1–30">
+          <Field label="离线宽限期（分钟）" hint="断开超过该时长才算离线，1–30">
             <Input type="number" min={1} max={30} value={text("notify_grace")} onChange={(e) => set("notify_grace", e.target.value)} />
           </Field>
-          <Field label="流量提醒（%）" hint="本期用量达到该比例和 100% 时各提醒一次，0 关闭">
+          <Field label="流量提醒（%）" hint="用到该比例和 100% 时各提醒一次，0 关闭">
             <Input type="number" min={0} max={100} value={text("notify_traffic")} onChange={(e) => set("notify_traffic", e.target.value)} />
           </Field>
-          <Field label="到期提醒（天）" hint="每天 9 点汇总这么多天内到期的节点，自动续期时也提醒，0 关闭">
+          <Field label="到期提醒（天）" hint="每天 9 点汇总这段时间内到期的节点，含自动续期，0 关闭">
             <Input type="number" min={0} max={365} value={text("notify_expiry")} onChange={(e) => set("notify_expiry", e.target.value)} />
           </Field>
         </div>
@@ -3504,7 +3683,7 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
               })
             }
           >
-            保存事件设置
+            保存提醒规则
           </Button>
         </div>
       </Card>
@@ -3550,12 +3729,7 @@ function Sessions({ rows, reload }: { rows: Session[]; reload: () => void }) {
 
   return (
     <Card className="gap-4 p-5">
-      <div>
-        <h3 className="text-sm font-medium">登录会话</h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          每次登录一条，14 天后过期。删除后该设备下一次请求就被登出。
-        </p>
-      </div>
+      <CardHead title="登录会话" hint="每次登录一条，14 天后过期。删掉后那台设备下一次请求就被登出。" />
       <div className="divide-y">
         {rows.map((s) => (
           <div key={s.id} className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
@@ -3580,36 +3754,59 @@ function Sessions({ rows, reload }: { rows: Session[]; reload: () => void }) {
 // The ways into this panel, on their own page: the sessions signed in, the two
 // identities it trusts and the password that works when neither does.
 function Security({ site, hubSite, siteFixed }: { site: string; hubSite: string; siteFixed: boolean }) {
-  const { s, set, save } = useSettings()
+  const { s, error, reload, set, save } = useSettings()
   const sessions = useSessions()
   // The password being set, and the one it replaces: a change asks for both.
   const [password, setPassword] = useState("")
   const [current, setCurrent] = useState("")
   // Drawn once both have arrived, so the list does not land late above the
-  // cards and push them down.
-  if (!s || !sessions.rows) return null
+  // cards and push them down; a read that failed says so instead of leaving the
+  // page blank.
+  if (!s || !sessions.rows) return <PageState error={error} retry={reload} cards={4} />
   const hasPassword = !!s.password_set
   // A generated password was printed once to a terminal and may never have been
   // read, so it is not asked for: the operator replaces it, and from then on a
   // change asks for theirs.
   const needsCurrent = hasPassword && !s.password_generated
+  const githubId = String(s.github_client_id ?? "")
+  const githubUsers = String(s.github_allowed_users ?? "")
+  // GitHub exchanges the code with a client secret, so an id without one leaves
+  // a button on the login page that cannot finish. The hub reports the pair as
+  // configured for the same reason; here it is said while it can still be fixed.
+  const githubSecret = !!s.github_secret_set || String(s.github_client_secret ?? "") !== ""
+  const oidcUsers = String(s.oidc_allowed_users ?? "")
   const callback = `${site}/api/auth/github/callback`
   const oidcCallback = `${site}/api/auth/oidc/callback`
+  // Where the two callbacks came from, which decides whether they are worth
+  // pasting into a provider. The hub's own address is the only one an outside
+  // service can reach; the browser's is right when the panel is opened on the
+  // domain, and wrong behind a tunnel or a loopback port.
+  const borrowed = !hubSite && (
+    <span className="block">取自浏览器地址栏（站点 URL 为空）；面板若在隧道或回环端口后面，服务商回跳不到这里。</span>
+  )
 
   return (
     <div className="space-y-4">
       <Sessions rows={sessions.rows} reload={sessions.load} />
 
       <Card className="gap-4 p-5">
-        <div>
-          <h3 className="text-sm font-medium">GitHub 单点登录</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            OAuth App 回调地址 <code className="rounded bg-muted px-1 break-all">{callback}</code>
-          </p>
-        </div>
+        <CardHead
+          title="GitHub 单点登录"
+          hint="用 GitHub 账号登录后台，能进的人由白名单决定。"
+          help={
+            <>
+              <p>在 GitHub 的 Settings → Developer settings → OAuth Apps 建一个 App，把下面的回调地址填进 Authorization callback URL，再把 Client ID 与 Secret 抄过来。</p>
+              <p>白名单按 GitHub 用户名匹配，不是邮箱或昵称；留空等于谁都不许进，不是放行所有人。</p>
+            </>
+          }
+        />
+        <p className="text-xs text-muted-foreground">
+          OAuth App 回调地址 <code className="rounded bg-muted px-1 break-all">{callback}</code>
+          {borrowed}
+        </p>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Client ID">
-            <Input value={String(s.github_client_id ?? "")} onChange={(e) => set("github_client_id", e.target.value)} />
+            <Input value={githubId} onChange={(e) => set("github_client_id", e.target.value)} />
           </Field>
           <Field label="Client Secret" hint={s.github_secret_set ? "已设置，留空不变" : "未设置"}>
             <Input
@@ -3621,21 +3818,26 @@ function Security({ site, hubSite, siteFixed }: { site: string; hubSite: string;
             />
           </Field>
         </div>
-        {String(s.github_client_id ?? "") !== "" && String(s.github_allowed_users ?? "").trim() === "" && (
+        {githubId !== "" && !githubSecret && (
+          <p className="rounded-md bg-muted px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+            还差 Client Secret：缺了它 GitHub 登录不会出现在登录页（换 token 要用它）。
+          </p>
+        )}
+        <Field label="允许登录的 GitHub 用户名" hint="逗号分隔；留空表示谁都不许登录">
+          <Input value={githubUsers} onChange={(e) => set("github_allowed_users", e.target.value)} placeholder="octocat" />
+        </Field>
+        {githubId !== "" && githubUsers.trim() === "" && (
           <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
             白名单为空，GitHub 登录拒绝所有人。填入用户名并保存后生效。
           </p>
         )}
-        <Field label="允许登录的 GitHub 用户名" hint="逗号分隔。留空 = 拒绝所有人，不是放行所有人">
-          <Input value={String(s.github_allowed_users ?? "")} onChange={(e) => set("github_allowed_users", e.target.value)} placeholder="GitHub 用户名" />
-        </Field>
         <div>
           <Button
             size="sm"
             onClick={() => {
               const patch: Record<string, string> = {
-                github_client_id: String(s.github_client_id ?? ""),
-                github_allowed_users: String(s.github_allowed_users ?? ""),
+                github_client_id: githubId,
+                github_allowed_users: githubUsers,
               }
               if (typeof s.github_client_secret === "string" && s.github_client_secret) {
                 patch.github_client_secret = s.github_client_secret
@@ -3652,43 +3854,42 @@ function Security({ site, hubSite, siteFixed }: { site: string; hubSite: string;
           GitHub rather than instead of it: each hides its button when it has no
           settings, so a broken provider costs its own button and no more. */}
       <Card className="gap-4 p-5">
-        <div>
-          <h3 className="text-sm font-medium">OIDC 单点登录</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Pocket-ID、Authentik、Authelia、Keycloak 这类身份系统。授权码 + PKCE，只需要 Issuer、
-            Client ID 与回调地址。
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            回调地址 <code className="rounded bg-muted px-1 break-all">{oidcCallback}</code>
-            {!hubSite && <span className="ml-1">（从地址栏推出来的，hub 自己并不知道）</span>}
-          </p>
-        </div>
+        <CardHead
+          title="OIDC 单点登录"
+          hint="Pocket-ID、Authentik、Authelia、Keycloak 这类身份系统。"
+          help={
+            <>
+              <p>授权码 + PKCE。客户端是公开的就不必填 Secret；回调地址填下面的那个。</p>
+              <p>Issuer 填身份系统的地址本身，不是它的 <span className="whitespace-nowrap">/.well-known/openid-configuration</span>：那个由 hub 自己接。</p>
+              <p>允许登录的用户名按 preferred_username 匹配，留空等于谁都不许进。</p>
+            </>
+          }
+        />
+        <p className="text-xs text-muted-foreground">
+          回调地址 <code className="rounded bg-muted px-1 break-all">{oidcCallback}</code>
+          {borrowed}
+        </p>
         {/* OIDC needs the hub to state its own address -- `redirect_uri` travels
             in the authorize request and again in the token exchange -- so it is
             off until that address exists and is https. Which of the two is
             missing is what the reader came here to find out. */}
         {!hubSite ? (
           <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            hub 还不知道自己的对外地址，OIDC 登录因此不可用（登录页不显示这个按钮）。上面那个回调地址
-            是从你的浏览器地址栏推出来的——浏览器知道，hub 不知道，而授权请求必须由 hub 自己说出它。
+            hub 还不知道自己的对外地址，OIDC 登录因此不可用（登录页不显示这个按钮）：<code className="px-0.5">redirect_uri</code> 得由 hub 自己说出。
             {siteFixed
               ? "给它加上 --site https://你的域名 后重启即可。"
               : "到「设置」里填一下站点 URL 就好。"}
           </p>
         ) : !hubSite.startsWith("https://") ? (
           <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            hub 的站点地址是 {hubSite}，不是 https，OIDC 登录因此不可用：授权码要沿这个地址回到 hub，
-            明文就等于把它交给路径上的任何人。
+            hub 的站点地址是 {hubSite}，不是 https：授权码要沿这个地址回到 hub，明文就等于交给路径上的任何人。
             {siteFixed
               ? "这个地址由启动参数固定，要改它得编辑 systemd 的 ExecStart 再重启。"
               : "到「设置」里把站点 URL 改成 https 域名即可。"}
           </p>
         ) : null}
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field
-            label="Issuer URL"
-            hint="填身份系统的地址，不是它的发现地址：/.well-known/openid-configuration 由 hub 自己接（https，可以带路径；本机或内网的调试实例可以用 http）"
-          >
+          <Field label="Issuer URL" hint="身份系统的地址，不是发现地址">
             <Input
               placeholder="https://pocket-id.example.com"
               value={String(s.oidc_issuer ?? "")}
@@ -3698,10 +3899,7 @@ function Security({ site, hubSite, siteFixed }: { site: string; hubSite: string;
           <Field label="Client ID">
             <Input value={String(s.oidc_client_id ?? "")} onChange={(e) => set("oidc_client_id", e.target.value)} />
           </Field>
-          <Field
-            label="Client Secret"
-            hint={s.oidc_secret_set ? "已设置，留空不变" : "公开客户端可以留空"}
-          >
+          <Field label="Client Secret" hint={s.oidc_secret_set ? "已设置，留空不变" : "公开客户端可以留空"}>
             <Input
               type="password"
               autoComplete="off"
@@ -3710,7 +3908,7 @@ function Security({ site, hubSite, siteFixed }: { site: string; hubSite: string;
               onChange={(e) => set("oidc_client_secret", e.target.value)}
             />
           </Field>
-          <Field label="按钮名称" hint="登录页上这个入口叫什么，留空就是「OIDC」">
+          <Field label="按钮名称" hint="登录页上这个入口的名字，留空就是「OIDC」">
             <Input
               maxLength={16}
               placeholder="OIDC"
@@ -3719,18 +3917,14 @@ function Security({ site, hubSite, siteFixed }: { site: string; hubSite: string;
             />
           </Field>
         </div>
-        {String(s.oidc_client_id ?? "") !== "" && String(s.oidc_allowed_users ?? "").trim() === "" && (
+        <Field label="允许登录的用户名" hint="逗号分隔，按身份系统里的用户名；留空表示谁都不许登录">
+          <Input value={oidcUsers} onChange={(e) => set("oidc_allowed_users", e.target.value)} placeholder="alice" />
+        </Field>
+        {String(s.oidc_client_id ?? "") !== "" && oidcUsers.trim() === "" && (
           <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
             白名单为空，OIDC 登录拒绝所有人。填入用户名并保存后生效。
           </p>
         )}
-        <Field label="允许登录的用户名" hint="逗号分隔，按身份系统里的用户名。留空 = 拒绝所有人">
-          <Input
-            value={String(s.oidc_allowed_users ?? "")}
-            onChange={(e) => set("oidc_allowed_users", e.target.value)}
-            placeholder="alice"
-          />
-        </Field>
         <div>
           <Button
             size="sm"
@@ -3738,7 +3932,7 @@ function Security({ site, hubSite, siteFixed }: { site: string; hubSite: string;
               const patch: Record<string, string> = {
                 oidc_issuer: String(s.oidc_issuer ?? ""),
                 oidc_client_id: String(s.oidc_client_id ?? ""),
-                oidc_allowed_users: String(s.oidc_allowed_users ?? ""),
+                oidc_allowed_users: oidcUsers,
                 oidc_provider_name: String(s.oidc_provider_name ?? ""),
               }
               // Only when typed: an empty field means "keep the stored one", so
@@ -3755,17 +3949,17 @@ function Security({ site, hubSite, siteFixed }: { site: string; hubSite: string;
       </Card>
 
       <Card className="gap-4 p-5">
-        <div>
-          <h3 className="text-sm font-medium">应急密码</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            两个单点登录都不可用时的备用入口，也用来确认恢复备份这类不可撤销的操作。
-            {!hasPassword
-              ? "设置后应急密码登录才可用。"
-              : s.password_generated
-                ? "现在这个是首次启动时自动生成的，只打印过一次。设置一个自己的来替换它，之后的修改需要输入当前密码。"
-                : "修改后其它设备登录立即失效，当前设备不受影响。"}
-          </p>
-        </div>
+        <CardHead
+          title="应急密码"
+          hint="两个单点登录都用不了时的备用入口，也用来确认恢复备份这类不可撤销的操作。"
+        />
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {!hasPassword
+            ? "还没设置：设一个之后才能用密码登录。"
+            : s.password_generated
+              ? "当前这个是首次启动时自动生成的，只打印过一次。设一个自己的来替换它，之后修改要输入当前密码。"
+              : "修改会让其它设备立刻掉线，当前这台不受影响。"}
+        </p>
         {needsCurrent ? (
           <div className="grid gap-4 sm:grid-cols-2">
             {/* Asked for because a change locks every other device out: the
@@ -3797,7 +3991,7 @@ function Security({ site, hubSite, siteFixed }: { site: string; hubSite: string;
             />
           </Field>
         )}
-        <div>
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
             disabled={password.length < 12 || (needsCurrent && !current)}
@@ -3817,6 +4011,9 @@ function Security({ site, hubSite, siteFixed }: { site: string; hubSite: string;
           >
             {needsCurrent ? "修改密码" : "设置密码"}
           </Button>
+          {password.length > 0 && password.length < 12 && (
+            <span className="text-2xs text-muted-foreground">还差 {12 - password.length} 位</span>
+          )}
         </div>
       </Card>
     </div>
@@ -4086,7 +4283,28 @@ function Update({ versions, reload, nodes, site, refusal }: {
   refusal: string
 }) {
   const [saving, setSaving] = useState(false)
-  if (!versions) return null
+  // The release source is its own question and does not wait for `/version`, so
+  // it is drawn from the first paint; the two cards under it keep their shape
+  // with a skeleton instead of arriving a whole page-height late.
+  if (!versions) {
+    return (
+      <div className="space-y-4">
+        <ReleaseSource versions={null} reload={reload} />
+        {[0, 1].map((i) => (
+          <Card key={i} className="gap-4 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Skeleton className="h-5 w-12" />
+              <Skeleton className="h-4 w-28" />
+            </div>
+          </Card>
+        ))}
+        <div className="rounded-lg border bg-muted/30 px-3 py-2.5">
+          <Skeleton className="h-5 w-20" />
+          <Skeleton className="mt-0.5 h-4 w-2/3" />
+        </div>
+      </div>
+    )
+  }
   const outdated = outdatedAgents(nodes, versions.agent_latest)
   const offline = outdated.filter((n) => !n.online).length
   const upgrade = refusal ? "" : upgradeCommand(site)
@@ -4221,7 +4439,7 @@ function Update({ versions, reload, nodes, site, refusal }: {
 
       <OptionRow
         title="更新提醒"
-        hint="有新版本时在导航的「更新」旁显示小圆点。关闭只是不再显示圆点，这一页照常检查"
+        hint="有新版本时在导航旁显示小圆点；关掉只是不显示圆点，这一页照常检查"
         toggle
       >
         <Switch checked={versions.notice} disabled={saving} onCheckedChange={setNotice} />
@@ -4234,10 +4452,10 @@ function Update({ versions, reload, nodes, site, refusal }: {
 // than fetched: this is the contract whoever configures the monitor reads, and
 // it has to be readable on a hub too broken to answer it.
 const HEALTH_ANSWERS: [string, string][] = [
-  ['200  {"status":"ok","db":"ok"}', "正常：在服务，数据库可读"],
-  ['200  {"status":"ok","db":"busy"}', "正常：备份、回收或图表扫描正占着数据库连接，忙不是故障"],
-  ['503  {"status":"degraded","db":"error"}', "数据库读不出来：磁盘、文件或权限出了问题"],
-  ["连不上或超时", "进程、端口、反向代理或隧道挂了——这个接口存在的理由"],
+  ['200  {"status":"ok","db":"ok"}', "正常"],
+  ['200  {"status":"ok","db":"busy"}', "数据库连接被备份或图表扫描占用，不算故障"],
+  ['503  {"status":"degraded","db":"error"}', "数据库读不出来"],
+  ["连不上或超时", "进程、端口或反向代理不通"],
 ]
 
 /** What this browser got back from `/api/health`, or why it got nothing. */
@@ -4298,27 +4516,34 @@ function Heartbeat({ site, hubSite, siteFixed }: { site: string; hubSite: string
   // The one thing an operator can act on, phrased by whichever way the hub's
   // address was given: the flag is fixed in the unit file, the setting is in the
   // panel.
+  // The panel cannot set the address it was refused: over http the hub rejects a
+  // `site_url` write outright, so pointing at that page would send the reader in
+  // a circle. The two ways that do work are the flag and opening it on the domain.
   const fix = siteFixed
     ? "站点 URL 由 --site 固定，要改成 https 域名得编辑 systemd 的 ExecStart 再重启。"
-    : "到「设置」里把站点 URL 填成你的 https 域名，或直接用域名打开面板。"
+    : "用 https 域名打开面板后在「设置」里填站点 URL，或启动时加 --site https://你的域名。"
   const curl = `curl -fsS -o /dev/null -w '%{http_code}\\n' ${probe.url}`
 
   return (
     <div className="space-y-4">
       <Card className="gap-4 p-5">
-        <div>
-          <h3 className="text-sm font-medium">探测地址</h3>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            给 hub 之外的机器定时来问的地址。不需要登录，也没有要先打开的开关：谁问都答。
-          </p>
-        </div>
+        <CardHead
+          title="探测地址"
+          hint="外部 uptime 服务定时查询这个地址，匿名可访问，不需要先打开什么开关。"
+          help={
+            <>
+              <p>hub 监测所有节点，唯独监测不到自己：hub 那台机器上的 agent，上报也要经过 hub。这个接口是留给外面的检查器的。</p>
+              <p>响应只有两件事：活着没有，以及这个进程跑了多久。版本号、节点数、地址都不答。</p>
+            </>
+          }
+        />
         <Command>{probe.url || "—"}</Command>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" disabled={!probe.url} onClick={() => copy(probe.url, "已复制探测地址")}>
             <Copy className="size-4" /> 复制地址
           </Button>
           <Button size="sm" variant="secondary" disabled={checking} onClick={check}>
-            {checking ? "查询中…" : "在这台浏览器上查一次"}
+            {checking ? "检查中…" : "立即检查"}
           </Button>
           {live &&
             ("failed" in live ? (
@@ -4337,27 +4562,23 @@ function Heartbeat({ site, hubSite, siteFixed }: { site: string; hubSite: string
         {!probe.external && (
           <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {probe.url
-              ? "这是个回环地址，只有 hub 这台机器上的检查器用得上——外面的检查器连不到它。"
+              ? "这是回环地址，只有 hub 本机的检查器能用，外面的检查器连不到。"
               : "读不出可用地址：这个面板不是从 hub 的地址上打开的。"}
             {fix}
           </p>
         )}
         {probe.external && !hubSite && (
           <p className="text-xs leading-relaxed text-muted-foreground">
-            这个地址是从你的浏览器地址栏推出来的，hub 自己并不知道（「设置」里的站点 URL 为空）。
-            它通常就是对外的那个；如果面板是从隧道或回环端口进来的，这里也就不是外面能用的地址。
+            地址取自浏览器地址栏，hub 自己并不知道（「设置」里的站点 URL 为空）。若面板经隧道或回环端口进入，这不是外面能用的地址。
           </p>
         )}
       </Card>
 
       <Card className="gap-4 p-5">
-        <div>
-          <h3 className="text-sm font-medium">它会答什么</h3>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            正常时是 <code>200</code>，其余每一种都对应一件具体的事。答复里还有 <code>uptime_seconds</code>：
-            hub 自己跑了多少秒——一直是涨的，说明两次检查之间它没换过进程。
-          </p>
-        </div>
+        <CardHead
+          title="响应"
+          hint="200 是正常；503 是数据库读不出来；连不上是进程或代理断了。"
+        />
         <div className="divide-y rounded-lg border bg-muted/30 text-sm">
           {HEALTH_ANSWERS.map(([answer, meaning]) => (
             <div key={answer} className="flex flex-col gap-0.5 px-3 py-2.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
@@ -4367,61 +4588,53 @@ function Heartbeat({ site, hubSite, siteFixed }: { site: string; hubSite: string
           ))}
         </div>
         <p className="text-xs leading-relaxed text-muted-foreground">
-          响应带 <code>Cache-Control: no-store</code>：CDN 和反向代理不会把一次 200 存成永久绿，那正是要抓的故障。
-          反过来说它只答「活着没有」——没有版本号，没有节点数，也没有地址，谁不花代价都能查它。
+          响应带 <code>Cache-Control: no-store</code>，CDN 与反向代理不会把它缓存成永久绿。
+          <code>uptime_seconds</code> 持续增长，说明两次检查之间没有重启。
         </p>
       </Card>
 
       <Card className="gap-4 p-5">
-        <div>
-          <h3 className="text-sm font-medium">怎么接</h3>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            任何能发 HTTP 请求的监视器都行：Uptime Kuma、UptimeRobot、Better Stack、Grafana 的合成监控、
-            Zabbix、healthchecks 之类，同一件事各叫各的名字（期望状态码 / Expected status / HTTP 200）。
-          </p>
-        </div>
+        <CardHead
+          title="接入"
+          hint="任何 HTTP 监视器都行：Uptime Kuma、UptimeRobot、Better Stack、Grafana、Zabbix、healthchecks。"
+          help={<p>同一件事各家叫法不同：期望状态码 / Expected status / HTTP 200。下面按最常见的那一种写。</p>}
+        />
         <div className="space-y-2">
           {/* The command under the sentence that says what it proves: a monitor
               that cannot reach this URL has nothing to tell you. */}
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs text-muted-foreground">先在 hub 之外的一台机器上确认这条命令打出 200：</p>
+            <p className="text-xs text-muted-foreground">先在 hub 之外执行一次，确认返回 200：</p>
             <Button size="sm" variant="ghost" disabled={!probe.url} onClick={() => copy(curl, "已复制命令")}>
               <Copy className="size-4" /> 复制命令
             </Button>
           </div>
           <Command>{curl}</Command>
         </div>
-        <ol className="list-decimal space-y-2 pl-5 text-xs leading-relaxed text-muted-foreground">
-          <li>地址填上面那个 URL，期望状态码 <code>200</code>，间隔 60 秒。</li>
-          <li>判定用「连续 2–3 次失败才告警」：一次网络抖动不该叫醒你。</li>
+        <ol className="list-decimal space-y-1.5 pl-5 text-xs leading-relaxed text-muted-foreground">
+          <li>地址填上面的 URL，期望状态码 <code>200</code>，间隔 60 秒。</li>
+          <li>连续 2–3 次失败才告警，别让一次抖动叫醒你。</li>
           <li>
-            想更严就把答复里的 <code>"db":"ok"</code> 也断言上（关键词 / JSON path），这样「hub 活着但数据库
-            读不出来」同样会报警。
-          </li>
-          <li>
-            关掉「跟随重定向」，或确认这条路径不会被登录挡在前面：面板前若套了 Cloudflare Access、
-            Authelia、oauth2-proxy 之类，<code>/api/health</code> 会被 302 到登录页，监视器跟过去拿到 200
-            就是假绿——要么把这个路径排除，要么用上面那条断言兜住。
+            要连数据库一起盯，就断言 <code>"db":"ok"</code>（关键词或 JSON 查询）：hub 活着但数据库读不出来时，它照样会报警。
           </li>
         </ol>
+        <p className="rounded-md bg-muted/50 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+          <span className="font-medium text-foreground">面板前有登录代理时：</span>
+          Cloudflare Access、Authelia、oauth2-proxy 这类会把 <code>/api/health</code> 302 到登录页，监视器跟过去拿到 200 就是假绿。关掉「跟随重定向」，或把这条路径排除。
+        </p>
       </Card>
 
       <Card className="gap-4 p-5">
-        <div>
-          <h3 className="text-sm font-medium">检查器要放在别处</h3>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            同一个 VPS 上跑检查器，机器或网络一死，两边一起沉默，这就回到了原点：hub 之所以需要外部的
-            uptime，正是因为死掉的那一方发不出消息。检查器要放在「hub 死了它还在」的地方。
-          </p>
-          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-            一个检查点也不够：它自己的机器或网络挂了，你收到的不是「hub 掉线」，而是什么都没有。两个不同
-            网络的检查点配两条不同的告警通道就够——一个说掉线先去看，两个都说掉线才是真的。
-          </p>
-          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-            反过来说，hub 已经在盯的事外面不必再盯一遍：节点掉线、流量和到期由 hub 自己推通知，「全部节点
-            一起掉线」这种故障它自己知道。外面需要看的只有一种：hub 连通知都发不出去了。
-          </p>
-        </div>
+        <CardHead
+          title="部署要点"
+          hint="检查器放在哪，决定它还能不能替你报警。"
+        />
+        <ul className="list-disc space-y-1.5 pl-5 text-xs leading-relaxed text-muted-foreground">
+          <li>别和 hub 放在同一台机器：机器或网络一死，两边一起沉默，等于没装。</li>
+          <li>至少两个不同网络的检查点，各接一条告警通道——一个说掉线先去看，两个都说才是真的。</li>
+          <li>
+            hub 已经在盯的（节点掉线、流量、到期）不必在外面重复一遍。外面只看一件事：hub 连通知都发不出去了。
+          </li>
+        </ul>
       </Card>
     </div>
   )

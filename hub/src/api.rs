@@ -1149,8 +1149,11 @@ pub async fn me(
         "authed": authed(&app, &headers),
         // Unchanged by the address: GitHub takes the callback from its own app
         // registration and never sends a `redirect_uri`, so it works wherever
-        // the hub is reachable.
-        "github": app.db.get("github_client_id").is_some_and(|v| !v.is_empty()),
+        // the hub is reachable. Both halves are required, unlike OIDC: GitHub's
+        // token exchange always carries the client secret, so an id on its own
+        // would offer a button that cannot finish.
+        "github": app.db.get("github_client_id").is_some_and(|v| !v.is_empty())
+            && app.db.get("github_client_secret").is_some_and(|v| !v.is_empty()),
         // Every sign-in path stands on its own: an empty setting hides that
         // button and nothing else, so a broken IdP cannot lock the owner out.
         //
@@ -2065,6 +2068,14 @@ const SOURCE_PROBE: std::time::Duration = std::time::Duration::from_secs(10);
 /// The architectures a release carries, as `install-agent.sh` asks for them.
 const PROBED_ARCHES: [&str; 2] = ["x86_64", "aarch64"];
 
+/// Whether a probe answers about a draft: an address that is not the one the hub
+/// would install from. A hub that stores no source installs from the official
+/// page, so an answer about that page describes the source in force; a stored
+/// source the answer disagrees with is a draft of another one.
+fn is_draft(source: &str, stored: &str) -> bool {
+    !stored.is_empty() && source != stored
+}
+
 /// `POST /api/release/source`: what the release source answers right now.
 ///
 /// The panel's 「测试」 button. Not part of `/api/version`, which answers from a
@@ -2123,8 +2134,10 @@ pub async fn release_source(_: Admin, State(app): State<Shared>, body: Bytes) ->
         }
     };
     // A draft is a value the panel typed. Where the command line owns the source,
-    // the panel's field is inert and what it holds is not a draft.
-    if app.release_base.is_empty() && source != stored {
+    // the panel's field is inert and what it holds is not a draft; where the hub
+    // stores none, the official page is what it installs from, so an answer about
+    // that page describes the source in force rather than a draft of one.
+    if app.release_base.is_empty() && is_draft(&source, stored) {
         drafted = true;
     }
     // What the URLs are built through: the draft's proxy where the panel sent one,
@@ -2644,6 +2657,7 @@ mod tests {
             app.db.set("oidc_issuer", "https://id.example.com").unwrap();
             app.db.set("oidc_client_id", "monitor").unwrap();
             app.db.set("github_client_id", "gh").unwrap();
+            app.db.set("github_client_secret", "shh").unwrap();
             app
         };
 
@@ -2677,6 +2691,13 @@ mod tests {
         let answered = read(clear).await;
         assert_eq!(answered["oidc"], false, "the code would cross the wire in the clear");
         assert_eq!(answered["github"], true, "unaffected: it sends no redirect_uri");
+
+        // An id with no secret is not a configured provider: the exchange has
+        // nothing to send, so the button would be a dead end after the round trip
+        // to GitHub.
+        let unfinished = configured(app());
+        unfinished.db.set("github_client_secret", "").unwrap();
+        assert_eq!(read(unfinished).await["github"], false, "no secret, no button");
     }
 
     /// The panel's address field is the one setting that can lock its own author
@@ -2781,6 +2802,18 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
         assert_eq!(pinned.db.get("release_source"), None, "nothing was written");
+    }
+
+    /// A hub that stores no source installs from the official page, so asking
+    /// about that page asks about the source in force. Marking it a draft put
+    /// 「这是上面还没保存的地址」 under a card nothing had been typed into -- the
+    /// state every hub starts in.
+    #[test]
+    fn the_official_page_is_not_a_draft_where_nothing_is_stored() {
+        let official = crate::official_release_base();
+        assert!(!is_draft(&official, ""));
+        assert!(!is_draft("https://mirror.example/vps-probe", "https://mirror.example/vps-probe"));
+        assert!(is_draft(&official, "https://mirror.example/vps-probe"));
     }
 
     /// The probe answers even where nothing answers: the address that could not
