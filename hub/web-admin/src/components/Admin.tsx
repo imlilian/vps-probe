@@ -242,7 +242,10 @@ function DragHandle({ name, disabled, title = "拖动排序", ...events }: React
   )
 }
 
-function copy(text: string, done = "已复制") {
+// `quiet` is for a button that shows the outcome itself (the tick on a command
+// block): the toast would be a second confirmation of the same click.
+function copy(text: string, done = "已复制", quiet = false) {
+  const landed = () => { if (!quiet) toast.success(done) }
   // navigator.clipboard exists only in a secure context. Over plain http the
   // copy command still works from a click, the clipboard filled from its event.
   if (!navigator.clipboard) {
@@ -250,11 +253,13 @@ function copy(text: string, done = "已复制") {
     document.addEventListener("copy", put)
     const ok = document.execCommand("copy")
     document.removeEventListener("copy", put)
-    return ok ? toast.success(done) : toast.error("复制失败")
+    if (ok) landed()
+    else toast.error("复制失败")
+    return Promise.resolve(ok)
   }
-  navigator.clipboard.writeText(text).then(
-    () => toast.success(done),
-    () => toast.error("复制失败"),
+  return navigator.clipboard.writeText(text).then(
+    () => { landed(); return true },
+    () => { toast.error("复制失败"); return false },
   )
 }
 
@@ -501,11 +506,44 @@ function ProbePicker({ tasks, chosen, onPick }: {
 
 // Every command the panel hands out. break-all because a token has no spaces to
 // wrap at.
-function Command({ className = "", children }: { className?: string; children: React.ReactNode }) {
+//
+// With `copy`, the block carries its own copy button in the corner instead of a
+// second button under it: the command and the way to take it are one thing. It
+// rests there quietly rather than appearing on hover -- hovering is not something
+// a phone can do, and the copy is the one action this block exists for -- and the
+// tick replaces the icon for a moment after a click.
+function Command({ className = "", copy: text, children }: {
+  className?: string
+  copy?: string
+  children: React.ReactNode
+}) {
+  const [copied, setCopied] = useState(false)
+  const timer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(timer.current), [])
   return (
-    <pre className={`overflow-auto whitespace-pre-wrap break-all rounded-lg border bg-muted/40 p-3 text-xs leading-relaxed select-all ${className}`}>
-      {children}
-    </pre>
+    <div className="relative">
+      <pre className={`overflow-auto whitespace-pre-wrap break-all rounded-lg border bg-muted/40 p-3 text-xs leading-relaxed select-all ${text ? "pr-12" : ""} ${className}`}>
+        {children}
+      </pre>
+      {text && (
+        <Button
+          type="button"
+          size="icon-xs"
+          variant="ghost"
+          title="复制命令"
+          aria-label="复制命令"
+          className="absolute top-1.5 right-1.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:text-foreground pointer-coarse:size-8"
+          onClick={() => copy(text, "已复制", true).then((ok) => {
+            if (!ok) return
+            setCopied(true)
+            window.clearTimeout(timer.current)
+            timer.current = window.setTimeout(() => setCopied(false), 1500)
+          })}
+        >
+          {copied ? <Check className="size-3 text-ok" /> : <Copy className="size-3" />}
+        </Button>
+      )}
+    </div>
   )
 }
 
@@ -3366,7 +3404,7 @@ function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
       <div className="px-1">
         <CardHead
           title="通知渠道"
-          hint="配了哪个就发哪个，可以同时启用。每个渠道都能先发一条测试，不必保存。"
+          hint="配了哪个就发哪个，可以同时启用。每个渠道都能先发一条测试。"
           help={
             <>
               <p>测试按卡片里当前填写的内容发送，不写入设置。保存之后才会用于真正的提醒。</p>
@@ -4245,8 +4283,6 @@ function Data() {
   )
 }
 
-const releaseUrl = (version: string) => `https://github.com/imlilian/vps-probe/releases/tag/v${version}`
-
 /** `v1.2.0 → v1.3.0` when something is published, the running version alone otherwise. */
 function VersionPair({ current, latest }: { current: string; latest: string }) {
   if (!behind(current, latest)) {
@@ -4339,18 +4375,10 @@ function Update({ versions, reload, nodes, site, refusal }: {
       <Card className="gap-4 p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-medium">hub</h3>
-          <div className="flex items-center gap-3">
-            <VersionPair current={versions.hub} latest={versions.hub_latest} />
-            {/* Only where the source is GitHub: the notes live on its tag page, and
-                a mirror serves the files, not the changelog they belong to. */}
-            {behind(versions.hub, versions.hub_latest) && versions.source_official && (
-              <Button size="sm" variant="ghost" asChild>
-                <a href={releaseUrl(versions.hub_latest)} target="_blank" rel="noreferrer">
-                  发布说明
-                </a>
-              </Button>
-            )}
-          </div>
+          {/* The version alone. There is no link to the release notes: tags are
+              the release's serial number while the hub and the agent carry their
+              own versions, so a tag page is not the notes for either of them. */}
+          <VersionPair current={versions.hub} latest={versions.hub_latest} />
         </div>
       </Card>
 
@@ -4378,26 +4406,11 @@ function Update({ versions, reload, nodes, site, refusal }: {
               以 root 在每台机器上执行一次。不含凭证，沿用机器上已有的设置，不会新建节点。
             </p>
             {upgrade ? (
-              <>
-                <Command>{upgrade}</Command>
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" variant="secondary" onClick={() => copy(upgrade)}>
-                    <Copy className="size-4" /> 复制命令
-                  </Button>
-                  {versions.agent_latest && versions.source_official && (
-                    <Button size="sm" variant="ghost" asChild>
-                      <a href={releaseUrl(versions.agent_latest)} target="_blank" rel="noreferrer">
-                        发布说明
-                      </a>
-                    </Button>
-                  )}
-                  <Button size="sm" variant="ghost" asChild>
-                    <a href="https://monitor-document.pages.dev/install/batch" target="_blank" rel="noreferrer">
-                      批量升级的做法
-                    </a>
-                  </Button>
-                </div>
-              </>
+              // The command alone: the copy button now sits in the block, and
+              // the two links that used to be here (release notes, how to do it
+              // in bulk) are gone -- both were reported as landing on the wrong
+              // page, and neither is needed for the one thing this card says.
+              <Command copy={upgrade}>{upgrade}</Command>
             ) : (
               <p className="text-xs text-muted-foreground">{refusal}</p>
             )}
